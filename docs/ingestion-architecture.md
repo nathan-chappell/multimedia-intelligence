@@ -7,7 +7,6 @@ Asset (immutable original in Railway Bucket)
    │
    ├── ThreadAssetInclude (thread scope + user intent)
    │       │
-   │       ├── IngestionPlan revision 1..n
    │       └── DerivedArtifact 0..n
    │              ├── profile/transcript/frame/page/chunks in our bucket
    │              └── disposable OpenAI file/vector-store reference
@@ -22,8 +21,8 @@ ChatKit Attachment = transport/UI metadata pointing at an include, never storage
 1. The accepted original reaches our bucket before an agent or external provider processes it.
 2. Any bytes uploaded to OpenAI also have a canonical or reproducible bucket copy. OpenAI IDs are never recovery paths.
 3. An include is reversible and thread-scoped. Excluding a file does not delete the asset.
-4. Models propose typed plans; deterministic policy owns authorization, limits, approval, and side effects.
-5. Each execution step is idempotent and records its output before advancing.
+4. The agent's ingestion plan is provisional conversation guidance, not executable state.
+5. Each tool call validates authorization and limits independently and returns its result through ChatKit.
 6. Only ready artifacts from active includes owned by the current user enter a chat turn.
 7. Browser results are bounded proposals. The backend verifies identity, size, hash, and authorization before persisting or trusting them.
 8. Every bucket object and OpenAI file reference expires after 24 hours; provider IDs are deleted by the application rather than treated as durable storage.
@@ -43,25 +42,27 @@ The existing `OBJECT_STORE_*` names remain local-development aliases. Browser up
 
 Presigned upload completion is not proof of safe ingestion. Finalization must `HEAD` the exact key, stream it through hashing/type-sniffing/malware checks, and only then promote the asset from quarantine to `STORED`.
 
-## Planning flow
+## Interactive ingestion flow
 
 ```text
 upload → quarantine → hash/sniff/scan → durable Asset
                                       ↓
-include + intent → bounded deterministic inspection
+include + intent → bounded ChatKit inspection tool
                                       ↓
-                  specialist evidence + plan recommendation
+                  specialist evidence + provisional approach
                                       ↓
-               policy/capability/cost/ownership validation
-                          ↓                     ↓
-                       execute              ask user
-                          ↓
-           artifacts + disposable provider references
-                          ↓
-                 ready conversation include
+                      next ChatKit tool call
+                              ↓
+                    result or new discovery
+                       ↓                 ↓
+                  continue          revise approach
 ```
 
-Plans use typed `PlanAction`, `StepCondition`, artifact kinds, and scalar parameters. Conditional steps let deterministic execution respond to inspection findings without allowing prose to become executable policy.
+The ingestion strategist returns a Pydantic-validated descriptive object with a short summary,
+provisional approach, and conditions to watch for. It is part of the conversation and is not stored
+as a database workflow. The active modality specialist chooses bounded inspection tools; the root
+routes work and revises the overall approach. Tool schemas and backend policy—not plan prose—enforce
+size, ownership, and expiration rules.
 
 ## Structured-data tools
 
@@ -87,7 +88,8 @@ The client tool layer implements:
 - `Chars(start,count)`, using streaming UTF-8 decoding so a character range does not load the whole file;
 - `JsonPath(query|query...)`, using `jsonpath-plus`, capped at eight queries, 100 values per query, and a response-byte budget.
 
-JSONPath requires parsing the complete JSON value and therefore has a browser file-size ceiling. Above that limit, the worker needs a streaming JSON parser and structural index.
+JSONPath requires parsing the complete JSON value and therefore has a browser file-size ceiling.
+Above that limit, a later server tool can provide streaming inspection or a structural index.
 
 The OpenAI custom-tool contract includes `json_inspection.lark`. It allows property, array-index, wildcard, and quoted-property selectors but intentionally excludes script expressions and filters. The same grammar is validated server-side; grammar-constrained model output is not authorization.
 
@@ -101,7 +103,9 @@ Browser utilities use PDF.js for sampled text inspection and page rendering, plu
 - `pdf_render_page`: render selected visual evidence to PNG;
 - `pdf_extract_range`: create a page-range PDF, capped because `pdf-lib` loads source bytes in browser memory.
 
-For very large PDFs, browser rendering can still inspect local pages through PDF.js, but `pdf-lib` is not a safe 1 GiB splitter. A server/worker streaming splitter remains required. The browser is an accelerator, not a required durable worker: ingestion must be resumable after the tab closes.
+For very large PDFs, browser rendering can still inspect local pages through PDF.js, but `pdf-lib`
+is not a safe 1 GiB splitter. A bounded server-side splitting tool remains required. The browser is
+an accelerator; durable assets remain available for later ChatKit turns after the tab closes.
 
 The adaptive plan is:
 
@@ -136,14 +140,17 @@ Use automatic provider chunking only when generic large text makes it reasonable
 
 ## Agent boundaries
 
-- **Conversation manager:** owns the user interaction, invokes one bounded browser tool at a time, and delegates interpretation while retaining control of the thread.
-- **Ingestion strategist:** combines intent, metadata, constraints, and specialist evidence into a typed recommendation. Deterministic policy remains the authority that accepts a plan.
+- **Conversation manager:** discovers files, routes to modality specialists, and synthesizes results.
+- **Ingestion strategist:** combines intent, metadata, and specialist evidence into a provisional
+  descriptive approach. It does not create jobs or executable steps.
 - **Document specialist:** interprets browser PDF probes, isolated provider probes, text extraction, and page/layout evidence.
 - **Structured-data specialist:** interprets CSV head/statistic results plus bounded JSON characters and safe JSONPath results.
 - **Media specialist:** plans diarization and bounded frame sampling/refinement as separate aligned evidence channels.
 - **Image specialist:** reasons about explicitly supplied visual evidence and batching/contact-sheet needs.
 
-Specialists do not recursively delegate, own storage credentials, delete data, or mutate thread membership. Model-generated tool input is validated again at the tool boundary.
+Modality specialists own their inspection tools and hand control back to the root. They do not call
+one another, own storage credentials, delete data, or mutate thread membership. Model-generated
+tool input is validated again at the tool boundary.
 
 The current browser workspace is deliberately labeled `local_browser_only`. Its opaque IDs make the ChatKit client-tool loop usable before upload routes exist, but they are not `Asset` IDs and cannot be used for provider upload. Rendered PDF pages and ranges are likewise `transient_browser_only`; the UI previews them while the tool result instructs the agent that backend upload and finalization are still required.
 
@@ -151,8 +158,8 @@ The current browser workspace is deliberately labeled `local_browser_only`. Its 
 
 1. Add upload-ticket/finalization endpoints, quarantine promotion, hashes, and the SQLAlchemy asset repository.
 2. Add include/exclude/list endpoints and connect the ChatKit attachment flow.
-3. Persist plan revisions and client-tool results; add approval UI and ingestion progress.
-4. Materialize bucket objects into controlled temporary files for `CsvAnalyzer` and media/PDF workers.
+3. Add the next bounded ingestion tools and render their calls/results as ChatKit activity.
+4. Materialize bucket objects into controlled temporary files for CSV, media, and PDF tools.
 5. Add isolated OpenAI PDF probe, Files, transcription/diarization, and vector-store gateways with expiry cleanup.
-6. Add worker retries, cancellation, idempotency keys, quotas, and observability.
+6. Add per-tool cancellation, idempotency, quotas, and concise observability.
 7. Evaluate groundedness, page/timestamp provenance, table-stat correctness, isolation, and failure behavior.

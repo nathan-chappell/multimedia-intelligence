@@ -65,3 +65,21 @@ async def test_model_hook_logs_ids_and_usage_without_content(capsys: object) -> 
     assert f'"turn_id":"{correlation.turn_id}"' in captured.err
     assert "private prompt contents" not in captured.err
     assert "private model output" not in captured.err
+
+
+async def test_handoff_hook_logs_only_agent_names(capsys: object) -> None:
+    configure_logging(TEST_SETTINGS)
+    hook = AgentRunLoggingHooks(
+        RunCorrelation.create(group_id="thread-123", turn_id="message-456")
+    )
+    context = RunContextWrapper(context=None)
+    source: Agent[None] = Agent(name="Root conversation agent")
+    target: Agent[None] = Agent(name="Structured data specialist")
+
+    await hook.on_handoff(context, source, target)
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    payload = json.loads(captured.err.splitlines()[-1])
+
+    assert payload["event"] == "agent.handoff"
+    assert payload["source"] == source.name
+    assert payload["target"] == target.name

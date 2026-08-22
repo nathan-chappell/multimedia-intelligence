@@ -17,10 +17,16 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     admin_user_id: str = "user_admin"
     admin_username: str = "admin"
-    admin_bearer_token: SecretStr = Field(
-        default=SecretStr("local-development-admin-token"),
+    admin_password: SecretStr = Field(
+        default=SecretStr("local-development-admin-password"),
+        validation_alias=AliasChoices("ADMIN_PASSWORD", "ADMIN_BEARER_TOKEN"),
         repr=False,
     )
+    jwt_secret_key: SecretStr = Field(
+        default=SecretStr("local-development-jwt-secret-change-this-before-production"),
+        repr=False,
+    )
+    jwt_access_token_minutes: Annotated[int, Field(ge=5, le=24 * 60)] = 60
     openai_api_key: str | None = Field(default=None, repr=False)
     openai_transcription_model: str = "gpt-4o-transcribe-diarize"
     openai_tracing_enabled: bool = True
@@ -46,13 +52,8 @@ class Settings(BaseSettings):
     )
     signed_download_ttl_seconds: Annotated[int, Field(ge=1, le=7 * 24 * 60 * 60)] = 900
     max_upload_bytes: Annotated[int, Field(gt=0)] = 5 * 1024 * 1024 * 1024
-    max_direct_context_bytes: Annotated[int, Field(gt=0)] = 64 * 1024
-    max_json_probe_bytes: Annotated[int, Field(gt=0)] = 16 * 1024
-    max_provider_file_bytes: Annotated[int, Field(gt=0)] = 512 * 1024 * 1024
-    max_vision_pdf_bytes: Annotated[int, Field(gt=0)] = 40 * 1024 * 1024
     max_client_tool_result_bytes: Annotated[int, Field(ge=1024, le=1024 * 1024)] = 256 * 1024
     chatkit_max_page_size: Annotated[int, Field(ge=1, le=500)] = 100
-    frame_interval_seconds: Annotated[int, Field(ge=1, le=3600)] = 30
     file_retention_hours: Literal[24] = 24
     expiration_sweep_seconds: Annotated[int, Field(ge=60, le=24 * 60 * 60)] = 3600
     cors_origins: tuple[str, ...] = ("http://localhost:5173",)
@@ -65,16 +66,12 @@ class Settings(BaseSettings):
             raise ValueError("object_store_prefix must contain at least one path segment")
         return f"{normalized}/"
 
-    def model_post_init(self, _context: object) -> None:
-        bounded_limits = {
-            "max_direct_context_bytes": self.max_direct_context_bytes,
-            "max_json_probe_bytes": self.max_json_probe_bytes,
-            "max_provider_file_bytes": self.max_provider_file_bytes,
-            "max_vision_pdf_bytes": self.max_vision_pdf_bytes,
-        }
-        invalid = [name for name, value in bounded_limits.items() if value > self.max_upload_bytes]
-        if invalid:
-            raise ValueError(f"Processing limits exceed max_upload_bytes: {', '.join(invalid)}")
+    @field_validator("jwt_secret_key")
+    @classmethod
+    def validate_jwt_secret_key(cls, value: SecretStr) -> SecretStr:
+        if len(value.get_secret_value()) < 32:
+            raise ValueError("jwt_secret_key must contain at least 32 characters")
+        return value
 
     def file_expires_at(self, now: datetime | None = None) -> datetime:
         baseline = now or datetime.now(UTC)

@@ -2,7 +2,7 @@
 
 FROM node:22-alpine AS frontend-build
 WORKDIR /app/frontend
-ARG VITE_API_BEARER_TOKEN=local-development-admin-token
+ARG VITE_API_BEARER_TOKEN=
 ENV VITE_API_BEARER_TOKEN=${VITE_API_BEARER_TOKEN}
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci

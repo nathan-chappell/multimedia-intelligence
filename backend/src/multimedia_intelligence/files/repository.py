@@ -1,29 +1,20 @@
 from __future__ import annotations
 
-import json
-from dataclasses import asdict, replace
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from multimedia_intelligence.chat.store import ThreadRow
 
 from .domain import (
-    ArtifactKind,
     Asset,
     DerivedArtifact,
-    IngestionPlan,
-    PlanAction,
-    PlanState,
-    PlanStep,
-    StepCondition,
     ThreadAssetInclude,
 )
 from .records import (
     AssetRow,
     DerivedArtifactRow,
-    IngestionPlanRow,
     ThreadAssetIncludeRow,
 )
 
@@ -77,69 +68,6 @@ class SqlAlchemyAssetRepository:
                 )
             )
 
-    async def save_plan(self, plan: IngestionPlan, owner_id: str) -> None:
-        async with self.sessions.begin() as session:
-            include_owner = await session.scalar(
-                select(ThreadAssetIncludeRow.owner_id).where(
-                    ThreadAssetIncludeRow.id == plan.include_id
-                )
-            )
-            if include_owner != owner_id:
-                raise ValueError("Plan include is not owned by the current user")
-            session.add(
-                IngestionPlanRow(
-                    id=plan.id,
-                    include_id=plan.include_id,
-                    revision=plan.revision,
-                    state=plan.state,
-                    payload=json.dumps(asdict(plan), separators=(",", ":"), sort_keys=True),
-                    created_at=datetime.now(UTC),
-                )
-            )
-
-    async def load_plan(self, plan_id: str, owner_id: str) -> IngestionPlan:
-        async with self.sessions() as session:
-            row = await session.scalar(
-                select(IngestionPlanRow)
-                .join(
-                    ThreadAssetIncludeRow,
-                    ThreadAssetIncludeRow.id == IngestionPlanRow.include_id,
-                )
-                .where(
-                    IngestionPlanRow.id == plan_id,
-                    ThreadAssetIncludeRow.owner_id == owner_id,
-                )
-            )
-        if row is None:
-            raise ValueError("Ingestion plan not found")
-        return _plan_from_row(row)
-
-    async def transition_plan(
-        self,
-        plan_id: str,
-        owner_id: str,
-        expected: PlanState,
-        target: PlanState,
-    ) -> IngestionPlan:
-        owned_include_ids = select(ThreadAssetIncludeRow.id).where(
-            ThreadAssetIncludeRow.owner_id == owner_id
-        )
-        async with self.sessions.begin() as session:
-            result = await session.execute(
-                update(IngestionPlanRow)
-                .where(
-                    IngestionPlanRow.id == plan_id,
-                    IngestionPlanRow.include_id.in_(owned_include_ids),
-                    IngestionPlanRow.state == expected,
-                )
-                .values(state=target)
-            )
-            if result.rowcount != 1:  # type: ignore[attr-defined]
-                raise ValueError(
-                    f"Plan must be in {expected.value!r} state before moving to {target.value!r}"
-                )
-        return replace(await self.load_plan(plan_id, owner_id), state=target)
-
     async def save_artifact(self, artifact: DerivedArtifact) -> None:
         location = artifact.location
         async with self.sessions.begin() as session:
@@ -159,30 +87,3 @@ class SqlAlchemyAssetRepository:
                     created_at=datetime.now(UTC),
                 )
             )
-
-
-def _plan_from_row(row: IngestionPlanRow) -> IngestionPlan:
-    payload = json.loads(row.payload)
-    steps = tuple(
-        PlanStep(
-            action=PlanAction(step["action"]),
-            capability=step["capability"],
-            output_kind=(
-                ArtifactKind(step["output_kind"]) if step.get("output_kind") is not None else None
-            ),
-            parameters=step.get("parameters", {}),
-            condition=StepCondition(step.get("condition", StepCondition.ALWAYS)),
-        )
-        for step in payload["steps"]
-    )
-    return IngestionPlan(
-        id=row.id,
-        include_id=row.include_id,
-        revision=row.revision,
-        state=PlanState(row.state),
-        strategy=payload["strategy"],
-        rationale=tuple(payload["rationale"]),
-        steps=steps,
-        warnings=tuple(payload.get("warnings", ())),
-        requires_approval=payload.get("requires_approval", False),
-    )

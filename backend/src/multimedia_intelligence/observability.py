@@ -172,6 +172,14 @@ class AgentRunLoggingHooks(RunHooks[Any]):
             total_tokens=usage.total_tokens,
         )
 
+    async def on_handoff(
+        self,
+        context: RunContextWrapper[Any],
+        from_agent: Agent[Any],
+        to_agent: Agent[Any],
+    ) -> None:
+        self._log("agent.handoff", source=from_agent.name, target=to_agent.name)
+
     async def on_llm_start(
         self,
         context: RunContextWrapper[Any],

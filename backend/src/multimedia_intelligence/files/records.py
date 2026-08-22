@@ -44,19 +44,6 @@ class ThreadAssetIncludeRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
-class IngestionPlanRow(Base):
-    __tablename__ = "ingestion_plans"
-    __table_args__ = (UniqueConstraint("include_id", "revision"),)
-    id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    include_id: Mapped[str] = mapped_column(
-        ForeignKey("thread_asset_includes.id", ondelete="CASCADE"), index=True
-    )
-    revision: Mapped[int] = mapped_column(default=1)
-    state: Mapped[str] = mapped_column(String(64), index=True)
-    payload: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-
-
 class DerivedArtifactRow(Base):
     """Regenerable output; provider IDs never substitute for bucket locations."""
 

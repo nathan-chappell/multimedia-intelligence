@@ -22,7 +22,7 @@ def build_asset_router(
 
     @router.get("/{asset_id}/preview", response_class=RedirectResponse)
     async def preview_asset(asset_id: str, request: Request) -> RedirectResponse:
-        user = await authenticate_request(request, sessions)
+        user = await authenticate_request(request, sessions, settings)
         async with sessions() as session:
             row = await session.get(AssetRow, asset_id)
         if row is None or row.owner_id != user.id or row.state != AssetState.STORED:

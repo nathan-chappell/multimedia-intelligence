@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw
 from pydantic import BaseModel, ConfigDict
 from pypdf import PdfWriter
 
-from multimedia_intelligence.chat.agent import build_assistant
+from multimedia_intelligence.agents import AssistantGraph
 from multimedia_intelligence.config import get_settings
 from multimedia_intelligence.context import ClientInfo, RequestContext
 from multimedia_intelligence.files.policy import FileRoute
@@ -203,7 +203,7 @@ async def _run_live_agent(
     group_id = f"pytest-{scenario}-{uuid4().hex[:8]}"
     correlation = RunCorrelation.create(group_id=group_id, turn_id=scenario)
     hooks = AgentRunLoggingHooks(correlation)
-    agent = build_assistant(model=LIVE_MODEL, hooks=hooks)
+    agent = AssistantGraph(model=LIVE_MODEL, hooks=hooks).root
     request_context = RequestContext(
         client=ClientInfo(user_id="test_user", username="behavioral-test")
     )

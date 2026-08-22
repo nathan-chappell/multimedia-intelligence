@@ -8,9 +8,7 @@ from typing import Protocol
 from .domain import (
     Asset,
     DerivedArtifact,
-    IngestionPlan,
     ObjectLocation,
-    PlanState,
     ThreadAssetInclude,
 )
 
@@ -62,18 +60,6 @@ class AssetRepository(Protocol):
 
     async def save_include(self, include: ThreadAssetInclude) -> None: ...
 
-    async def save_plan(self, plan: IngestionPlan, owner_id: str) -> None: ...
-
-    async def load_plan(self, plan_id: str, owner_id: str) -> IngestionPlan: ...
-
-    async def transition_plan(
-        self,
-        plan_id: str,
-        owner_id: str,
-        expected: PlanState,
-        target: PlanState,
-    ) -> IngestionPlan: ...
-
     async def save_artifact(self, artifact: DerivedArtifact) -> None: ...
 
 
@@ -98,7 +84,3 @@ class ProviderFileGateway(Protocol):
 
 class TextIndex(Protocol):
     async def index(self, artifact: DerivedArtifact) -> str: ...
-
-
-class IngestionQueue(Protocol):
-    async def enqueue(self, plan: IngestionPlan) -> str: ...

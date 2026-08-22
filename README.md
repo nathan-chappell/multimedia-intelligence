@@ -2,7 +2,7 @@
 
 A conversation-scoped multimedia assistant: each chat is grounded only in the files attached to that chat. The first-pass implementation combines a Vite/React frontend, self-hosted OpenAI ChatKit, a FastAPI backend, the OpenAI Agents SDK, and a SQLAlchemy-backed ChatKit store.
 
-> Status: executable foundation. Chat streaming and persistence are wired. A request-scoped manager delegates to ingestion, document, structured-data, media, and image specialists. The artifact panel stages local files and ChatKit can pause for bounded text, JSON, CSV, and PDF browser tools. The asset/include/artifact domain, deterministic planner, typed Railway/S3 adapter, server CSV/PDF analysis, and transient PDF previews are implemented. Upload finalization, provider gateways, workers, and final artifact-to-agent input conversion remain milestones.
+> Status: executable foundation. Chat streaming and persistence are wired. A request-scoped manager delegates to ingestion, document, structured-data, media, and image specialists. The artifact panel stages local files and ChatKit can pause for bounded text, JSON, CSV, and PDF browser tools. The asset/include/artifact domain, descriptive ingestion strategy, typed Railway/S3 adapter, server CSV/PDF analysis, and transient PDF previews are implemented. Upload finalization, provider gateways, additional ingestion tools, and final artifact-to-agent input conversion remain milestones.
 
 ## Why this shape
 
@@ -17,7 +17,7 @@ Browser
 FastAPI                              │
   ├─ ChatKitServer ── Agents SDK ─── OpenAI Responses API
   ├─ asset service ──────────────── S3-compatible object store (canonical)
-  ├─ ingestion planner/workers ──── provider files, transcription, analysis
+  ├─ ingestion tools ────────────── provider files, transcription, analysis
   ├─ retrieval adapters ─────────── OpenAI text/vector search
   └─ SQLAlchemy stores ──────────── SQLite now / Postgres later
 ```
@@ -58,8 +58,18 @@ npm --prefix frontend run dev
 ```
 
 Open <http://localhost:5173>. The Vite development server proxies `/api` and `/chatkit` to FastAPI.
-The local ChatKit client sends the bearer token configured by `VITE_API_BEARER_TOKEN`; it must
-match `ADMIN_BEARER_TOKEN`. Change both defaults outside local development.
+Sign in with the built-in `ADMIN_USERNAME` and `ADMIN_PASSWORD` at <http://localhost:8000/docs>.
+Swagger's **Authorize** dialog obtains a short-lived JWT from `/api/auth/token` and exposes the
+admin-only user CRUD routes. To use the same JWT in the local frontend without adding a login UI,
+store it in the browser console and reload:
+
+```js
+localStorage.setItem("api_bearer_token", "<access_token>")
+```
+
+Set `JWT_SECRET_KEY` to at least 32 random characters outside local development. A build-time
+`VITE_API_BEARER_TOKEN` remains available for temporary testing but should not be used in a
+production image.
 
 To exercise the production-shaped build:
 
@@ -73,15 +83,21 @@ Then open <http://localhost:8000>.
 
 - **Self-hosted ChatKit:** preserves control over authentication, conversation-scoped context, tools, storage, and file lifecycle while retaining ChatKit's UI and streaming protocol.
 - **Agents SDK:** owns the model/tool loop and streams through ChatKit's `stream_agent_response` adapter.
-- **Manager plus specialists:** the user-facing manager retains the conversation and invokes non-recursive purpose specialists as tools. ChatKit's model picker is applied to every agent in the request graph with medium reasoning; there is no hidden server model default.
-- **Client tools:** the manager can pause a turn while the browser lists staged files, reads bounded text/JSON, computes CSV samples/statistics, or inspects/renders/splits PDFs. Results are typed evidence, not proof of durable storage.
-- **SQLAlchemy store:** ChatKit thread/item payloads are stored as version-tolerant JSON with indexed relational identity and timestamps. SQLite keeps local setup small; the same boundary can move to Postgres.
+- **Root plus specialists:** the root discovers files and hands content work to modality specialists.
+  Specialists return control after gathering evidence; the ingestion strategist remains a structured
+  agent tool. ChatKit's model picker applies to the entire graph.
+- **Client tools:** the root can list staged files. Document and structured-data specialists own the
+  relevant text, PDF, CSV, and JSON browser tools. Results are typed evidence, not proof of durable
+  storage.
+- **SQLAlchemy store:** ChatKit thread/item payloads are stored as version-tolerant JSON with indexed relational identity and timestamps. Each thread owns one OpenAI conversation ID, reused for turns and client-tool continuations and deleted with the thread. Removing local history for a retry rotates the conversation and replays only the surviving items. SQLite keeps local setup small; the same boundary can move to Postgres.
 - **Conversation isolation:** attachment records carry a `thread_id`. Agent input assembly must reject any attachment not belonging to the active thread.
 - **File routing before inference:** text-like files, PDFs, images, and transcribable media are classified explicitly. Unknown formats are rejected instead of being silently sent to a model.
 - **Bucket first:** every accepted original is durably written to our object store before inspection or provider upload. OpenAI file IDs and vector-store IDs are disposable references, not storage.
 - **Include is not upload:** a thread include is a reversible relationship to an asset. The same asset can be included in multiple threads without duplicating the original.
 - **Derived artifacts are replaceable:** previews, transcripts, page renders, sampled frames, chunks, profiles, and provider/index IDs can be deleted and regenerated without losing the original.
-- **Planner before executor:** an ingestion agent recommends a structured plan; deterministic policy validates ownership, limits, capabilities, and approval requirements; asynchronous workers execute idempotent steps.
+- **Interactive ingestion:** the ingestion agent describes a provisional approach. The root performs
+  bounded work through ChatKit tool calls and revises the approach as results reveal more. Tool
+  boundaries validate ownership, limits, and side effects independently.
 - **Text retrieval, bounded vision:** OpenAI vector stores are the default text-retrieval path. Visual embeddings are deferred; PDFs, images, and sampled video frames use bounded vision calls with retained provenance.
 
 ## Asset and inclusion pipeline
@@ -97,8 +113,8 @@ The state machine is deliberately split:
 
 1. **Upload asset:** validate envelope, stream to a quarantine key, scan/sniff, hash, and promote to an immutable bucket key.
 2. **Include asset:** create a `ThreadAssetInclude` with user intent; this does not copy or re-upload the original.
-3. **Recommend plan:** inspect metadata and bounded samples, then propose modality-specific steps.
-4. **Approve and execute:** policy gates the plan; workers create durable derived artifacts and optional provider/index references.
+3. **Describe an approach:** inspect metadata and bounded samples, then state a provisional strategy.
+4. **Work through ChatKit:** perform one validated tool call at a time and adapt to each result.
 5. **Use in chat:** materialize only ready artifacts belonging to active includes for the current thread.
 6. **Preview:** issue short-lived signed URLs and ranged/derived previews. Large originals are never loaded wholesale into browser memory.
 7. **Exclude/delete:** excluding removes the relationship. Asset deletion is a separate lifecycle operation that checks references and cleans up provider copies.
@@ -114,7 +130,7 @@ development database; migrations are intentionally deferred.
 
 ## Tests
 
-The fast suite includes agent graph/tool-contract tests, deterministic planning tests, storage adapter tests, and file analyzers. The PDF behavioral test uses the local textbook under `tmp/files` when present and verifies that a table-of-contents region is found without an API call.
+The fast suite includes agent graph/tool-contract tests, storage adapter tests, and file analyzers. The PDF behavioral test uses the local textbook under `tmp/files` when present and verifies that a table-of-contents region is found without an API call.
 
 ```bash
 .venv/bin/ruff check --no-cache backend/src backend/tests
@@ -144,14 +160,14 @@ TMPDIR=/tmp RUN_OPENAI_BEHAVIORAL=1 \
 
 The live harness models the same pause/resume boundary as ChatKit:
 
-1. Run the root agent until it requests a client tool and stops.
+1. Run the graph until the active agent requests a client tool and stops.
 2. Execute that tool against fixture-backed browser files.
 3. Validate and normalize the result through the production Pydantic result model.
 4. Replace the waiting `function_call_output` for that exact call ID in `RunResult.to_input_list()`.
-5. Replay the full history and continue until the root returns a final answer or reaches the bounded
-   client-tool round limit.
+5. Resume the agent that issued the tool call and continue until the graph returns a final answer or
+   reaches the bounded client-tool round limit.
 
-Deterministic tests cover the executor contracts and exact call-ID replacement without API calls.
+Deterministic tests cover tool contracts and exact call-ID replacement without API calls.
 The fixture client currently mirrors text, JSON, CSV, and PDF inspection. Image, audio, and video
 scenarios can exercise metadata discovery and agent orchestration, but the frontend does not yet
 expose client tools that return visual previews, audio probes, or video frame/transcript evidence;
@@ -161,9 +177,9 @@ those scenarios must report insufficient content evidence rather than pretending
 
 Production ChatKit runs and live tests use the same Agents SDK tracing policy. Each workflow gets
 an OpenAI trace ID, opaque conversation group ID, and opaque turn ID. Those identifiers accompany
-every local agent/model/tool lifecycle event, including nested specialist runs. The SDK supplies
-the agent, generation, and function-tool spans; the application does not duplicate them with custom
-spans. Local logs retain OpenAI request and response IDs and token counts. Prompts, model output,
+every local agent/model/tool lifecycle event, including specialist handoffs. The SDK supplies the
+agent, generation, function-tool, and handoff spans; the application does not duplicate them. Local
+logs retain OpenAI request and response IDs and token counts. Prompts, model output,
 tool arguments, tool results, and file contents are excluded by default. This preserves the request
 IDs OpenAI support uses for API troubleshooting without turning application logs into another
 content store.
@@ -184,10 +200,10 @@ because debug HTTP logs may include request bodies.
 
 - Replace development user identity with authenticated tenant/user context and authorization checks on every thread and file operation.
 - Move SQLite to Postgres and connect the implemented `S3BlobStore` to upload-ticket/finalization routes, quarantine promotion, signed URLs, versioning, and lifecycle deletion.
-- Run ingestion/transcription asynchronously with idempotency keys, retries, dead-letter handling, and progress events.
+- Add bounded ingestion/transcription tools with idempotency, cancellation, and progress returned through ChatKit.
 - Add malware scanning, content-type sniffing, decompression limits, upload quotas, and image/media safety validation.
 - Add prompt-injection defenses around untrusted file content and make citations/source boundaries visible.
-- Extend the existing ChatKit/thread/Agents/OpenAI trace correlation through ingestion jobs and add latency, quality, and failure metrics.
+- Extend the existing ChatKit/thread/Agents/OpenAI trace correlation through ingestion tool calls and add latency, quality, and failure metrics.
 - Evaluate with a curated set covering groundedness, citation correctness, action-item extraction, speaker/timestamp fidelity, isolation, and refusal when evidence is absent.
 - Add CI for Ruff, mypy, pytest, ESLint, TypeScript, frontend tests, container build, and dependency/security scanning.
 - Add screenshots/video and replace this README's placeholder trade-off language with the author's own final reflections before submission.

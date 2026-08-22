@@ -1,8 +1,9 @@
 # Agent hierarchy and application context
 
-The application has one root agent and five non-recursive specialist subagents. Specialists are
-invoked as Agents SDK tools, so they inherit the same typed `AgentContext[RequestContext]` as the
-root. No identity, database session, or file credential is copied into model input.
+The application has one root agent and five specialist agents. Modality specialists receive the
+conversation through SDK handoffs; the ingestion strategist is a structured-output agent tool.
+Every agent inherits the same typed `AgentContext[RequestContext]`. No identity, database session,
+or file credential is copied into model input.
 
 ```text
 Root conversation agent
@@ -15,42 +16,39 @@ Root conversation agent
 
 ## Root conversation agent
 
-Owns the ChatKit turn, resolves file references, chooses browser or durable evidence, delegates
-interpretation, and synthesizes the final answer. It is the only agent that controls the user-facing
-conversation. Browser tools pause the root turn and resume it after backend Pydantic validation.
+Discovers staged and durable files, selects a modality specialist, and synthesizes the final answer.
+It can list files but cannot read text, parse CSV or JSON, or inspect PDFs. Those capabilities belong
+to specialists. The root hands off content work and exposes the ingestion strategist as a tool.
 
-For a file's initial ingestion, the root follows a fixed orchestration contract: obtain bounded
-overview evidence, consult the route-specific specialist, pass that overview with metadata and user
-intent to the ingestion strategist, then synthesize an overview and proposed ingestion strategy.
-The specialist pair advises; deterministic backend policy remains the authority for executable plan
-validation and approval.
+For initial ingestion, the root discovers the file and hands off to the route-specific specialist.
+The specialist gathers bounded evidence, then returns control. The root asks the ingestion
+strategist for a provisional approach. The approach is descriptive and may change with new results.
 
 ## Behavioral test execution
 
 Agent tests keep the same root/specialist hierarchy and typed application context as production.
-The test driver wraps the root in a bounded outer continuation loop. When the SDK run stops at a
-browser tool, a fixture client executes the operation against the staged test file, the production
-Pydantic model validates the result, and the driver resumes from the complete SDK input history with
-the validated output attached to the original function-call ID. Specialist tools continue inside
-the SDK run normally; only the browser boundary is simulated.
+The test driver wraps the agent graph in a bounded continuation loop. When the active agent stops at
+a browser tool, a fixture client executes it, the production Pydantic model validates the result,
+and the driver resumes the same active agent with the output attached to the original call ID. The
+production server similarly maps each client-tool continuation to its owning specialist.
 
-This makes the tests exercise three distinct contracts: the root chooses an appropriate browser
-operation, untrusted client results satisfy the backend schema, and the root delegates overview then
-strategy after seeing the returned evidence. The continuation loop has a hard round limit so a
-model repeatedly requesting client work fails clearly instead of hanging the suite.
+This exercises routing, specialist tool choice, validation of untrusted browser results, handoff
+back to the root, and ingestion-strategy delegation. The loop has a hard round limit.
 
 ## Specialists
 
-- **Ingestion strategist:** recommends representation and processing plans. It does not execute or
-  approve plans.
-- **Document specialist:** interprets text and PDF evidence while preserving page/layout provenance.
-- **Structured-data specialist:** interprets bounded CSV/JSON evidence and proposes narrow follow-up
-  queries.
-- **Media specialist:** handles timestamp-aligned transcript and video-frame strategy.
-- **Image specialist:** interprets supplied visual evidence and recommends bounded batching.
+- **Ingestion strategist:** describes a provisional, adaptable approach; can list durable file
+  metadata. Its Pydantic output contains only a summary, an approach, and things to watch for.
+- **Document specialist:** owns staged text reads and PDF inspect/render/extract tools, plus durable
+  file lookup and bounded text reads.
+- **Structured-data specialist:** owns staged CSV head/statistics and JSON character/JSONPath tools,
+  plus durable file lookup and bounded text reads.
+- **Media specialist:** interprets audio and video evidence; can list durable file metadata.
+- **Image specialist:** interprets visual evidence; can list durable file metadata.
 
-Specialists cannot invoke one another. They may read the same conversation-scoped durable reference
-list, but mutating storage and plan transitions remain deterministic application operations.
+Modality specialists cannot invoke one another; they only return control to the root. Client tools
+pause the active specialist and resume that specialist after validation. Durable tools remain
+read-only and owner/thread scoped.
 
 ## Shared application context
 
@@ -60,9 +58,9 @@ list, but mutating storage and plan transitions remain deterministic application
 - `AgentDataAccess`: a narrow owner-scoped interface for database-backed entity information;
 - request metadata, selected model, and reasoning settings.
 
-`ScopedAgentDataAccess` currently exposes only unexpired, ready file references for the active
-owner and thread. It returns stable `@asset_id` references and preview paths. Agents never receive a
-raw SQLAlchemy session, unrestricted repository, bearer token, S3 credentials, or provider keys.
+`ScopedAgentDataAccess` exposes unexpired ready references and bounded text ranges for the active
+owner and thread. Agents never receive a raw SQLAlchemy session, unrestricted repository, bearer
+token, S3 credentials, or provider keys.
 
 ## File lifetime
 

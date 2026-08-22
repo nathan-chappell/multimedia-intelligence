@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from typing import Any
 
 from agents import function_tool
@@ -15,6 +15,25 @@ type ToolArguments = dict[str, Any]
 type ClientToolInvoker = Callable[
     [ChatKitToolContext, str, ToolArguments], Awaitable[dict[str, object]]
 ]
+
+FILE_DISCOVERY_CLIENT_TOOLS = ("list_included_files",)
+DOCUMENT_CLIENT_TOOLS = (
+    "read_text_chars",
+    "pdf_inspect",
+    "pdf_render_page",
+    "pdf_extract_range",
+)
+STRUCTURED_DATA_CLIENT_TOOLS = (
+    "csv_head",
+    "csv_stats",
+    "json_chars",
+    "json_path",
+)
+CLIENT_TOOL_NAMES = (
+    *FILE_DISCOVERY_CLIENT_TOOLS,
+    *DOCUMENT_CLIENT_TOOLS,
+    *STRUCTURED_DATA_CLIENT_TOOLS,
+)
 
 
 async def _request_client_tool(
@@ -37,6 +56,8 @@ async def _request_client_tool(
 
 def build_file_client_tools(
     invoker: ClientToolInvoker = _request_client_tool,
+    *,
+    names: Collection[str] | None = None,
 ) -> list[Tool]:
     """Build tools backed by files held in the user's browser.
 
@@ -171,14 +192,20 @@ def build_file_client_tools(
             },
         )
 
-    return [
+    tools: list[Tool] = [
         list_included_files_tool,
         read_text_chars_tool,
-        json_chars_tool,
-        json_path_tool,
         csv_head_tool,
         csv_stats_tool,
         pdf_inspect_tool,
         pdf_render_page_tool,
         pdf_extract_range_tool,
+        json_chars_tool,
+        json_path_tool,
     ]
+    if names is None:
+        return tools
+    unknown = set(names).difference(CLIENT_TOOL_NAMES)
+    if unknown:
+        raise ValueError(f"Unknown file client tools: {', '.join(sorted(unknown))}")
+    return [tool for tool in tools if tool.name in names]

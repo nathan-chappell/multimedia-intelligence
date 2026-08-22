@@ -10,6 +10,14 @@ from pydantic import SkipValidation
 class AgentDataAccess(Protocol):
     async def list_ready_file_references(self, thread_id: str) -> tuple[dict[str, object], ...]: ...
 
+    async def read_ready_text_range(
+        self,
+        thread_id: str,
+        asset_id: str,
+        start: int,
+        count: int,
+    ) -> dict[str, object]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ClientInfo:

@@ -9,7 +9,7 @@ from typing import Any, Protocol, cast
 
 import pypdfium2 as pdfium
 from agents import Agent, RunConfig, RunHooks, Runner, RunResult
-from agents.items import ToolCallItem
+from agents.items import HandoffCallItem, ToolCallItem
 from chatkit.agents import AgentContext, ClientToolCall
 from pydantic import BaseModel
 from pypdf import PdfReader, PdfWriter
@@ -72,6 +72,7 @@ class ClientToolAgentLoop:
 
     async def run(self, input_value: AgentInput) -> ClientToolLoopResult:
         current_input = input_value
+        current_agent = self.agent
         executions: list[ClientToolExecution] = []
         agent_tool_calls: list[str] = []
         openai_request_ids: list[str] = []
@@ -79,17 +80,17 @@ class ClientToolAgentLoop:
         for _round in range(self.max_client_rounds + 1):
             self.context.client_tool_call = None
             result = await Runner.run(
-                self.agent,
+                current_agent,
                 current_input,
                 context=self.context,
                 hooks=self.hooks,
                 run_config=self.run_config,
             )
-            agent_tool_calls.extend(
-                item.tool_name
-                for item in result.new_items
-                if isinstance(item, ToolCallItem) and item.tool_name is not None
-            )
+            for item in result.new_items:
+                if isinstance(item, ToolCallItem) and item.tool_name is not None:
+                    agent_tool_calls.append(item.tool_name)
+                elif isinstance(item, HandoffCallItem):
+                    agent_tool_calls.append(item.raw_item.name)
             openai_request_ids.extend(
                 response.request_id
                 for response in result.raw_responses
@@ -123,6 +124,7 @@ class ClientToolAgentLoop:
                 )
             )
             current_input = _replace_function_output(result.to_input_list(), call_id, output)
+            current_agent = result.last_agent
 
         raise AssertionError("Unreachable client-tool loop state")
 

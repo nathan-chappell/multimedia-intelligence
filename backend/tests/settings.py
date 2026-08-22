@@ -12,5 +12,6 @@ class _TestSettings(Settings):
 
 TEST_SETTINGS = _TestSettings(
     app_env="test",
-    admin_bearer_token=SecretStr("test-admin-token"),
+    admin_password=SecretStr("test-admin-password"),
+    jwt_secret_key=SecretStr("test-jwt-secret-at-least-thirty-two-characters"),
 )

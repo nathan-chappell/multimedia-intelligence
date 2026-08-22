@@ -37,7 +37,6 @@ async def initialize_schema(engine: AsyncEngine) -> None:
     # tables and canonical asset tables separate while sharing one metadata registry.
     from multimedia_intelligence import auth as _auth_models  # noqa: F401
     from multimedia_intelligence.chat import store as _chat_models  # noqa: F401
-    from multimedia_intelligence.files import queue as _queue_models  # noqa: F401
     from multimedia_intelligence.files import records as _asset_models  # noqa: F401
 
     async with engine.begin() as connection:

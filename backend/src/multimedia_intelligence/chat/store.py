@@ -7,19 +7,24 @@ from typing import Any
 from chatkit.store import NotFoundError, Store
 from chatkit.types import Attachment, Page, ThreadItem, ThreadMetadata
 from pydantic import TypeAdapter
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, and_, delete, or_, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql.elements import ColumnElement
 
 from multimedia_intelligence.context import RequestContext
 from multimedia_intelligence.db import Base, initialize_schema
+from multimedia_intelligence.observability import log_event, opaque_id
+
+from .conversations import ConversationGateway
 
 
 class ThreadRow(Base):
     __tablename__ = "chat_threads"
     __table_args__ = (Index("ix_chat_threads_owner_cursor", "owner_id", "created_at", "id"),)
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    conversation_dirty: Mapped[bool] = mapped_column(Boolean, default=False)
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     payload: Mapped[str] = mapped_column(Text)
@@ -67,11 +72,13 @@ class SqlAlchemyChatKitStore(Store[RequestContext]):
         self,
         engine: AsyncEngine,
         sessions: async_sessionmaker[AsyncSession],
+        conversation_gateway: ConversationGateway,
         *,
         max_page_size: int = 100,
     ) -> None:
         self.engine = engine
         self.sessions = sessions
+        self.conversation_gateway = conversation_gateway
         self.max_page_size = max_page_size
         self._initialized = False
         self._initialize_lock = asyncio.Lock()
@@ -95,22 +102,79 @@ class SqlAlchemyChatKitStore(Store[RequestContext]):
 
     async def save_thread(self, thread: ThreadMetadata, context: RequestContext) -> None:
         await self.initialize()
-        async with self.sessions.begin() as session:
-            row = await session.get(ThreadRow, thread.id)
-            if row is not None and row.owner_id != context.user_id:
-                raise NotFoundError(f"Thread {thread.id} not found")
-            if row is None:
-                session.add(
-                    ThreadRow(
-                        id=thread.id,
-                        owner_id=context.user_id,
-                        created_at=thread.created_at,
-                        payload=thread.model_dump_json(),
+        created_conversation_id: str | None = None
+        try:
+            async with self.sessions.begin() as session:
+                row = await session.get(ThreadRow, thread.id)
+                if row is not None and row.owner_id != context.user_id:
+                    raise NotFoundError(f"Thread {thread.id} not found")
+                if row is None:
+                    created_conversation_id = await self.conversation_gateway.create()
+                    session.add(
+                        ThreadRow(
+                            id=thread.id,
+                            conversation_id=created_conversation_id,
+                            owner_id=context.user_id,
+                            created_at=thread.created_at,
+                            payload=thread.model_dump_json(),
+                        )
                     )
-                )
-            else:
-                row.created_at = thread.created_at
-                row.payload = thread.model_dump_json()
+                else:
+                    row.created_at = thread.created_at
+                    row.payload = thread.model_dump_json()
+        except Exception:
+            if created_conversation_id is not None:
+                await self.conversation_gateway.delete(created_conversation_id)
+            raise
+        if created_conversation_id is not None:
+            log_event(
+                "conversation.created",
+                thread=opaque_id(thread.id),
+                conversation=opaque_id(created_conversation_id),
+            )
+
+    async def load_conversation_id(self, thread_id: str, context: RequestContext) -> str:
+        await self.initialize()
+        async with self.sessions() as session:
+            row = await session.get(ThreadRow, thread_id)
+        if row is None or row.owner_id != context.user_id:
+            raise NotFoundError(f"Thread {thread_id} not found")
+        return row.conversation_id
+
+    async def prepare_conversation(
+        self,
+        thread_id: str,
+        context: RequestContext,
+    ) -> tuple[str, bool]:
+        """Return the active conversation, rotating it after local history is removed."""
+
+        await self.initialize()
+        replacement_id: str | None = None
+        previous_id: str | None = None
+        try:
+            async with self.sessions.begin() as session:
+                row = await session.get(ThreadRow, thread_id)
+                if row is None or row.owner_id != context.user_id:
+                    raise NotFoundError(f"Thread {thread_id} not found")
+                if not row.conversation_dirty:
+                    return row.conversation_id, False
+                replacement_id = await self.conversation_gateway.create()
+                previous_id = row.conversation_id
+                row.conversation_id = replacement_id
+                row.conversation_dirty = False
+        except Exception:
+            if replacement_id is not None:
+                await self.conversation_gateway.delete(replacement_id)
+            raise
+
+        assert replacement_id is not None and previous_id is not None
+        await self.conversation_gateway.delete(previous_id)
+        log_event(
+            "conversation.rotated",
+            thread=opaque_id(thread_id),
+            conversation=opaque_id(replacement_id),
+        )
+        return replacement_id, True
 
     async def load_threads(
         self, limit: int, after: str | None, order: str, context: RequestContext
@@ -202,9 +266,20 @@ class SqlAlchemyChatKitStore(Store[RequestContext]):
         return _THREAD_ITEM_ADAPTER.validate_json(row.payload)
 
     async def delete_thread(self, thread_id: str, context: RequestContext) -> None:
-        await self.load_thread(thread_id, context)
+        conversation_id = await self.load_conversation_id(thread_id, context)
+        await self.conversation_gateway.delete(conversation_id)
         async with self.sessions.begin() as session:
-            await session.execute(delete(ThreadRow).where(ThreadRow.id == thread_id))
+            await session.execute(
+                delete(ThreadRow).where(
+                    ThreadRow.id == thread_id,
+                    ThreadRow.owner_id == context.user_id,
+                )
+            )
+        log_event(
+            "conversation.deleted",
+            thread=opaque_id(thread_id),
+            conversation=opaque_id(conversation_id),
+        )
 
     async def delete_thread_item(
         self, thread_id: str, item_id: str, context: RequestContext
@@ -214,6 +289,9 @@ class SqlAlchemyChatKitStore(Store[RequestContext]):
             await session.execute(
                 delete(ItemRow).where(ItemRow.id == item_id, ItemRow.thread_id == thread_id)
             )
+            row = await session.get(ThreadRow, thread_id)
+            if row is not None:
+                row.conversation_dirty = True
 
     async def save_attachment(self, attachment: Attachment, context: RequestContext) -> None:
         await self.initialize()
