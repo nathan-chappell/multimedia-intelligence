@@ -1,0 +1,45 @@
+tmp/
+.env
+.env.*
+!.env.example
+.venv/
+.venv-py311-backup/
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+build/
+dist/
+*.egg-info/
+
+# Frontend (dist is excluded from git but created inside the Docker build context)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/test-results/
+*.tsbuildinfo
+
+# Local application state
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+*.swp

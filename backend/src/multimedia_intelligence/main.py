@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from chatkit.server import StreamingResult
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+from multimedia_intelligence.api.assets import build_asset_router
+from multimedia_intelligence.api.health import router as health_router
+from multimedia_intelligence.api.ingestion import build_ingestion_router
+from multimedia_intelligence.auth import authenticate_request, ensure_builtin_admin
+from multimedia_intelligence.chat.server import MultimediaChatServer
+from multimedia_intelligence.chat.store import SqlAlchemyChatKitStore
+from multimedia_intelligence.config import get_settings
+from multimedia_intelligence.context import ClientInfo, RequestContext
+from multimedia_intelligence.db import create_engine_and_session
+from multimedia_intelligence.files.access import ScopedAgentDataAccess
+from multimedia_intelligence.files.expiration import FileExpirationService
+from multimedia_intelligence.files.queue import SqlAlchemyIngestionQueue
+from multimedia_intelligence.files.repository import SqlAlchemyAssetRepository
+from multimedia_intelligence.files.s3_store import S3BlobStore
+from multimedia_intelligence.files.service import IngestionService
+from multimedia_intelligence.observability import configure_logging
+
+settings = get_settings()
+configure_logging(settings)
+engine, sessions = create_engine_and_session(settings.database_url)
+store = SqlAlchemyChatKitStore(engine, sessions, max_page_size=settings.chatkit_max_page_size)
+chatkit_server = MultimediaChatServer(store=store)
+asset_repository = SqlAlchemyAssetRepository(sessions)
+ingestion_queue = SqlAlchemyIngestionQueue(sessions)
+ingestion_service = IngestionService(asset_repository, ingestion_queue, settings)
+file_expiration = FileExpirationService(sessions, lambda: S3BlobStore.from_settings(settings))
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    settings.attachment_dir.mkdir(parents=True, exist_ok=True)
+    await store.initialize()
+    await ensure_builtin_admin(sessions, settings)
+    expiration_stop = asyncio.Event()
+    expiration_task = asyncio.create_task(
+        file_expiration.run(expiration_stop, settings.expiration_sweep_seconds)
+    )
+    yield
+    expiration_stop.set()
+    await expiration_task
+    await engine.dispose()
+
+
+app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(settings.cors_origins),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.include_router(health_router, prefix="/api")
+app.include_router(build_asset_router(sessions, settings), prefix="/api")
+app.include_router(build_ingestion_router(ingestion_service, sessions), prefix="/api")
+
+
+@app.post("/chatkit")
+async def chatkit_endpoint(request: Request) -> Response:
+    user = await authenticate_request(request, sessions)
+    context = RequestContext(
+        client=ClientInfo(user_id=user.id, username=user.username, is_admin=user.is_admin),
+        data_access=ScopedAgentDataAccess(sessions, user.id),
+        request=request,
+    )
+    result = await chatkit_server.process(await request.body(), context=context)
+    if isinstance(result, StreamingResult):
+        return StreamingResponse(result, media_type="text/event-stream")
+    if hasattr(result, "json"):
+        return Response(content=result.json, media_type="application/json")
+    return JSONResponse(result)
+
+
+frontend_dist = Path.cwd() / "frontend" / "dist"
+if frontend_dist.is_dir():
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")

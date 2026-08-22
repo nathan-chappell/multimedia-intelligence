@@ -1,0 +1,20 @@
+start: chars | jsonpath
+
+chars: "Chars" "(" INT "," INT ")"
+jsonpath: "JsonPath" "(" query ("|" query)* ")"
+
+query: "$" selector*
+selector: "." NAME
+        | "[" SIGNED_INT "]"
+        | "[" "*" "]"
+        | "[" ESCAPED_STRING "]"
+        | "[" SINGLE_QUOTED_STRING "]"
+
+NAME: /[A-Za-z_][A-Za-z0-9_-]*/
+SINGLE_QUOTED_STRING: /'([^'\\]|\\.)*'/
+
+%import common.ESCAPED_STRING
+%import common.INT
+%import common.SIGNED_INT
+%import common.WS_INLINE
+%ignore WS_INLINE

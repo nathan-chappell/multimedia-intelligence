@@ -1,0 +1,19 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        VITE_API_BEARER_TOKEN: ${VITE_API_BEARER_TOKEN:-local-development-admin-token}
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////app/data/app.db
+      ATTACHMENT_DIR: /app/data/attachments
+    volumes:
+      - app-data:/app/data
+
+volumes:
+  app-data:

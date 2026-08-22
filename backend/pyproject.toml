@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multimedia-intelligence-backend"
+version = "0.1.0"
+description = "FastAPI and ChatKit backend for conversation-scoped multimedia intelligence"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "aiosqlite>=0.20,<1",
+  "boto3>=1.35,<2",
+  "fastapi>=0.115,<1",
+  "lark>=1.2,<2",
+  "openai>=1.109,<3",
+  "openai-agents>=0.2,<1",
+  "openai-chatkit>=1.4,<2",
+  "pydantic-settings>=2.6,<3",
+  "pillow>=11,<13",
+  "pypdf>=6.16,<7",
+  "python-multipart>=0.0.20,<1",
+  "sqlalchemy[asyncio]>=2.0,<3",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  "mypy>=1.14,<2",
+  "pypdfium2>=4.30,<5",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+  "ruff>=0.9,<1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+multimedia_intelligence = ["files/grammars/*.lark"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "behavioral: deterministic behavior against representative files",
+  "live: opt-in test that spends OpenAI API tokens",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["multimedia_intelligence"]
