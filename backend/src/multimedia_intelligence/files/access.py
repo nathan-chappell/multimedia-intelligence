@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .domain import AssetState, IncludeState, ObjectLocation
+from .policy import classify_file
 from .ports import BlobStore
 from .records import AssetRow, ThreadAssetIncludeRow
 from .retention import as_utc
@@ -50,6 +51,7 @@ class ScopedAgentDataAccess:
                 "filename": asset.filename,
                 "mediaType": asset.media_type,
                 "sizeBytes": asset.size_bytes,
+                "route": classify_file(asset.filename).route.value,
                 "expiresAt": as_utc(asset.expires_at).isoformat(),
                 "previewPath": f"/api/assets/{asset.id}/preview",
             }
@@ -107,6 +109,38 @@ class ScopedAgentDataAccess:
             "text": content.decode("utf-8", errors="replace"),
             "hasMore": end < asset.size_bytes,
         }
+
+    async def ready_file_download_url(self, thread_id: str, asset_id: str) -> str:
+        now = datetime.now(UTC)
+        async with self.sessions() as session:
+            asset = await session.scalar(
+                select(AssetRow)
+                .join(ThreadAssetIncludeRow, ThreadAssetIncludeRow.asset_id == AssetRow.id)
+                .where(
+                    ThreadAssetIncludeRow.thread_id == thread_id,
+                    ThreadAssetIncludeRow.owner_id == self.owner_id,
+                    ThreadAssetIncludeRow.state == IncludeState.READY,
+                    AssetRow.id == asset_id,
+                    AssetRow.owner_id == self.owner_id,
+                    AssetRow.state == AssetState.STORED,
+                    AssetRow.expires_at > now,
+                )
+            )
+        if asset is None:
+            raise ValueError("Ready file is unavailable in this conversation")
+        expires_at = as_utc(asset.expires_at)
+        remaining_seconds = int((expires_at - now).total_seconds())
+        location = ObjectLocation(
+            bucket=asset.bucket,
+            key=asset.object_key,
+            expires_at=expires_at,
+            etag=asset.etag,
+            version_id=asset.version_id,
+        )
+        return await self.blob_store.signed_download_url(
+            location,
+            min(300, remaining_seconds),
+        )
 
 
 def _is_text_media_type(media_type: str) -> bool:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
-from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator
@@ -18,7 +17,7 @@ class Settings(BaseSettings):
     admin_user_id: str = "user_admin"
     admin_username: str = "admin"
     admin_password: SecretStr = Field(
-        default=SecretStr("local-development-admin-password"),
+        default=SecretStr("admin"),
         validation_alias=AliasChoices("ADMIN_PASSWORD", "ADMIN_BEARER_TOKEN"),
         repr=False,
     )
@@ -28,11 +27,10 @@ class Settings(BaseSettings):
     )
     jwt_access_token_minutes: Annotated[int, Field(ge=5, le=24 * 60)] = 60
     openai_api_key: str | None = Field(default=None, repr=False)
-    openai_transcription_model: str = "gpt-4o-transcribe-diarize"
+    openai_dictation_model: str = "gpt-4o-mini-transcribe"
     openai_tracing_enabled: bool = True
     openai_trace_include_sensitive_data: bool = False
     database_url: str = "sqlite+aiosqlite:///./data/app.db"
-    attachment_dir: Path = Path("./data/attachments")
     object_store_bucket: str = Field(
         default="multimedia-intelligence-dev",
         validation_alias=AliasChoices("OBJECT_STORE_BUCKET", "AWS_S3_BUCKET_NAME"),
@@ -52,6 +50,7 @@ class Settings(BaseSettings):
     )
     signed_download_ttl_seconds: Annotated[int, Field(ge=1, le=7 * 24 * 60 * 60)] = 900
     max_upload_bytes: Annotated[int, Field(gt=0)] = 5 * 1024 * 1024 * 1024
+    max_dictation_bytes: Annotated[int, Field(ge=1024, le=25 * 1024 * 1024)] = 25 * 1024 * 1024
     max_client_tool_result_bytes: Annotated[int, Field(ge=1024, le=1024 * 1024)] = 256 * 1024
     chatkit_max_page_size: Annotated[int, Field(ge=1, le=500)] = 100
     file_retention_hours: Literal[24] = 24

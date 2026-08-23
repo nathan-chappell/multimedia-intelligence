@@ -10,9 +10,11 @@ def test_asset_domain_uses_separate_tables() -> None:
         "derived_artifacts",
         "users",
         "chat_threads",
+        "feedback",
     }.issubset(Base.metadata.tables)
     assert "ingestion_plans" not in Base.metadata.tables
     assert "ingestion_jobs" not in Base.metadata.tables
+    assert "chat_attachments" not in Base.metadata.tables
     assert "conversation_id" in Base.metadata.tables["chat_threads"].columns
     assert "conversation_dirty" in Base.metadata.tables["chat_threads"].columns
     assert "password_hash" in Base.metadata.tables["users"].columns

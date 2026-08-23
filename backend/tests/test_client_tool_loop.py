@@ -33,7 +33,7 @@ async def test_fixture_client_lists_and_reads_staged_text(tmp_path: Path) -> Non
         [StagedFile(asset_id="asset_text", path=path, media_type="text/markdown")]
     )
 
-    list_call = ClientToolCall(name="list_included_files", arguments={})
+    list_call = ClientToolCall(name="list_files", arguments={"page": 1})
     listed = _validate(list_call, await client.execute(list_call))
     read_call = ClientToolCall(
         name="read_text_chars",
@@ -42,6 +42,8 @@ async def test_fixture_client_lists_and_reads_staged_text(tmp_path: Path) -> Non
     read = _validate(read_call, await client.execute(read_call))
 
     assert listed["files"][0]["route"] == FileRoute.MARKUP.value  # type: ignore[index]
+    assert listed["pageSize"] == 10
+    assert listed["hasMore"] is False
     assert read["text"] == "beta"
 
 
@@ -90,7 +92,7 @@ async def test_fixture_client_returns_valid_bounded_json_and_csv_results(
     assert stats_result["stats"][0]["mean"] == pytest.approx(15.5)  # type: ignore[index]
 
 
-async def test_fixture_client_inspects_and_extracts_pdf_range(tmp_path: Path) -> None:
+async def test_fixture_client_samples_text_and_extracts_pdf_range(tmp_path: Path) -> None:
     path = tmp_path / "handbook.pdf"
     writer = PdfWriter()
     for _ in range(3):
@@ -100,9 +102,15 @@ async def test_fixture_client_inspects_and_extracts_pdf_range(tmp_path: Path) ->
     client = FixtureFileClient(
         [StagedFile("asset_pdf", path, "application/pdf")]
     )
-    inspect_call = ClientToolCall(
-        name="pdf_inspect",
-        arguments={"assetId": "asset_pdf", "sampleCount": 2},
+    sample_call = ClientToolCall(
+        name="pdf_random_sample",
+        arguments={
+            "assetId": "asset_pdf",
+            "startPage": 1,
+            "endPage": 3,
+            "count": 2,
+            "outputMode": "text_content",
+        },
     )
     extract_call = ClientToolCall(
         name="pdf_extract_range",
@@ -113,11 +121,12 @@ async def test_fixture_client_inspects_and_extracts_pdf_range(tmp_path: Path) ->
         arguments={"assetId": "asset_pdf", "page": 1, "scale": 1.25},
     )
 
-    inspected = _validate(inspect_call, await client.execute(inspect_call))
+    sampled = _validate(sample_call, await client.execute(sample_call))
     extracted = _validate(extract_call, await client.execute(extract_call))
     rendered = _validate(render_call, await client.execute(render_call))
 
-    assert inspected["inspection"]["pageCount"] == 3  # type: ignore[index]
+    assert sampled["pageCount"] == 3
+    assert [page["page"] for page in sampled["pages"]] == [1, 2]  # type: ignore[union-attr]
     assert extracted["sourceAssetId"] == "asset_pdf"
     assert extracted["durability"] == "transient_browser_only"
     assert rendered["kind"] == "pdf_page_image"

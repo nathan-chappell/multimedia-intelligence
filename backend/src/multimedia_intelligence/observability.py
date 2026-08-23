@@ -4,7 +4,8 @@ import hashlib
 import json
 import logging
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -13,6 +14,8 @@ from agents import Agent, ModelResponse, RunConfig, RunHooks
 from agents.run_context import AgentHookContext, RunContextWrapper
 from agents.tool import Tool
 from agents.tracing import gen_trace_id
+from agents.tracing.create import get_current_trace
+from agents.tracing.traces import TraceState, reattach_trace
 
 from multimedia_intelligence.config import Settings
 
@@ -32,6 +35,19 @@ class RunCorrelation:
     def create(cls, *, group_id: str, turn_id: str) -> RunCorrelation:
         return cls(
             trace_id=gen_trace_id(),
+            group_id=opaque_id(group_id),
+            turn_id=opaque_id(turn_id),
+        )
+
+    @classmethod
+    def for_turn(cls, *, group_id: str, turn_id: str) -> RunCorrelation:
+        """Return stable correlation for every server run in one logical chat turn."""
+
+        digest = hashlib.sha256(
+            f"multimedia-intelligence-turn\0{group_id}\0{turn_id}".encode()
+        ).hexdigest()
+        return cls(
+            trace_id=f"trace_{digest[:32]}",
             group_id=opaque_id(group_id),
             turn_id=opaque_id(turn_id),
         )
@@ -85,9 +101,7 @@ def log_event(event: str, **fields: object) -> None:
     """Write a single structured event without prompts, outputs, or file contents."""
 
     payload = {"timestamp": datetime.now(UTC).isoformat(), "event": event, **fields}
-    logging.getLogger(LOGGER_NAME).info(
-        json.dumps(payload, default=str, separators=(",", ":"))
-    )
+    logging.getLogger(LOGGER_NAME).info(json.dumps(payload, default=str, separators=(",", ":")))
 
 
 def opaque_id(value: str) -> str:
@@ -129,6 +143,44 @@ def build_run_config(
         **correlation.fields(),
     )
     return config
+
+
+@contextmanager
+def resume_trace(
+    settings: Settings,
+    *,
+    workflow_name: str,
+    correlation: RunCorrelation,
+    metadata: Mapping[str, str],
+) -> Iterator[None]:
+    """Attach continuation spans to a trace started before a client-side tool call.
+
+    ChatKit resumes client tools in a new HTTP request, while the Agents SDK normally
+    scopes one trace to one ``Runner`` invocation. A reattached trace emits spans with
+    the original trace ID without emitting a duplicate trace-start record.
+    """
+
+    if not settings.openai_tracing_enabled:
+        yield
+        return
+    if get_current_trace() is not None:
+        raise RuntimeError("Cannot resume a trace while another trace is active")
+
+    trace = reattach_trace(
+        TraceState(
+            trace_id=correlation.trace_id,
+            workflow_name=workflow_name,
+            group_id=correlation.group_id,
+            metadata=dict(metadata),
+        )
+    )
+    if trace is None:
+        yield
+        return
+
+    log_event("openai.trace.resumed", workflow=workflow_name, **correlation.fields())
+    with trace:
+        yield
 
 
 def _model_name(agent: Agent[Any]) -> str:

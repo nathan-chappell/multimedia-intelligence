@@ -35,6 +35,9 @@ class ReadOnlyBlobStore:
         self.reads.append((location, start, end))
         return self.content[start:end]
 
+    async def signed_download_url(self, location: ObjectLocation, ttl_seconds: int) -> str:
+        return f"https://objects.example.test/{location.key}?ttl={ttl_seconds}"
+
 
 async def test_ready_references_are_scoped_and_expired_assets_are_deleted() -> None:
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
@@ -118,6 +121,8 @@ async def test_ready_references_are_scoped_and_expired_assets_are_deleted() -> N
         "hasMore": True,
     }
     assert blob_store.reads[0][0].key == "assets/ready"
+    signed_url = await access.ready_file_download_url(thread.id, "asset_ready")
+    assert signed_url == "https://objects.example.test/assets/ready?ttl=300"
 
     delete_store = DeleteOnlyBlobStore()
     expiration = FileExpirationService(sessions, lambda: delete_store)  # type: ignore[arg-type]

@@ -18,6 +18,7 @@ from multimedia_intelligence.auth import authenticate_request, ensure_builtin_ad
 from multimedia_intelligence.chat.conversations import OpenAIConversationGateway
 from multimedia_intelligence.chat.server import MultimediaChatServer
 from multimedia_intelligence.chat.store import SqlAlchemyChatKitStore
+from multimedia_intelligence.chat.transcription import OpenAITranscriptionGateway
 from multimedia_intelligence.config import get_settings
 from multimedia_intelligence.context import ClientInfo, RequestContext
 from multimedia_intelligence.db import create_engine_and_session
@@ -36,14 +37,21 @@ store = SqlAlchemyChatKitStore(
     conversation_gateway,
     max_page_size=settings.chatkit_max_page_size,
 )
-chatkit_server = MultimediaChatServer(store=store)
+transcription_gateway = OpenAITranscriptionGateway(
+    settings.openai_api_key,
+    settings.openai_dictation_model,
+    max_audio_bytes=settings.max_dictation_bytes,
+)
+chatkit_server = MultimediaChatServer(
+    store=store,
+    transcription_gateway=transcription_gateway,
+)
 blob_store = S3BlobStore.from_settings(settings)
 file_expiration = FileExpirationService(sessions, lambda: blob_store)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    settings.attachment_dir.mkdir(parents=True, exist_ok=True)
     await store.initialize()
     await ensure_builtin_admin(sessions, settings)
     expiration_stop = asyncio.Event()
@@ -65,8 +73,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(health_router, prefix="/api")
-app.include_router(build_asset_router(sessions, settings), prefix="/api")
+app.include_router(build_asset_router(sessions, settings, blob_store), prefix="/api")
 app.include_router(build_user_router(sessions, settings), prefix="/api")
+
+
+@app.get("/.well-known/appspecific/com.chrome.devtools.json", include_in_schema=False)
+async def chrome_devtools_discovery() -> JSONResponse:
+    """Acknowledge Chrome's optional workspace discovery probe."""
+
+    return JSONResponse({})
 
 
 @app.post("/chatkit")

@@ -15,6 +15,10 @@ export interface IncludedLocalFile {
   file: File;
   route: FileRoute;
   addedAt: number;
+  durability: "local" | "uploading" | "stored" | "included" | "error";
+  durableAssetId?: string;
+  includeId?: string;
+  saveError?: string;
 }
 
 export interface TransientArtifact {
@@ -31,7 +35,10 @@ export interface FileWorkspaceValue {
   artifacts: TransientArtifact[];
   addFiles: (files: FileList | readonly File[]) => void;
   removeFile: (assetId: string) => void;
+  saveFile: (assetId: string) => Promise<void>;
   getFile: (assetId: string) => IncludedLocalFile | undefined;
+  activeThreadId: string | null;
+  setActiveThreadId: (threadId: string | null) => void;
   registerArtifact: (
     sourceAssetId: string,
     kind: TransientArtifact["kind"],

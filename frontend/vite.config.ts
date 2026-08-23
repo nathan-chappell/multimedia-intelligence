@@ -5,8 +5,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      "/api": "http://localhost:8000",
-      "/chatkit": "http://localhost:8000",
+      "/api": { target: "https://localhost:8000", secure: false },
+      "/chatkit": { target: "https://localhost:8000", secure: false },
     },
   },
 });

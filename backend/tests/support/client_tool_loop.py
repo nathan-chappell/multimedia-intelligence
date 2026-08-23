@@ -19,7 +19,6 @@ from multimedia_intelligence.files.client_results import validate_client_tool_re
 from multimedia_intelligence.files.policy import FileRoute, classify_file
 from multimedia_intelligence.files.tools.csv_analysis import CsvAnalyzer
 from multimedia_intelligence.files.tools.json_commands import JsonCommandValidator
-from multimedia_intelligence.files.tools.pdf_analysis import PdfAnalyzer
 
 type AgentInput = str | list[Any]
 type ToolExecutor = Callable[[ClientToolCall], Awaitable[object]]
@@ -197,13 +196,16 @@ class FixtureFileClient:
             return {"ok": False, "error": str(error), "tool": call.name}
 
     def _execute(self, name: str, arguments: dict[str, Any]) -> dict[str, object]:
-        if name == "list_included_files":
+        if name == "list_files":
+            page = _integer(arguments, "page", default=1, minimum=1)
+            files = [self._file_metadata(file) for file in self.files.values()]
+            start = (page - 1) * 10
             return {
-                "files": [self._file_metadata(file) for file in self.files.values()],
-                "warning": (
-                    "These are staged browser files, not finalized bucket assets. Do not claim "
-                    "they are durable or provider-ready."
-                ),
+                "page": page,
+                "pageSize": 10,
+                "total": len(files),
+                "hasMore": start + 10 < len(files),
+                "files": files[start : start + 10],
             }
 
         asset_id = _required_string(arguments, "assetId")
@@ -271,23 +273,60 @@ class FixtureFileClient:
                     for entry in stats
                 ],
             }
-        if name == "pdf_inspect":
-            sample_count = _integer(arguments, "sampleCount", default=8, minimum=1)
-            inspection = PdfAnalyzer(file.path).preflight(sample_count=min(sample_count, 20))
-            return {
+        if name == "pdf_random_sample":
+            reader = PdfReader(file.path, strict=False)
+            page_count = len(reader.pages)
+            start_page = _integer(arguments, "startPage", default=1, minimum=1)
+            end_value = arguments.get("endPage")
+            end_page = (
+                page_count
+                if end_value is None
+                else _integer(arguments, "endPage", minimum=start_page)
+            )
+            if end_page > page_count:
+                raise ValueError(f"Page range must be within 1-{page_count}")
+            count = min(_integer(arguments, "count", default=5, minimum=1), 10)
+            sampled_pages = list(range(start_page, end_page + 1))[:count]
+            mode = arguments.get("outputMode", "text_content")
+            common: dict[str, object] = {
                 "assetId": asset_id,
-                "inspection": {
-                    "pageCount": inspection.page_count,
-                    "sampledPages": [
+                "mode": mode,
+                "pageCount": page_count,
+                "range": {"startPage": start_page, "endPage": end_page},
+            }
+            if mode == "text_content":
+                return {
+                    **common,
+                    "pages": [
                         {
-                            "page": page.page,
-                            "textCharacters": page.text_characters,
-                            "textPreview": page.text_preview,
+                            "page": page,
+                            "text": (reader.pages[page - 1].extract_text() or "")[:16_384],
+                            "truncated": False,
                         }
-                        for page in inspection.sampled_pages
+                        for page in sampled_pages
                     ],
-                    "likelyTextPdf": inspection.likely_text_pdf,
-                },
+                }
+            if mode != "as_files":
+                raise ValueError("outputMode must be text_content or as_files")
+            writer = PdfWriter()
+            for page in sampled_pages:
+                writer.add_page(reader.pages[page - 1])
+            target = file.path.with_name(f"{file.path.stem}-sample.pdf")
+            with target.open("wb") as handle:
+                writer.write(handle)
+            return {
+                **common,
+                "sampledPages": sampled_pages,
+                "files": [
+                    {
+                        "assetId": f"asset_sample_{asset_id}",
+                        "filename": target.name,
+                        "mediaType": "application/pdf",
+                        "sizeBytes": target.stat().st_size,
+                        "durability": "included",
+                        "originalPages": sampled_pages,
+                    }
+                ],
             }
         if name == "pdf_extract_range":
             start_page = _integer(arguments, "startPage", minimum=1)

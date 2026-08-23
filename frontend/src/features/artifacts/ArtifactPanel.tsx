@@ -1,6 +1,7 @@
 import { useRef } from "react";
 
 import { useFileWorkspace } from "./useFileWorkspace";
+import { useTransientStatus } from "../status/transientStatus";
 
 const acceptedExtensions = [
   ".md",
@@ -26,7 +27,8 @@ const acceptedExtensions = [
 
 export function ArtifactPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const { files, artifacts, addFiles, removeFile } = useFileWorkspace();
+  const { files, artifacts, addFiles, removeFile, saveFile } = useFileWorkspace();
+  const { showStatus } = useTransientStatus();
 
   return (
     <aside className="panel artifact-panel" aria-labelledby="artifact-title">
@@ -46,7 +48,13 @@ export function ArtifactPanel() {
         accept={acceptedExtensions}
         multiple
         onChange={(event) => {
-          if (event.currentTarget.files) addFiles(event.currentTarget.files);
+          if (event.currentTarget.files?.length) {
+            const count = event.currentTarget.files.length;
+            addFiles(event.currentTarget.files);
+            showStatus(`${count} ${count === 1 ? "file" : "files"} staged`, {
+              tone: "success",
+            });
+          }
           event.currentTarget.value = "";
         }}
       />
@@ -57,10 +65,7 @@ export function ArtifactPanel() {
             <span />
           </div>
           <h3>No files staged</h3>
-          <p>
-            Select local files for bounded browser inspection. Bucket upload and durable
-            thread inclusion remain a separate backend step.
-          </p>
+          <p>Select files to inspect locally, then save the ones this conversation should keep.</p>
           <button type="button" onClick={() => inputRef.current?.click()}>
             Select local files
           </button>
@@ -79,10 +84,30 @@ export function ArtifactPanel() {
                     {entry.route} · {formatBytes(entry.file.size)}
                   </small>
                   <code title={entry.id}>{entry.id.slice(0, 20)}…</code>
+                  <small className={`durability durability-${entry.durability}`}>
+                    {durabilityLabel(entry.durability)}
+                  </small>
+                  {entry.saveError && <small className="save-error">{entry.saveError}</small>}
                 </div>
-                <button type="button" onClick={() => removeFile(entry.id)} aria-label={`Remove ${entry.file.name}`}>
-                  Remove
-                </button>
+                <div className="file-actions">
+                  {entry.durability !== "included" && (
+                    <button
+                      type="button"
+                      disabled={entry.durability === "uploading"}
+                      onClick={() => void saveFile(entry.id)}
+                      aria-label={`Save ${entry.file.name}`}
+                    >
+                      {entry.durability === "uploading" ? "Saving…" : "Save"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeFile(entry.id)}
+                    aria-label={`Remove ${entry.file.name}`}
+                  >
+                    Remove
+                  </button>
+                </div>
               </article>
             ))}
           </div>
@@ -97,7 +122,7 @@ export function ArtifactPanel() {
                   {artifact.previewUrl && <img src={artifact.previewUrl} alt={artifact.label} />}
                   <div>
                     <strong>{artifact.label}</strong>
-                    <small>{formatBytes(artifact.blob.size)} · browser only</small>
+                    <small>{formatBytes(artifact.blob.size)} · local preview</small>
                   </div>
                 </article>
               ))}
@@ -105,13 +130,19 @@ export function ArtifactPanel() {
           )}
         </div>
       )}
-
-      <p className="implementation-note">
-        Local staging is intentionally not durable. Any original or derivative sent to
-        OpenAI must first be finalized in the configured S3-compatible bucket.
-      </p>
     </aside>
   );
+}
+
+function durabilityLabel(durability: string): string {
+  const labels: Record<string, string> = {
+    local: "Staged locally",
+    uploading: "Saving",
+    stored: "Stored; waiting for a conversation",
+    included: "Saved to this conversation",
+    error: "Save needs attention",
+  };
+  return labels[durability] ?? durability;
 }
 
 function formatBytes(bytes: number): string {

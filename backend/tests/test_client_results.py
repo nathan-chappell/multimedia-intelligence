@@ -55,3 +55,147 @@ def test_client_failure_does_not_require_an_asset_id() -> None:
     )
 
     assert result["ok"] is False
+
+
+def test_pdf_random_text_sample_preserves_bounded_extracted_content() -> None:
+    result = validate_client_tool_result(
+        "pdf_random_sample",
+        {"assetId": "local_pdf", "outputMode": "text_content"},
+        {
+            "ok": True,
+            "assetId": "local_pdf",
+            "mode": "text_content",
+            "pageCount": 12,
+            "range": {"startPage": 2, "endPage": 10},
+            "pages": [
+                {"page": 3, "text": "raw extracted text", "truncated": False},
+                {"page": 8, "text": "", "truncated": False},
+            ],
+        },
+        max_result_bytes=4096,
+    )
+
+    assert [page["page"] for page in result["pages"]] == [3, 8]  # type: ignore[union-attr]
+
+
+def test_pdf_random_file_sample_requires_matching_page_provenance() -> None:
+    with pytest.raises(ValueError):
+        validate_client_tool_result(
+            "pdf_random_sample",
+            {"assetId": "local_pdf", "outputMode": "as_files"},
+            {
+                "ok": True,
+                "assetId": "local_pdf",
+                "mode": "as_files",
+                "pageCount": 12,
+                "range": {"startPage": 1, "endPage": 12},
+                "sampledPages": [2, 9],
+                "files": [
+                    {
+                        "assetId": "asset_sample",
+                        "filename": "sample.pdf",
+                        "mediaType": "application/pdf",
+                        "sizeBytes": 100,
+                        "durability": "included",
+                        "originalPages": [2, 10],
+                    }
+                ],
+            },
+            max_result_bytes=4096,
+        )
+
+
+def test_list_files_accepts_current_browser_workspace_states_without_warning() -> None:
+    result = validate_client_tool_result(
+        "list_files",
+        {"page": 1},
+        {
+            "ok": True,
+            "page": 1,
+            "pageSize": 10,
+            "total": 1,
+            "hasMore": False,
+            "files": [
+                {
+                    "assetId": "local_1",
+                    "name": "notes.txt",
+                    "mediaType": "text/plain",
+                    "sizeBytes": 5,
+                    "route": "text",
+                    "durability": "included",
+                    "durableAssetId": "asset_1",
+                }
+            ],
+        },
+        max_result_bytes=2048,
+    )
+
+    assert "warning" not in result
+    assert result["files"][0]["durableAssetId"] == "asset_1"  # type: ignore[index]
+
+
+def test_list_files_rejects_more_than_ten_items() -> None:
+    output = {
+        "ok": True,
+        "page": 1,
+        "pageSize": 10,
+        "total": 11,
+        "hasMore": True,
+        "files": [
+            {
+                "assetId": f"local_{index}",
+                "name": f"file-{index}.txt",
+                "mediaType": "text/plain",
+                "sizeBytes": 1,
+                "route": "text",
+                "durability": "local",
+            }
+            for index in range(11)
+        ],
+    }
+
+    with pytest.raises(ValueError):
+        validate_client_tool_result(
+            "list_files",
+            {"page": 1},
+            output,
+            max_result_bytes=16_384,
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"page": 2},
+        {"hasMore": False},
+        {"files": []},
+    ],
+)
+def test_list_files_rejects_inconsistent_pagination(change: dict[str, object]) -> None:
+    output = {
+        "ok": True,
+        "page": 1,
+        "pageSize": 10,
+        "total": 11,
+        "hasMore": True,
+        "files": [
+            {
+                "assetId": f"local_{index}",
+                "name": f"file-{index}.txt",
+                "mediaType": "text/plain",
+                "sizeBytes": 1,
+                "route": "text",
+                "durability": "local",
+            }
+            for index in range(10)
+        ],
+        **change,
+    }
+
+    with pytest.raises(ValueError):
+        validate_client_tool_result(
+            "list_files",
+            {"page": 1},
+            output,
+            max_result_bytes=16_384,
+        )

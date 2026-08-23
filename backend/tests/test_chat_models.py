@@ -4,6 +4,7 @@ import pytest
 from chatkit.types import (
     ClientToolCallItem,
     InferenceOptions,
+    ThreadMetadata,
     UserMessageItem,
     UserMessageTextContent,
 )
@@ -11,6 +12,7 @@ from chatkit.types import (
 from multimedia_intelligence.agents import AssistantGraph, DescriptiveIngestionPlan
 from multimedia_intelligence.chat.models import resolve_chat_model
 from multimedia_intelligence.chat.server import MultimediaChatServer
+from multimedia_intelligence.context import ClientInfo, RequestContext
 
 
 def user_message(model: str | None) -> UserMessageItem:
@@ -57,8 +59,7 @@ def test_root_only_discovers_files_and_delegates_specialist_work() -> None:
     assistant = graph.root
     tool_names = {tool.name for tool in assistant.tools}
     assert tool_names == {
-        "list_included_files",
-        "list_durable_file_references",
+        "list_files",
         "consult_ingestion_strategist",
     }
     assert {handoff.tool_name for handoff in assistant.handoffs} == {
@@ -85,13 +86,12 @@ def test_specialists_receive_modality_specific_tools() -> None:
         for specialist in graph.specialists
     }
     assert tool_names == {
-        "Ingestion strategist": {"list_durable_file_references"},
+        "Ingestion strategist": set(),
         "Document specialist": {
             "read_text_chars",
-            "pdf_inspect",
+            "pdf_random_sample",
             "pdf_render_page",
             "pdf_extract_range",
-            "list_durable_file_references",
             "read_durable_text_range",
         },
         "Structured data specialist": {
@@ -99,20 +99,46 @@ def test_specialists_receive_modality_specific_tools() -> None:
             "csv_stats",
             "json_chars",
             "json_path",
-            "list_durable_file_references",
             "read_durable_text_range",
         },
-        "Media specialist": {"list_durable_file_references"},
-        "Image specialist": {"list_durable_file_references"},
+        "Media specialist": set(),
+        "Image specialist": set(),
     }
 
 
 def test_client_tool_continuations_resume_with_the_owning_agent() -> None:
     graph = AssistantGraph(model="gpt-5.6")
 
-    assert graph.agent_for_client_tool("list_included_files") is graph.root
-    assert graph.agent_for_client_tool("pdf_inspect").name == "Document specialist"
+    assert graph.agent_for_client_tool("list_files") is graph.root
+    assert graph.agent_for_client_tool("pdf_random_sample").name == "Document specialist"
     assert graph.agent_for_client_tool("csv_stats").name == "Structured data specialist"
+
+
+def test_client_tool_continuation_keeps_the_originating_turn_correlation() -> None:
+    message = user_message("gpt-5.6")
+    tool_call = ClientToolCallItem(
+        id="tool_1",
+        thread_id="thread_1",
+        created_at=datetime.now(UTC),
+        status="completed",
+        call_id="call_1",
+        name="list_files",
+        arguments={"page": 1},
+        output={
+            "ok": True,
+            "page": 1,
+            "pageSize": 10,
+            "total": 0,
+            "hasMore": False,
+            "files": [],
+        },
+    )
+    thread = ThreadMetadata(id="thread_1", created_at=datetime.now(UTC))
+
+    initial = MultimediaChatServer._turn_source_id(thread, message, [message])
+    resumed = MultimediaChatServer._turn_source_id(thread, None, [message, tool_call])
+
+    assert initial == resumed == message.id
 
 
 def test_ingestion_plan_is_descriptive_structured_output() -> None:
@@ -136,14 +162,12 @@ def test_client_tool_schemas_are_strict_and_pause_the_turn() -> None:
     assert all(
         tool.params_json_schema.get("additionalProperties") is False for tool in client_tools
     )
-    assert graph.root.tool_use_behavior == {
-        "stop_at_tool_names": ["list_included_files"]
-    }
-    document = graph.agent_for_client_tool("pdf_inspect")
+    assert graph.root.tool_use_behavior == {"stop_at_tool_names": ["list_files"]}
+    document = graph.agent_for_client_tool("pdf_random_sample")
     assert document.tool_use_behavior == {
         "stop_at_tool_names": [
             "read_text_chars",
-            "pdf_inspect",
+            "pdf_random_sample",
             "pdf_render_page",
             "pdf_extract_range",
         ]
@@ -196,6 +220,67 @@ async def test_conversation_continuation_sends_only_latest_client_tool_output() 
             "output": '{"ok": true, "rows": 12}',
         }
     ]
+
+
+async def test_pdf_file_sample_is_attached_to_function_output_by_signed_url() -> None:
+    class FileAccess:
+        async def ready_file_download_url(self, thread_id: str, asset_id: str) -> str:
+            assert (thread_id, asset_id) == ("thread_1", "asset_sample")
+            return "https://objects.example.test/signed-sample.pdf"
+
+    tool_call = ClientToolCallItem(
+        id="tool_pdf",
+        thread_id="thread_1",
+        created_at=datetime.now(UTC),
+        status="completed",
+        call_id="call_pdf",
+        name="pdf_random_sample",
+        arguments={
+            "assetId": "local_pdf",
+            "startPage": 1,
+            "endPage": 20,
+            "count": 3,
+            "outputMode": "as_files",
+        },
+        output={
+            "ok": True,
+            "assetId": "local_pdf",
+            "mode": "as_files",
+            "pageCount": 20,
+            "range": {"startPage": 1, "endPage": 20},
+            "sampledPages": [2, 9, 17],
+            "files": [
+                {
+                    "assetId": "asset_sample",
+                    "filename": "report-sample-2-9-17.pdf",
+                    "mediaType": "application/pdf",
+                    "sizeBytes": 1234,
+                    "durability": "included",
+                    "originalPages": [2, 9, 17],
+                }
+            ],
+        },
+    )
+    context = RequestContext(
+        client=ClientInfo(user_id="user_1", username="reader"),
+        data_access=FileAccess(),  # type: ignore[arg-type]
+    )
+
+    result = await MultimediaChatServer._conversation_input(
+        None,
+        [tool_call],
+        context=context,
+    )
+
+    output = result[0]["output"]
+    assert isinstance(output, list)
+    assert output[0]["type"] == "input_text"
+    assert output[1] == {
+        "type": "input_file",
+        "file_url": "https://objects.example.test/signed-sample.pdf",
+        "filename": "report-sample-2-9-17.pdf",
+        "detail": "low",
+    }
 
 
 async def test_rotated_conversation_replays_surviving_thread_history() -> None:

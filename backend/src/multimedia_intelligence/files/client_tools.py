@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Collection
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from agents import function_tool
 from agents.tool import Tool
 from agents.tool_context import ToolContext
 from chatkit.agents import AgentContext, ClientToolCall
+from pydantic import Field
 
 from multimedia_intelligence.context import RequestContext
 
@@ -16,10 +17,10 @@ type ClientToolInvoker = Callable[
     [ChatKitToolContext, str, ToolArguments], Awaitable[dict[str, object]]
 ]
 
-FILE_DISCOVERY_CLIENT_TOOLS = ("list_included_files",)
+FILE_DISCOVERY_CLIENT_TOOLS = ("list_files",)
 DOCUMENT_CLIENT_TOOLS = (
     "read_text_chars",
-    "pdf_inspect",
+    "pdf_random_sample",
     "pdf_render_page",
     "pdf_extract_range",
 )
@@ -66,11 +67,24 @@ def build_file_client_tools(
     derivative before a provider upload or ingestion plan can depend on it.
     """
 
-    @function_tool(name_override="list_included_files")
-    async def list_included_files_tool(ctx: ChatKitToolContext) -> dict[str, object]:
-        """List opaque IDs and metadata for files the user staged in this browser workspace."""
+    @function_tool(name_override="list_files")
+    async def list_files_tool(
+        ctx: ChatKitToolContext,
+        page: Annotated[int, Field(ge=1)] = 1,
+    ) -> dict[str, object]:
+        """List one page of up to 10 conversation files, including transient browser files."""
 
-        return await invoker(ctx, "list_included_files", {})
+        app_context = ctx.context.request_context
+        durable_files: tuple[dict[str, object], ...] = ()
+        if app_context.data_access is not None:
+            durable_files = await app_context.data_access.list_ready_file_references(
+                ctx.context.thread.id
+            )
+        return await invoker(
+            ctx,
+            "list_files",
+            {"page": page, "durableFiles": list(durable_files)},
+        )
 
     @function_tool(name_override="read_text_chars")
     async def read_text_chars_tool(
@@ -144,18 +158,27 @@ def build_file_client_tools(
             {"assetId": asset_id, "columns": columns or []},
         )
 
-    @function_tool(name_override="pdf_inspect")
-    async def pdf_inspect_tool(
+    @function_tool(name_override="pdf_random_sample")
+    async def pdf_random_sample_tool(
         ctx: ChatKitToolContext,
         asset_id: str,
-        sample_count: int = 8,
+        start_page: Annotated[int, Field(ge=1)] = 1,
+        end_page: Annotated[int | None, Field(ge=1)] = None,
+        count: Annotated[int, Field(ge=1, le=10)] = 5,
+        output_mode: Literal["text_content", "as_files"] = "text_content",
     ) -> dict[str, object]:
-        """Inspect page count and sampled page text for a staged PDF in the browser."""
+        """Randomly sample up to 10 PDF pages as extracted text or one model-readable file."""
 
         return await invoker(
             ctx,
-            "pdf_inspect",
-            {"assetId": asset_id, "sampleCount": sample_count},
+            "pdf_random_sample",
+            {
+                "assetId": asset_id,
+                "startPage": start_page,
+                "endPage": end_page,
+                "count": count,
+                "outputMode": output_mode,
+            },
         )
 
     @function_tool(name_override="pdf_render_page")
@@ -193,11 +216,11 @@ def build_file_client_tools(
         )
 
     tools: list[Tool] = [
-        list_included_files_tool,
+        list_files_tool,
         read_text_chars_tool,
         csv_head_tool,
         csv_stats_tool,
-        pdf_inspect_tool,
+        pdf_random_sample_tool,
         pdf_render_page_tool,
         pdf_extract_range_tool,
         json_chars_tool,

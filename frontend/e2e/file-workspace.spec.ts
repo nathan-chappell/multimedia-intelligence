@@ -1,6 +1,16 @@
 import { expect, test } from "@playwright/test";
 
-test("stages a conversation file without claiming it is durable", async ({ page }) => {
+test("stages a conversation file and offers save", async ({ page }) => {
+  await page.addInitScript(() =>
+    window.localStorage.setItem("api_bearer_token", "test-token"),
+  );
+  await page.route("**/api/auth/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ id: "test-user", username: "tester", is_admin: false }),
+    }),
+  );
   await page.route("**/chatkit", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: "{}" }),
   );
@@ -14,6 +24,8 @@ test("stages a conversation file without claiming it is durable", async ({ page 
   });
 
   await expect(page.getByText("exchange-rates.csv")).toBeVisible();
-  await expect(page.getByText(/Local staging is intentionally not durable/)).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("1 file staged");
+  await expect(page.getByText("Staged locally")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save exchange-rates.csv" })).toBeVisible();
   await expect(page.locator(".counter")).toHaveText("1");
 });

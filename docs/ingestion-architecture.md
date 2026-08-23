@@ -97,11 +97,17 @@ Selected JSON subtrees can later be normalized into structure-aware text shards 
 
 ## PDF strategy
 
-Browser utilities use PDF.js for sampled text inspection and page rendering, plus `pdf-lib` for bounded page-range extraction:
+Browser utilities use PDF.js for sampled text extraction and page rendering, plus `pdf-lib` for bounded page extraction:
 
-- `pdf_inspect`: sample up to 20 pages and estimate whether meaningful text is present;
+- `pdf_random_sample`: sample up to 10 pages inside a requested range. `text_content`
+  returns bounded library-extracted text; `as_files` creates one compact PDF containing the sampled
+  pages and records their original page numbers;
 - `pdf_render_page`: render selected visual evidence to PNG;
 - `pdf_extract_range`: create a page-range PDF, capped because `pdf-lib` loads source bytes in browser memory.
+
+`as_files` never serializes PDF bytes into the tool result. The browser uploads the new `Blob`
+directly to the application, and the resumed function output supplies the model a short-lived signed
+`input_file` URL. This avoids base64 expansion and keeps bucket storage canonical.
 
 For very large PDFs, browser rendering can still inspect local pages through PDF.js, but `pdf-lib`
 is not a safe 1 GiB splitter. A bounded server-side splitting tool remains required. The browser is
@@ -109,7 +115,7 @@ an accelerator; durable assets remain available for later ChatKit turns after th
 
 The adaptive plan is:
 
-1. Preflight page count, text coverage, and representative page previews.
+1. Randomly sample a bounded range as text, retaining page numbers and truncation status.
 2. For a text-heavy document, extract structure-aware text and use retrieval when it exceeds direct context.
 3. For important figures, tables, formulas, or weak OCR, render selected pages and mark those images as preferred visual evidence.
 4. Use bounded PDF ranges as clearly labeled `input_file` evidence.
@@ -117,7 +123,9 @@ The adaptive plan is:
 
 A ten-page paper will normally use the full provider file plus rendered figure pages. A 300-page textbook should probe the table of contents, index, and representative ranges, then ask a focused user question before choosing direct ranges versus retrieval.
 
-“Scratch” PDF probes are independent Responses calls with narrow instructions and no main conversation/`previous_response_id` linkage. `previous_response_id` is specifically a continuation mechanism, so using it would carry context rather than isolate it. The gateway should request non-persistent behavior where supported, store only our compact probe result and provenance, and treat an inline base64 range as ephemeral transport rather than an asset.
+Visual PDF samples resume the requesting tool call with a bounded `input_file`; they intentionally
+join the current conversation context. A future isolated probe gateway can use an independent
+Responses call when context isolation is required.
 
 ## Audio, video, and images
 
@@ -152,12 +160,16 @@ Modality specialists own their inspection tools and hand control back to the roo
 one another, own storage credentials, delete data, or mutate thread membership. Model-generated
 tool input is validated again at the tool boundary.
 
-The current browser workspace is deliberately labeled `local_browser_only`. Its opaque IDs make the ChatKit client-tool loop usable before upload routes exist, but they are not `Asset` IDs and cannot be used for provider upload. Rendered PDF pages and ranges are likewise `transient_browser_only`; the UI previews them while the tool result instructs the agent that backend upload and finalization are still required.
+Browser-local files retain opaque local IDs until saved. A PDF sample requested with `as_files` is
+uploaded and attached to the conversation immediately; its tool result contains only compact
+metadata and original-page provenance. Page renders and manually extracted ranges remain local
+preview artifacts until explicitly saved.
 
 ## Next implementation slices
 
 1. Add upload-ticket/finalization endpoints, quarantine promotion, hashes, and the SQLAlchemy asset repository.
-2. Add include/exclude/list endpoints and connect the ChatKit attachment flow.
+2. Add include/exclude/list endpoints and connect them to the custom artifact-panel flow. ChatKit
+   attachments remain disabled and are never part of ingestion.
 3. Add the next bounded ingestion tools and render their calls/results as ChatKit activity.
 4. Materialize bucket objects into controlled temporary files for CSV, media, and PDF tools.
 5. Add isolated OpenAI PDF probe, Files, transcription/diarization, and vector-store gateways with expiry cleanup.

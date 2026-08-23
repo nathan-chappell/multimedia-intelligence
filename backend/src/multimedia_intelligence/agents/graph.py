@@ -18,7 +18,6 @@ from multimedia_intelligence.files.client_tools import (
 )
 from multimedia_intelligence.files.server_tools import (
     build_durable_text_tools,
-    build_file_reference_tools,
 )
 
 type ChatAgent = Agent[AgentContext[RequestContext]]
@@ -51,8 +50,7 @@ class AssistantGraph:
         )
         self.file_client_tools = {tool.name: tool for tool in build_file_client_tools()}
         self.durable_tools = {
-            tool.name: tool
-            for tool in [*build_file_reference_tools(), *build_durable_text_tools()]
+            tool.name: tool for tool in build_durable_text_tools()
         }
 
         self.ingestion = Agent(
@@ -60,9 +58,8 @@ class AssistantGraph:
             model=model,
             model_settings=self.model_settings,
             instructions="""Describe a provisional ingestion approach from evidence and user intent.
-Use file references only to confirm metadata.
+Use the file metadata already discovered by the root.
 Keep the approach adaptable as new evidence appears.""",
-            tools=self._tools("list_durable_file_references"),
             output_type=DescriptiveIngestionPlan,
         )
         ingestion_tool = self.ingestion.as_tool(
@@ -72,7 +69,7 @@ Keep the approach adaptable as new evidence appears.""",
         )
 
         root_tools = [
-            *self._tools("list_included_files", "list_durable_file_references"),
+            *self._tools("list_files"),
             ingestion_tool,
         ]
         self.root = Agent(
@@ -80,6 +77,8 @@ Keep the approach adaptable as new evidence appears.""",
             model=model,
             model_settings=self.model_settings,
             instructions="""Discover files, route work, and produce the user-facing answer.
+Use list_files as the only file-discovery tool.
+Start with page 1 and follow hasMore only when needed.
 Hand off content inspection to the matching modality specialist.
 Consult the ingestion strategist when ingestion guidance is needed.
 Treat strategies as provisional and use only returned evidence.""",
@@ -94,7 +93,6 @@ Treat strategies as provisional and use only returned evidence.""",
 
         document_tools = self._tools(
             *DOCUMENT_CLIENT_TOOLS,
-            "list_durable_file_references",
             "read_durable_text_range",
         )
         self.document = Agent(
@@ -102,6 +100,9 @@ Treat strategies as provisional and use only returned evidence.""",
             model=model,
             model_settings=self.model_settings,
             instructions="""Inspect text and PDF files with the available bounded tools.
+Use pdf_random_sample with text_content for cheap text evidence.
+Use as_files when layout or images matter, or extracted text is empty or incoherent.
+Keep the range focused and the sample count as small as the question allows.
 Preserve page and layout context and separate evidence from inference.
 Return control to the root after producing the needed overview.""",
             tools=document_tools,
@@ -111,7 +112,6 @@ Return control to the root after producing the needed overview.""",
 
         structured_data_tools = self._tools(
             *STRUCTURED_DATA_CLIENT_TOOLS,
-            "list_durable_file_references",
             "read_durable_text_range",
         )
         self.structured_data = Agent(
@@ -132,7 +132,6 @@ Return control to the root after producing the needed overview.""",
             model_settings=self.model_settings,
             instructions="""Summarize audio or video evidence and propose timestamped analysis.
 Separate transcript and visual evidence, then return control to the root.""",
-            tools=self._tools("list_durable_file_references"),
             handoffs=[return_to_root],
         )
         self.image = Agent(
@@ -141,7 +140,6 @@ Separate transcript and visual evidence, then return control to the root.""",
             model_settings=self.model_settings,
             instructions="""Summarize image evidence while preserving asset identity.
 Separate observation from inference, then return control to the root.""",
-            tools=self._tools("list_durable_file_references"),
             handoffs=[return_to_root],
         )
 

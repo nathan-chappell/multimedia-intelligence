@@ -11,7 +11,6 @@ services:
         required: false
     environment:
       DATABASE_URL: sqlite+aiosqlite:////app/data/app.db
-      ATTACHMENT_DIR: /app/data/attachments
     volumes:
       - app-data:/app/data
 

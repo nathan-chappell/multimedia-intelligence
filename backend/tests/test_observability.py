@@ -5,6 +5,8 @@ import json
 from agents import Agent
 from agents.items import ModelResponse
 from agents.run_context import RunContextWrapper
+from agents.tracing import custom_span
+from agents.tracing.create import get_current_trace
 from agents.usage import Usage
 
 from multimedia_intelligence.observability import (
@@ -13,6 +15,7 @@ from multimedia_intelligence.observability import (
     build_run_config,
     configure_logging,
     opaque_id,
+    resume_trace,
 )
 
 from .settings import TEST_SETTINGS
@@ -36,6 +39,27 @@ def test_run_config_disables_sensitive_trace_content_by_default() -> None:
     assert config.group_id != "thread-123"
     assert config.trace_metadata is not None
     assert config.trace_metadata["user"] != "private-user-id"
+
+
+def test_turn_correlation_and_resumed_trace_keep_the_same_trace_id() -> None:
+    initial = RunCorrelation.for_turn(group_id="thread-123", turn_id="message-456")
+    continuation = RunCorrelation.for_turn(group_id="thread-123", turn_id="message-456")
+
+    assert initial == continuation
+    assert initial.trace_id.startswith("trace_")
+    assert len(initial.trace_id) == len("trace_") + 32
+    with resume_trace(
+        TEST_SETTINGS,
+        workflow_name="test workflow",
+        correlation=continuation,
+        metadata={"turn": continuation.turn_id},
+    ):
+        current = get_current_trace()
+        assert current is not None
+        assert current.trace_id == initial.trace_id
+        continuation_span = custom_span("client_tool.continuation", data={})
+        assert continuation_span.trace_id == initial.trace_id
+    assert get_current_trace() is None
 
 
 async def test_model_hook_logs_ids_and_usage_without_content(capsys: object) -> None:
@@ -69,9 +93,7 @@ async def test_model_hook_logs_ids_and_usage_without_content(capsys: object) -> 
 
 async def test_handoff_hook_logs_only_agent_names(capsys: object) -> None:
     configure_logging(TEST_SETTINGS)
-    hook = AgentRunLoggingHooks(
-        RunCorrelation.create(group_id="thread-123", turn_id="message-456")
-    )
+    hook = AgentRunLoggingHooks(RunCorrelation.create(group_id="thread-123", turn_id="message-456"))
     context = RunContextWrapper(context=None)
     source: Agent[None] = Agent(name="Root conversation agent")
     target: Agent[None] = Agent(name="Structured data specialist")

@@ -20,7 +20,7 @@ COPY backend/src ./backend/src
 RUN pip install --no-cache-dir ./backend
 
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
-RUN mkdir -p /app/data/attachments
+RUN mkdir -p /app/data
 
 EXPOSE 8000
 CMD ["sh", "-c", "uvicorn multimedia_intelligence.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from chatkit.store import NotFoundError, Store
-from chatkit.types import Attachment, Page, ThreadItem, ThreadMetadata
+from chatkit.types import Attachment, FeedbackKind, Page, ThreadItem, ThreadMetadata
 from pydantic import TypeAdapter
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, and_, delete, or_, select
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    and_,
+    delete,
+    or_,
+    select,
+)
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql.elements import ColumnElement
@@ -41,24 +54,20 @@ class ItemRow(Base):
     payload: Mapped[str] = mapped_column(Text)
 
 
-class AttachmentRow(Base):
-    """ChatKit protocol metadata, not the canonical uploaded asset.
-
-    A ChatKit attachment may reference an included asset, but durable storage,
-    ingestion state, and provider IDs belong to the asset-domain tables.
-    """
-
-    __tablename__ = "chat_attachments"
+class FeedbackRow(Base):
+    __tablename__ = "feedback"
+    __table_args__ = (Index("ix_feedback_owner_thread", "owner_id", "thread_id"),)
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    thread_id: Mapped[str | None] = mapped_column(
-        ForeignKey("chat_threads.id", ondelete="CASCADE"), index=True, nullable=True
-    )
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    payload: Mapped[str] = mapped_column(Text)
+    thread_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_threads.id", ondelete="CASCADE"), index=True
+    )
+    item_ids: Mapped[list[str]] = mapped_column(JSON)
+    feedback_type: Mapped[str] = mapped_column(String(32), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 _THREAD_ITEM_ADAPTER: TypeAdapter[ThreadItem] = TypeAdapter(ThreadItem)
-_ATTACHMENT_ADAPTER: TypeAdapter[Attachment] = TypeAdapter(Attachment)
 
 
 class SqlAlchemyChatKitStore(Store[RequestContext]):
@@ -236,26 +245,43 @@ class SqlAlchemyChatKitStore(Store[RequestContext]):
     ) -> None:
         await self.load_thread(thread_id, context)
         async with self.sessions.begin() as session:
-            session.add(
-                ItemRow(
-                    id=item.id,
-                    thread_id=thread_id,
-                    created_at=item.created_at,
-                    payload=item.model_dump_json(),
+            row = await session.get(ItemRow, item.id)
+            if row is None:
+                session.add(
+                    ItemRow(
+                        id=item.id,
+                        thread_id=thread_id,
+                        created_at=item.created_at,
+                        payload=item.model_dump_json(),
+                    )
                 )
-            )
+            elif row.thread_id != thread_id:
+                raise ValueError(f"Item {item.id} already belongs to another thread")
+            else:
+                # ChatKit resumes the workflow that precedes a client tool call and
+                # emits a second done event for that same workflow ID. Treat that
+                # event as the final version of the existing item.
+                row.created_at = item.created_at
+                row.payload = item.model_dump_json()
 
     async def save_item(self, thread_id: str, item: ThreadItem, context: RequestContext) -> None:
         await self.load_thread(thread_id, context)
         async with self.sessions.begin() as session:
-            await session.merge(
-                ItemRow(
-                    id=item.id,
-                    thread_id=thread_id,
-                    created_at=item.created_at,
-                    payload=item.model_dump_json(),
+            row = await session.get(ItemRow, item.id)
+            if row is not None and row.thread_id != thread_id:
+                raise ValueError(f"Item {item.id} already belongs to another thread")
+            if row is None:
+                session.add(
+                    ItemRow(
+                        id=item.id,
+                        thread_id=thread_id,
+                        created_at=item.created_at,
+                        payload=item.model_dump_json(),
+                    )
                 )
-            )
+            else:
+                row.created_at = item.created_at
+                row.payload = item.model_dump_json()
 
     async def load_item(self, thread_id: str, item_id: str, context: RequestContext) -> ThreadItem:
         await self.load_thread(thread_id, context)
@@ -264,6 +290,39 @@ class SqlAlchemyChatKitStore(Store[RequestContext]):
         if row is None or row.thread_id != thread_id:
             raise NotFoundError(f"Item {item_id} not found in thread {thread_id}")
         return _THREAD_ITEM_ADAPTER.validate_json(row.payload)
+
+    async def save_feedback(
+        self,
+        thread_id: str,
+        item_ids: list[str],
+        feedback_type: FeedbackKind,
+        context: RequestContext,
+    ) -> None:
+        await self.load_thread(thread_id, context)
+        requested_ids = list(dict.fromkeys(item_ids))
+        if not requested_ids:
+            return
+        async with self.sessions.begin() as session:
+            found_ids = set(
+                await session.scalars(
+                    select(ItemRow.id).where(
+                        ItemRow.thread_id == thread_id,
+                        ItemRow.id.in_(requested_ids),
+                    )
+                )
+            )
+            if set(requested_ids) - found_ids:
+                raise NotFoundError("Feedback target was not found in the thread")
+            session.add(
+                FeedbackRow(
+                    id=f"feedback_{uuid4().hex}",
+                    owner_id=context.user_id,
+                    thread_id=thread_id,
+                    item_ids=requested_ids,
+                    feedback_type=feedback_type,
+                    created_at=datetime.now(UTC),
+                )
+            )
 
     async def delete_thread(self, thread_id: str, context: RequestContext) -> None:
         conversation_id = await self.load_conversation_id(thread_id, context)
@@ -294,42 +353,13 @@ class SqlAlchemyChatKitStore(Store[RequestContext]):
                 row.conversation_dirty = True
 
     async def save_attachment(self, attachment: Attachment, context: RequestContext) -> None:
-        await self.initialize()
-        async with self.sessions.begin() as session:
-            row = await session.get(AttachmentRow, attachment.id)
-            if row is not None and row.owner_id != context.user_id:
-                raise NotFoundError(f"Attachment {attachment.id} not found")
-            if (
-                row is not None
-                and row.thread_id is not None
-                and attachment.thread_id != row.thread_id
-            ):
-                raise ValueError("An attachment already bound to a thread cannot be rebound")
-            if row is None:
-                session.add(
-                    AttachmentRow(
-                        id=attachment.id,
-                        thread_id=attachment.thread_id,
-                        owner_id=context.user_id,
-                        payload=attachment.model_dump_json(),
-                    )
-                )
-            else:
-                row.thread_id = attachment.thread_id
-                row.payload = attachment.model_dump_json()
+        raise RuntimeError("ChatKit attachments are disabled")
 
     async def load_attachment(self, attachment_id: str, context: RequestContext) -> Attachment:
-        await self.initialize()
-        async with self.sessions() as session:
-            row = await session.get(AttachmentRow, attachment_id)
-        if row is None or row.owner_id != context.user_id:
-            raise NotFoundError(f"Attachment {attachment_id} not found")
-        return _ATTACHMENT_ADAPTER.validate_json(row.payload)
+        raise NotFoundError("ChatKit attachments are disabled")
 
     async def delete_attachment(self, attachment_id: str, context: RequestContext) -> None:
-        attachment = await self.load_attachment(attachment_id, context)
-        async with self.sessions.begin() as session:
-            await session.execute(delete(AttachmentRow).where(AttachmentRow.id == attachment.id))
+        raise NotFoundError("ChatKit attachments are disabled")
 
     def _page_limit(self, requested: int) -> int:
         if requested < 1:

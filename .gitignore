@@ -33,6 +33,7 @@ frontend/test-results/
 
 # Local application state
 data/
+certs/
 *.db
 *.sqlite
 *.sqlite3

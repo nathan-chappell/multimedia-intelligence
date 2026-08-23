@@ -67,7 +67,7 @@ SCENARIOS = (
         media_type="text/markdown",
         intent="Summarize the decisions and answer follow-up questions.",
         overview_tool="consult_document_specialist",
-        expected_client_tools=("list_included_files", "read_text_chars"),
+        expected_client_tools=("list_files", "read_text_chars"),
         strategy_terms=("text", "direct context", "bounded"),
     ),
     InitialIngestionScenario(
@@ -76,7 +76,7 @@ SCENARIOS = (
         media_type="application/json",
         intent="Explore event types and query selected nested payload fields later.",
         overview_tool="consult_structured_data_specialist",
-        expected_client_tools=("list_included_files", "json_chars"),
+        expected_client_tools=("list_files", "json_chars"),
         strategy_terms=("jsonpath", "schema", "bounded"),
     ),
     InitialIngestionScenario(
@@ -85,7 +85,7 @@ SCENARIOS = (
         media_type="text/csv",
         intent="Compare revenue trends and identify anomalous regions.",
         overview_tool="consult_structured_data_specialist",
-        expected_client_tools=("list_included_files", "csv_head", "csv_stats"),
+        expected_client_tools=("list_files", "csv_head", "csv_stats"),
         strategy_terms=("schema", "revenue", "region", "numeric", "aggregate"),
     ),
     InitialIngestionScenario(
@@ -94,7 +94,7 @@ SCENARIOS = (
         media_type="application/pdf",
         intent="Find architecture diagrams by topic and ask follow-up questions.",
         overview_tool="consult_document_specialist",
-        expected_client_tools=("list_included_files", "pdf_inspect"),
+        expected_client_tools=("list_files", "pdf_random_sample"),
         strategy_terms=("pdf", "retrieval", "vision", "ocr"),
     ),
     InitialIngestionScenario(
@@ -103,7 +103,7 @@ SCENARIOS = (
         media_type="image/png",
         intent="Explain the depicted system and preserve the source for later reference.",
         overview_tool="consult_image_specialist",
-        expected_client_tools=("list_included_files",),
+        expected_client_tools=("list_files",),
         strategy_terms=("image", "vision", "visual"),
     ),
     InitialIngestionScenario(
@@ -112,7 +112,7 @@ SCENARIOS = (
         media_type="audio/wav",
         intent="Summarize themes and retrieve statements by speaker and time.",
         overview_tool="consult_media_specialist",
-        expected_client_tools=("list_included_files",),
+        expected_client_tools=("list_files",),
         strategy_terms=("transcript", "timestamp", "speaker", "diar"),
     ),
     InitialIngestionScenario(
@@ -121,7 +121,7 @@ SCENARIOS = (
         media_type="video/mp4",
         intent="Find feature demonstrations and connect explanations to screen changes.",
         overview_tool="consult_media_specialist",
-        expected_client_tools=("list_included_files",),
+        expected_client_tools=("list_files",),
         strategy_terms=("transcript", "frame", "timestamp", "visual"),
     ),
 )

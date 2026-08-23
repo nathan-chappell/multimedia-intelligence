@@ -2,7 +2,7 @@
 
 A conversation-scoped multimedia assistant: each chat is grounded only in the files attached to that chat. The first-pass implementation combines a Vite/React frontend, self-hosted OpenAI ChatKit, a FastAPI backend, the OpenAI Agents SDK, and a SQLAlchemy-backed ChatKit store.
 
-> Status: executable foundation. Chat streaming and persistence are wired. A request-scoped manager delegates to ingestion, document, structured-data, media, and image specialists. The artifact panel stages local files and ChatKit can pause for bounded text, JSON, CSV, and PDF browser tools. The asset/include/artifact domain, descriptive ingestion strategy, typed Railway/S3 adapter, server CSV/PDF analysis, and transient PDF previews are implemented. Upload finalization, provider gateways, additional ingestion tools, and final artifact-to-agent input conversion remain milestones.
+> Status: executable foundation. Chat streaming and persistence are wired. A request-scoped manager delegates to ingestion, document, structured-data, media, and image specialists. The artifact panel stages local files, can save originals to the configured Railway/S3 bucket and active conversation, and ChatKit can pause for bounded text, JSON, CSV, and PDF browser tools. The asset/include/artifact domain, descriptive ingestion strategy, typed object-store adapter, server CSV/PDF analysis, and transient PDF previews are implemented. Provider gateways, additional ingestion tools, and final artifact-to-agent input conversion remain milestones.
 
 ## Why this shape
 
@@ -49,23 +49,22 @@ npm --prefix frontend install
 Run the backend and frontend in separate terminals:
 
 ```bash
+./scripts/create-dev-certs.sh
 set -a && source .env && set +a
-uvicorn multimedia_intelligence.main:app --reload --port 8000
+uvicorn multimedia_intelligence.main:app --reload --port 8000 \
+  --ssl-keyfile certs/localhost-key.pem \
+  --ssl-certfile certs/localhost.pem
 ```
 
 ```bash
 npm --prefix frontend run dev
 ```
 
-Open <http://localhost:5173>. The Vite development server proxies `/api` and `/chatkit` to FastAPI.
-Sign in with the built-in `ADMIN_USERNAME` and `ADMIN_PASSWORD` at <http://localhost:8000/docs>.
-Swagger's **Authorize** dialog obtains a short-lived JWT from `/api/auth/token` and exposes the
-admin-only user CRUD routes. To use the same JWT in the local frontend without adding a login UI,
-store it in the browser console and reload:
-
-```js
-localStorage.setItem("api_bearer_token", "<access_token>")
-```
+Open <http://localhost:5173>. The Vite development server proxies `/api` and `/chatkit` to the
+HTTPS FastAPI server. The certificate is self-signed, so open <https://localhost:8000/api/health>
+once and accept the local certificate warning if the Vite proxy cannot connect. Sign in through the
+application with the built-in `ADMIN_USERNAME` and `ADMIN_PASSWORD`. Swagger remains available at
+<https://localhost:8000/docs>.
 
 Set `JWT_SECRET_KEY` to at least 32 random characters outside local development. A build-time
 `VITE_API_BEARER_TOKEN` remains available for temporary testing but should not be used in a
@@ -89,6 +88,9 @@ Then open <http://localhost:8000>.
 - **Client tools:** the root can list staged files. Document and structured-data specialists own the
   relevant text, PDF, CSV, and JSON browser tools. Results are typed evidence, not proof of durable
   storage.
+- **Separate dictation and ingestion:** ChatKit attachments stay disabled. Composer dictation sends
+  an ephemeral browser recording through the authenticated backend to `gpt-4o-mini-transcribe`;
+  uploaded audio uses the custom asset and ingestion pipeline instead.
 - **SQLAlchemy store:** ChatKit thread/item payloads are stored as version-tolerant JSON with indexed relational identity and timestamps. Each thread owns one OpenAI conversation ID, reused for turns and client-tool continuations and deleted with the thread. Removing local history for a retry rotates the conversation and replays only the surviving items. SQLite keeps local setup small; the same boundary can move to Postgres.
 - **Conversation isolation:** attachment records carry a `thread_id`. Agent input assembly must reject any attachment not belonging to the active thread.
 - **File routing before inference:** text-like files, PDFs, images, and transcribable media are classified explicitly. Unknown formats are rejected instead of being silently sent to a model.
