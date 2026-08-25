@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from io import BytesIO, StringIO
-from typing import Protocol, cast
+from typing import Protocol, TypedDict, cast
 from uuid import uuid4
 
 from openai import AsyncOpenAI
@@ -29,6 +29,7 @@ from multimedia_intelligence.billing.pricing import (
 )
 from multimedia_intelligence.billing.service import BillingService
 from multimedia_intelligence.config import Settings
+from multimedia_intelligence.context import IngestionAttemptResult, TranscriptPageResult
 from multimedia_intelligence.openai_metadata import (
     response_metadata,
     safety_identifier,
@@ -82,6 +83,19 @@ class ArtifactKind(StrEnum):
     PDF_TEXT = "pdf_text"
     PDF_IMAGE = "pdf_image"
     PDF_IMAGE_CAPTION = "pdf_image_caption"
+
+
+class TranscriptSegmentPayload(TypedDict):
+    id: str
+    start: float
+    end: float
+    speaker: str
+    text: str
+
+
+class IndexChunk(TypedDict):
+    content: bytes
+    metadata: dict[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,7 +302,9 @@ class OpenAIDiarizationGateway:
         raw = await self.client.audio.transcriptions.with_raw_response.create(  # type: ignore[call-overload]
             file=(filename, content, media_type),
             model=self.model,
-            response_format="diarized_json",
+            # The API and runtime SDK support diarized_json for this model, but the
+            # with_raw_response overload currently exposes only the text formats.
+            response_format="diarized_json",  # pyright: ignore[reportArgumentType]
             chunking_strategy="auto",
         )
         diarized = cast(TranscriptionDiarized, raw.parse())
@@ -398,7 +414,7 @@ class FileIngestionService:
         self.billing = billing
         self.settings = settings
 
-    async def prepare(self, owner_id: str, asset_id: str) -> dict[str, object]:
+    async def prepare(self, owner_id: str, asset_id: str) -> IngestionAttemptResult:
         asset = await self._owned_asset(owner_id, asset_id)
         if asset.collection_id is None:
             collection = await selected_collection(self.sessions, owner_id)
@@ -442,7 +458,7 @@ class FileIngestionService:
         description: str,
         pdf_ranges: Sequence[Mapping[str, int]] | None = None,
         pdf_image_ids: Sequence[str] | None = None,
-    ) -> dict[str, object]:
+    ) -> IngestionAttemptResult:
         description = description.strip()
         if not description:
             raise ValueError("A non-empty retrieval description is required")
@@ -773,7 +789,7 @@ class FileIngestionService:
         cursor: str | None,
         *,
         max_bytes: int = 64 * 1024,
-    ) -> dict[str, object]:
+    ) -> TranscriptPageResult:
         asset = await self._owned_asset(owner_id, asset_id)
         if classify_file(asset.filename).route not in {FileRoute.AUDIO, FileRoute.VIDEO}:
             raise ValueError("Transcripts are available only for audio and video assets")
@@ -887,20 +903,21 @@ class FileIngestionService:
                 if route is FileRoute.VIDEO
                 else None
             )
+            segments: list[TranscriptSegmentPayload] = [
+                {
+                    "id": item.id,
+                    "start": item.start,
+                    "end": item.end,
+                    "speaker": item.speaker,
+                    "text": item.text,
+                }
+                for item in transcript.segments
+            ]
             payload = {
                 "duration": transcript.duration,
                 "text": transcript.text,
                 "warning": warning,
-                "segments": [
-                    {
-                        "id": item.id,
-                        "start": item.start,
-                        "end": item.end,
-                        "speaker": item.speaker,
-                        "text": item.text,
-                    }
-                    for item in transcript.segments
-                ],
+                "segments": segments,
             }
             await self._create_bytes_artifact(
                 ingestion,
@@ -910,14 +927,14 @@ class FileIngestionService:
                 "application/json",
                 {"durationSeconds": transcript.duration, "warning": warning},
             )
-            for chunk in _transcript_chunks(payload["segments"]):
+            for chunk in _transcript_chunks(segments):
                 await self._create_bytes_artifact(
                     ingestion,
                     asset,
                     ArtifactKind.TRANSCRIPT_INDEX,
-                    cast(bytes, chunk["content"]),
+                    chunk["content"],
                     "text/markdown",
-                    cast(dict[str, object], chunk["metadata"]),
+                    chunk["metadata"],
                 )
             return {
                 "modality": route.value,
@@ -938,9 +955,9 @@ class FileIngestionService:
                     ingestion,
                     asset,
                     ArtifactKind.TEXT_REVERSE_INDEX,
-                    cast(bytes, chunk["content"]),
+                    chunk["content"],
                     "text/markdown",
-                    cast(dict[str, object], chunk["metadata"]),
+                    chunk["metadata"],
                 )
             return {
                 "modality": "text",
@@ -1616,7 +1633,7 @@ class FileIngestionService:
         return await self.blob_store.read_range(location, 0, size)
 
 
-def _attempt_result(row: AssetIngestionRow) -> dict[str, object]:
+def _attempt_result(row: AssetIngestionRow) -> IngestionAttemptResult:
     return {
         "ingestionId": row.id,
         "assetId": row.asset_id,
@@ -1802,8 +1819,8 @@ def _structured_profile_markdown(
     ).encode()
 
 
-def _text_chunks(text: str) -> list[dict[str, object]]:
-    chunks: list[dict[str, object]] = []
+def _text_chunks(text: str) -> list[IndexChunk]:
+    chunks: list[IndexChunk] = []
     start = 0
     section = "Document start"
     while start < len(text):
@@ -1834,29 +1851,27 @@ def _text_chunks(text: str) -> list[dict[str, object]]:
     return chunks
 
 
-def _transcript_chunks(segments: object) -> list[dict[str, object]]:
-    assert isinstance(segments, list)
-    chunks: list[dict[str, object]] = []
-    current: list[dict[str, object]] = []
+def _transcript_chunks(segments: Sequence[TranscriptSegmentPayload]) -> list[IndexChunk]:
+    chunks: list[IndexChunk] = []
+    current: list[TranscriptSegmentPayload] = []
     window_start = 0.0
-    for raw in segments:
-        assert isinstance(raw, dict)
-        start = _required_number(raw, "start")
+    for segment in segments:
+        start = segment["start"]
         if current and start - window_start >= 300:
             chunks.append(_transcript_chunk(current))
             current = []
         if not current:
             window_start = start
-        current.append(raw)
+        current.append(segment)
     if current:
         chunks.append(_transcript_chunk(current))
     return chunks
 
 
-def _transcript_chunk(segments: list[dict[str, object]]) -> dict[str, object]:
-    start = _required_number(segments[0], "start")
-    end = _required_number(segments[-1], "end")
-    speakers = sorted({str(item["speaker"]) for item in segments})
+def _transcript_chunk(segments: list[TranscriptSegmentPayload]) -> IndexChunk:
+    start = segments[0]["start"]
+    end = segments[-1]["end"]
+    speakers = sorted({item["speaker"] for item in segments})
     return {
         "content": (
             f"# Transcript {_timestamp(start)}–{_timestamp(end)}\n\n"

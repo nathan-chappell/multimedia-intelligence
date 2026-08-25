@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,7 +8,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -58,6 +57,14 @@ class SavedDerivedArtifact(BaseModel):
     size_bytes: int
     kind: str
     collection_id: str | None
+
+
+class DerivedArtifactMetadata(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    filename: str | None = None
+    media_type: str | None = Field(default=None, alias="mediaType")
+    size_bytes: int = Field(default=0, alias="sizeBytes", ge=0)
 
 
 def build_asset_router(
@@ -258,10 +265,9 @@ def build_asset_router(
                 SavedDerivedArtifact(
                     artifact_id=artifact.id,
                     source_asset_id=asset.id,
-                    filename=_metadata_string(metadata, "filename") or f"{artifact.id}.bin",
-                    media_type=_metadata_string(metadata, "mediaType")
-                    or "application/octet-stream",
-                    size_bytes=_metadata_integer(metadata, "sizeBytes"),
+                    filename=metadata.filename or f"{artifact.id}.bin",
+                    media_type=metadata.media_type or "application/octet-stream",
+                    size_bytes=metadata.size_bytes,
                     kind=artifact.kind,
                     collection_id=asset.collection_id,
                 )
@@ -308,7 +314,7 @@ def build_asset_router(
             )
         metadata = _artifact_metadata(artifact)
         location = ObjectLocation(bucket=artifact.bucket, key=artifact.object_key)
-        size_bytes = _metadata_integer(metadata, "sizeBytes")
+        size_bytes = metadata.size_bytes
         if size_bytes <= 0:
             size_bytes = (await blobs.head(location)).size_bytes
 
@@ -319,11 +325,11 @@ def build_asset_router(
 
         return StreamingResponse(
             artifact_chunks(),
-            media_type=_metadata_string(metadata, "mediaType") or "application/octet-stream",
+            media_type=metadata.media_type or "application/octet-stream",
             headers={
                 "Content-Length": str(size_bytes),
                 "Content-Disposition": (
-                    f'inline; filename="{_metadata_string(metadata, "filename") or artifact.id}"'
+                    f'inline; filename="{metadata.filename or artifact.id}"'
                 ),
             },
         )
@@ -466,19 +472,8 @@ def _asset_from_row(row: AssetRow) -> Asset:
     )
 
 
-def _artifact_metadata(row: DerivedArtifactRow) -> dict[str, object]:
+def _artifact_metadata(row: DerivedArtifactRow) -> DerivedArtifactMetadata:
     try:
-        value = json.loads(row.metadata_json)
-    except json.JSONDecodeError:
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
-def _metadata_string(metadata: dict[str, object], key: str) -> str | None:
-    value = metadata.get(key)
-    return value if isinstance(value, str) else None
-
-
-def _metadata_integer(metadata: dict[str, object], key: str) -> int:
-    value = metadata.get(key)
-    return value if isinstance(value, int) and value >= 0 else 0
+        return DerivedArtifactMetadata.model_validate_json(row.metadata_json)
+    except ValidationError:
+        return DerivedArtifactMetadata()

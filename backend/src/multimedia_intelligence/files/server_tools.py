@@ -11,7 +11,15 @@ from chatkit.agents import AgentContext
 from chatkit.types import GeneratedImage, GeneratedImageItem, ThreadItemDoneEvent
 from pydantic import BaseModel, ConfigDict, Field
 
-from multimedia_intelligence.context import AgentDataAccess, RequestContext
+from multimedia_intelligence.context import (
+    AgentDataAccess,
+    IngestionAttemptResult,
+    PdfRange,
+    RequestContext,
+    StructuredQueryResult,
+    TextRangeResult,
+    TranscriptPageResult,
+)
 
 
 class PdfRangeSelection(BaseModel):
@@ -28,7 +36,7 @@ def build_durable_text_tools() -> list[Tool]:
         asset_id: str,
         start: Annotated[int, Field(ge=0)] = 0,
         count: Annotated[int, Field(ge=1, le=65_536)] = 16_384,
-    ) -> dict[str, object]:
+    ) -> TextRangeResult:
         """Read a bounded UTF-8 byte range from a ready text, JSON, or CSV file."""
 
         return await _access(ctx).read_ready_text_range(
@@ -42,7 +50,7 @@ def build_file_index_tools() -> list[Tool]:
     @function_tool(name_override="prepare_ingestion")
     async def prepare_ingestion(
         ctx: ToolContext[AgentContext[RequestContext]], asset_id: str
-    ) -> dict[str, object]:
+    ) -> IngestionAttemptResult:
         """Prepare persisted modality evidence and return the ingestion ID and next state."""
 
         return await _access(ctx).prepare_ingestion(asset_id)
@@ -54,11 +62,14 @@ def build_file_index_tools() -> list[Tool]:
         description: Annotated[str, Field(min_length=1, max_length=32_000)],
         pdf_selection: list[PdfRangeSelection] | None = None,
         pdf_image_ids: list[str] | None = None,
-    ) -> dict[str, object]:
+    ) -> IngestionAttemptResult:
         """Atomically activate prepared artifacts using an evidence-backed description."""
 
-        ranges = (
-            [item.model_dump(by_alias=True) for item in pdf_selection]
+        ranges: list[PdfRange] | None = (
+            [
+                {"startPage": item.start_page, "endPage": item.end_page}
+                for item in pdf_selection
+            ]
             if pdf_selection is not None
             else None
         )
@@ -114,7 +125,7 @@ def build_file_index_tools() -> list[Tool]:
         ctx: ToolContext[AgentContext[RequestContext]],
         asset_id: str,
         expression: Annotated[str, Field(min_length=1, max_length=4_096)],
-    ) -> dict[str, object]:
+    ) -> StructuredQueryResult:
         """Run bounded JMESPath against canonical JSON or CSV-as-row-objects."""
 
         return await _access(ctx).query_file(asset_id, expression)
@@ -146,9 +157,9 @@ def build_file_index_tools() -> list[Tool]:
             x_label,
             y_label,
         )
-        artifact_id = result.get("artifactId")
-        image_url = result.pop("inlineImageData", None)
-        if isinstance(artifact_id, str) and isinstance(image_url, str):
+        artifact_id = result["artifactId"]
+        image_url = result["inlineImageData"]
+        if artifact_id and image_url:
             await ctx.context.stream(
                 ThreadItemDoneEvent(
                     item=GeneratedImageItem(
@@ -159,7 +170,7 @@ def build_file_index_tools() -> list[Tool]:
                     )
                 )
             )
-        return result
+        return {key: value for key, value in result.items() if key != "inlineImageData"}
 
     @function_tool(name_override="get_transcript")
     async def get_transcript(
@@ -168,7 +179,7 @@ def build_file_index_tools() -> list[Tool]:
         start_seconds: Annotated[float | None, Field(ge=0)] = None,
         end_seconds: Annotated[float | None, Field(ge=0)] = None,
         cursor: str | None = None,
-    ) -> dict[str, object]:
+    ) -> TranscriptPageResult:
         """Read a timestamp-continuous transcript range, paginating when needed."""
 
         if start_seconds is not None and end_seconds is not None and end_seconds < start_seconds:

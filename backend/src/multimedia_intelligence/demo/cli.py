@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
 import hashlib
 import json
@@ -8,11 +7,14 @@ import mimetypes
 import shutil
 import sys
 import urllib.request
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NotRequired, TypedDict, cast
 from uuid import uuid4
 
+from pydantic import BaseModel, Field
+from pydantic_settings import CliApp, CliSubCommand, get_subcommand
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -42,38 +44,98 @@ DEFAULT_MANIFEST = REPOSITORY_ROOT / "demo" / "manifest.json"
 DEFAULT_WORKSPACE = REPOSITORY_ROOT / "tmp" / "demo"
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Prepare and validate the agent demo collections")
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--workspace", type=Path, default=DEFAULT_WORKSPACE)
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    prepare_parser = subparsers.add_parser("prepare", help="Download and derive demo assets")
-    prepare_parser.add_argument("--force", action="store_true")
-    subparsers.add_parser("seed", help="Idempotently upload and ingest prepared assets")
-    verify_parser = subparsers.add_parser(
-        "verify", help="Verify readiness and collection isolation"
+class SurveyManifest(TypedDict):
+    years: list[int]
+    urlTemplate: str
+    output: str
+
+
+class TypeScriptDocManifest(TypedDict):
+    title: str
+    url: str
+
+
+class AssetManifest(TypedDict):
+    path: str
+    description: str
+    pdfRanges: NotRequired[list[list[int]]]
+    arxiv: NotRequired[str]
+    version: NotRequired[str]
+    url: NotRequired[str]
+    sha256: NotRequired[str]
+    title: NotRequired[str]
+    authors: NotRequired[list[str]]
+
+
+class CollectionManifest(TypedDict):
+    name: str
+    description: str
+    assets: list[AssetManifest]
+    promptFile: str
+
+
+class DemoManifest(TypedDict):
+    version: int
+    survey: SurveyManifest
+    typescriptDocs: list[TypeScriptDocManifest]
+    collections: list[CollectionManifest]
+
+
+class Prepare(BaseModel):
+    """Download and derive demo assets."""
+
+    force: bool = Field(default=False, description="Download assets even if they exist")
+
+
+class Seed(BaseModel):
+    """Idempotently upload and ingest prepared assets."""
+
+
+class Verify(BaseModel):
+    """Verify readiness and collection isolation."""
+
+    live_search: bool = Field(
+        default=False,
+        description="Run a live provider search while verifying collections",
     )
-    verify_parser.add_argument("--live-search", action="store_true")
-    subparsers.add_parser("rehearse", help="Verify and print the three demo prompts")
-    args = parser.parse_args(argv)
-    manifest = _load_manifest(args.manifest)
-    if args.command == "prepare":
-        _prepare(manifest, args.workspace, force=args.force)
+
+
+class Rehearse(BaseModel):
+    """Verify and print the three demo prompts."""
+
+
+class DemoCli(BaseModel):
+    """Prepare and validate the agent demo collections."""
+
+    manifest: Path = Field(default=DEFAULT_MANIFEST, description="Demo manifest path")
+    workspace: Path = Field(default=DEFAULT_WORKSPACE, description="Demo workspace path")
+    prepare: CliSubCommand[Prepare]
+    seed: CliSubCommand[Seed]
+    verify: CliSubCommand[Verify]
+    rehearse: CliSubCommand[Rehearse]
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    cli = CliApp.run(DemoCli, cli_args=list(argv) if argv is not None else None)
+    command = get_subcommand(cli)
+    manifest = _load_manifest(cli.manifest)
+    if isinstance(command, Prepare):
+        _prepare(manifest, cli.workspace, force=command.force)
         return 0
-    if args.command == "seed":
-        asyncio.run(_seed(manifest, args.workspace, get_settings()))
+    if isinstance(command, Seed):
+        asyncio.run(_seed(manifest, cli.workspace, get_settings()))
         return 0
-    if args.command == "verify":
-        asyncio.run(_verify(manifest, args.workspace, get_settings(), args.live_search))
+    if isinstance(command, Verify):
+        asyncio.run(_verify(manifest, cli.workspace, get_settings(), command.live_search))
         return 0
-    if args.command == "rehearse":
-        asyncio.run(_verify(manifest, args.workspace, get_settings(), False))
+    if isinstance(command, Rehearse):
+        asyncio.run(_verify(manifest, cli.workspace, get_settings(), False))
         _print_prompts(manifest)
         return 0
     raise AssertionError("unreachable")
 
 
-def _prepare(manifest: Mapping[str, object], workspace: Path, *, force: bool) -> None:
+def _prepare(manifest: DemoManifest, workspace: Path, *, force: bool) -> None:
     sources = workspace / "sources"
     generated = workspace / "generated"
     papers = workspace / "papers"
@@ -81,15 +143,15 @@ def _prepare(manifest: Mapping[str, object], workspace: Path, *, force: bool) ->
     generated.mkdir(parents=True, exist_ok=True)
     papers.mkdir(parents=True, exist_ok=True)
 
-    survey = _mapping(manifest["survey"], "survey")
-    years = [_integer(year, "survey year") for year in _sequence(survey["years"], "survey.years")]
-    template = str(survey["urlTemplate"])
+    survey = manifest["survey"]
+    years = survey["years"]
+    template = survey["urlTemplate"]
     survey_sources: dict[int, Path] = {}
     for year in years:
         destination = sources / f"stackoverflow-{year}.csv"
         _download(template.format(year=year), destination, force=force)
         survey_sources[year] = destination
-    trends_path = generated / str(survey["output"])
+    trends_path = generated / survey["output"]
     result = build_language_trends(survey_sources, trends_path)
     (generated / "methodology.md").write_text(
         methodology_markdown(years), encoding="utf-8"
@@ -104,9 +166,8 @@ def _prepare(manifest: Mapping[str, object], workspace: Path, *, force: bool) ->
         "This bundle contains verbatim official TypeScript documentation sections. Each section "
         "retains its canonical source URL; cross-source comparisons with TAPL are synthesis.\n",
     ]
-    for raw_doc in _sequence(manifest["typescriptDocs"], "typescriptDocs"):
-        doc = _mapping(raw_doc, "typescriptDocs entry")
-        title, url = str(doc["title"]), str(doc["url"])
+    for doc in manifest["typescriptDocs"]:
+        title, url = doc["title"], doc["url"]
         destination = sources / f"typescript-{_slug(title)}.md"
         _download(url, destination, force=force)
         sections.extend(
@@ -120,9 +181,8 @@ def _prepare(manifest: Mapping[str, object], workspace: Path, *, force: bool) ->
     )
 
     transformer_source = REPOSITORY_ROOT / "tmp" / "files" / "Attention is all you need.pdf"
-    for collection in _collections(manifest):
-        for raw_asset in _sequence(collection["assets"], "collection.assets"):
-            asset = _mapping(raw_asset, "asset")
+    for collection in manifest["collections"]:
+        for asset in collection["assets"]:
             arxiv = asset.get("arxiv")
             if not isinstance(arxiv, str):
                 continue
@@ -145,7 +205,7 @@ def _prepare(manifest: Mapping[str, object], workspace: Path, *, force: bool) ->
 
 
 async def _seed(
-    manifest: Mapping[str, object], workspace: Path, settings: Settings
+    manifest: DemoManifest, workspace: Path, settings: Settings
 ) -> None:
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is required to seed vector-store artifacts")
@@ -168,7 +228,7 @@ async def _seed(
         OpenAIVisionCaptionGateway(settings.openai_api_key, settings.openai_ingestion_model),
     )
     try:
-        for collection_spec in _collections(manifest):
+        for collection_spec in manifest["collections"]:
             collection = await _ensure_collection(
                 sessions,
                 settings.admin_user_id,
@@ -176,8 +236,7 @@ async def _seed(
                 str(collection_spec.get("description") or ""),
             )
             await select_collection(sessions, settings.admin_user_id, collection.id)
-            for raw_asset in _sequence(collection_spec["assets"], "collection.assets"):
-                asset_spec = _mapping(raw_asset, "asset")
+            for asset_spec in collection_spec["assets"]:
                 path = _asset_path(workspace, str(asset_spec["path"]))
                 if not path.is_file():
                     raise FileNotFoundError(f"Run demo prepare first; missing {path}")
@@ -209,7 +268,7 @@ async def _seed(
 
 
 async def _verify(
-    manifest: Mapping[str, object],
+    manifest: DemoManifest,
     workspace: Path,
     settings: Settings,
     live_search: bool,
@@ -218,7 +277,7 @@ async def _verify(
     await initialize_schema(engine)
     failures: list[str] = []
     try:
-        for collection_spec in _collections(manifest):
+        for collection_spec in manifest["collections"]:
             name = str(collection_spec["name"])
             async with sessions() as session:
                 collection = await session.scalar(
@@ -232,8 +291,7 @@ async def _verify(
                 continue
             await select_collection(sessions, settings.admin_user_id, collection.id)
             expected_ids: set[str] = set()
-            for raw_asset in _sequence(collection_spec["assets"], "collection.assets"):
-                asset_spec = _mapping(raw_asset, "asset")
+            for asset_spec in collection_spec["assets"]:
                 path = _asset_path(workspace, str(asset_spec["path"]))
                 if not path.is_file():
                     failures.append(f"missing prepared file: {path}")
@@ -283,10 +341,10 @@ async def _verify(
         raise RuntimeError("Demo verification failed:\n- " + "\n- ".join(failures))
 
 
-def _print_prompts(manifest: Mapping[str, object]) -> None:
+def _print_prompts(manifest: DemoManifest) -> None:
     print("\nDemo rehearsal prompts:\n")
-    for collection in _collections(manifest):
-        prompt_path = REPOSITORY_ROOT / "demo" / str(collection["promptFile"])
+    for collection in manifest["collections"]:
+        prompt_path = REPOSITORY_ROOT / "demo" / collection["promptFile"]
         print(f"[{collection['name']}]\n{prompt_path.read_text(encoding='utf-8').strip()}\n")
 
 
@@ -394,57 +452,28 @@ def _download(url: str, destination: Path, *, force: bool) -> None:
         raise
 
 
-def _load_manifest(path: Path) -> Mapping[str, object]:
+def _load_manifest(path: Path) -> DemoManifest:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or value.get("version") != 1:
         raise ValueError("Unsupported demo manifest")
-    _collections(value)
-    return value
-
-
-def _collections(manifest: Mapping[str, object]) -> list[Mapping[str, object]]:
-    return [
-        _mapping(value, "collection")
-        for value in _sequence(manifest.get("collections"), "collections")
-    ]
+    return cast(DemoManifest, value)
 
 
 def _asset_path(workspace: Path, configured: str) -> Path:
     return (workspace / configured).resolve()
 
 
-def _pdf_ranges(asset: Mapping[str, object]) -> list[dict[str, int]] | None:
-    raw = asset.get("pdfRanges")
-    if raw is None:
+def _pdf_ranges(asset: AssetManifest) -> list[dict[str, int]] | None:
+    ranges = asset.get("pdfRanges")
+    if ranges is None:
         return None
     return [
         {
-            "startPage": _integer(pair[0], "PDF start page"),
-            "endPage": _integer(pair[1], "PDF end page"),
+            "startPage": start_page,
+            "endPage": end_page,
         }
-        for pair in (_sequence(item, "pdf range") for item in _sequence(raw, "pdfRanges"))
+        for start_page, end_page in ranges
     ]
-
-
-def _mapping(value: object, label: str) -> Mapping[str, object]:
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be an object")
-    return value
-
-
-def _sequence(value: object, label: str) -> list[object]:
-    if not isinstance(value, list):
-        raise ValueError(f"{label} must be an array")
-    return value
-
-
-def _integer(value: object, label: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise ValueError(f"{label} must be an integer")
-    try:
-        return int(value)
-    except ValueError:
-        raise ValueError(f"{label} must be an integer") from None
 
 
 def _slug(value: str) -> str:

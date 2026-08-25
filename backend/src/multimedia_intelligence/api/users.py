@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from typing import Annotated
 
 from clerk_backend_api import models
@@ -10,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from multimedia_intelligence.auth import (
     AuthenticatedUser,
     build_current_user_dependency,
+    clerk_public_metadata,
     ensure_identity_row,
     require_admin,
 )
@@ -34,10 +34,6 @@ class AdminUserPage(BaseModel):
     has_more: bool
 
 
-def _metadata(value: object) -> Mapping[str, object]:
-    return value if isinstance(value, Mapping) else {}
-
-
 def _email(user: models.User) -> str | None:
     if user.primary_email_address_id:
         for address in user.email_addresses:
@@ -58,7 +54,7 @@ def _mapped_user(user: models.User) -> AuthenticatedUser:
         username=full_name or email or user.id,
         email=email,
         full_name=full_name,
-        is_admin=_metadata(user.public_metadata).get("role") == "admin",
+        is_admin=clerk_public_metadata(user.public_metadata).get("role") == "admin",
     )
 
 

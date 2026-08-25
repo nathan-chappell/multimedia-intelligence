@@ -1,0 +1,18 @@
+{
+  "include": ["backend/src"],
+  "exclude": [
+    "backend/tests",
+    "frontend",
+    "tmp"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "standard",
+  "executionEnvironments": [
+    {
+      "root": "backend/src",
+      "extraPaths": ["backend/src"]
+    }
+  ]
+}

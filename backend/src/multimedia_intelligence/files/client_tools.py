@@ -9,7 +9,7 @@ from agents.tool_context import ToolContext
 from chatkit.agents import AgentContext, ClientToolCall
 from pydantic import Field
 
-from multimedia_intelligence.context import ClientToolRequest, RequestContext
+from multimedia_intelligence.context import ClientToolRequest, ReadyFileReference, RequestContext
 from multimedia_intelligence.observability import log_event
 
 ChatKitToolContext = ToolContext[AgentContext[RequestContext]]
@@ -103,7 +103,7 @@ def build_file_client_tools(
         """List one page of up to 10 conversation files, including transient browser files."""
 
         app_context = ctx.context.request_context
-        durable_files: tuple[dict[str, object], ...] = ()
+        durable_files: tuple[ReadyFileReference, ...] = ()
         if app_context.data_access is not None:
             durable_files = await app_context.data_access.list_ready_file_references(
                 ctx.context.thread.id

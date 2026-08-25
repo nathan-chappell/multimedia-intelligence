@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal, TypedDict, cast
 
 import jwt
 from clerk_backend_api.sdk import Clerk
@@ -57,8 +57,12 @@ def _unauthorized(detail: str = "Invalid Clerk session") -> HTTPException:
     )
 
 
-def _metadata(value: object) -> Mapping[str, object]:
-    return value if isinstance(value, Mapping) else {}
+class ClerkPublicMetadata(TypedDict, total=False):
+    role: Literal["admin", "user"]
+
+
+def clerk_public_metadata(value: object) -> ClerkPublicMetadata:
+    return cast(ClerkPublicMetadata, value) if isinstance(value, Mapping) else {}
 
 
 async def ensure_identity_row(
@@ -145,7 +149,7 @@ async def authenticate_token(
         username=username,
         email=email,
         full_name=full_name,
-        is_admin=_metadata(clerk_user.public_metadata).get("role") == "admin",
+        is_admin=clerk_public_metadata(clerk_user.public_metadata).get("role") == "admin",
     )
     await ensure_identity_row(sessions, user)
     return user

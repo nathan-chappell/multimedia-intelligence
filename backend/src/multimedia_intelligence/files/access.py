@@ -12,6 +12,18 @@ import jmespath  # type: ignore[import-untyped]
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from multimedia_intelligence.context import (
+    ChartCreationResult,
+    CollectionContext,
+    FileSearchResult,
+    IngestionAttemptResult,
+    PdfRange,
+    ReadyFileReference,
+    StructuredQueryResult,
+    TextRangeResult,
+    TranscriptPageResult,
+)
+
 from .charts import ChartSpec, ChartType, render_chart
 from .collections import selected_collection
 from .domain import AssetState, IncludeState, IntentKind, ObjectLocation
@@ -36,15 +48,17 @@ class ScopedAgentDataAccess:
         self.blob_store = blob_store
         self.file_index = file_index
 
-    async def collection_context(self) -> dict[str, object]:
+    async def collection_context(self) -> CollectionContext:
         collection = await selected_collection(self.sessions, self.owner_id)
         return {
             "collectionId": collection.id,
             "name": collection.name,
-            "description": collection.description,
+            "description": collection.description or "",
         }
 
-    async def list_ready_file_references(self, thread_id: str) -> tuple[dict[str, object], ...]:
+    async def list_ready_file_references(
+        self, thread_id: str
+    ) -> tuple[ReadyFileReference, ...]:
         collection_id = await self._selected_collection_id()
         async with self.sessions() as session:
             rows = (
@@ -83,7 +97,7 @@ class ScopedAgentDataAccess:
         asset_id: str,
         start: int,
         count: int,
-    ) -> dict[str, object]:
+    ) -> TextRangeResult:
         collection_id = await self._selected_collection_id()
         async with self.sessions() as session:
             asset = await session.scalar(
@@ -160,7 +174,7 @@ class ScopedAgentDataAccess:
     async def prepare_ingestion(
         self,
         asset_id: str,
-    ) -> dict[str, object]:
+    ) -> IngestionAttemptResult:
         if self.file_index is None:
             raise RuntimeError("User file indexing is unavailable")
         await self._require_selected_asset(asset_id)
@@ -170,9 +184,9 @@ class ScopedAgentDataAccess:
         self,
         ingestion_id: str,
         description: str,
-        pdf_ranges: list[dict[str, int]] | None = None,
+        pdf_ranges: list[PdfRange] | None = None,
         pdf_image_ids: list[str] | None = None,
-    ) -> dict[str, object]:
+    ) -> IngestionAttemptResult:
         if self.file_index is None:
             raise RuntimeError("User file indexing is unavailable")
         async with self.sessions() as session:
@@ -187,7 +201,15 @@ class ScopedAgentDataAccess:
             self.owner_id,
             ingestion_id,
             description,
-            pdf_ranges,
+            [
+                {
+                    "startPage": page_range["startPage"],
+                    "endPage": page_range["endPage"],
+                }
+                for page_range in pdf_ranges
+            ]
+            if pdf_ranges is not None
+            else None,
             pdf_image_ids,
         )
 
@@ -196,7 +218,7 @@ class ScopedAgentDataAccess:
         query: str,
         max_results: int,
         file_types: list[str] | None = None,
-    ) -> tuple[dict[str, object], ...]:
+    ) -> tuple[FileSearchResult, ...]:
         if self.file_index is None:
             raise RuntimeError("User file search is unavailable")
         results = await self.file_index.search(
@@ -241,7 +263,7 @@ class ScopedAgentDataAccess:
         start_seconds: float | None,
         end_seconds: float | None,
         cursor: str | None,
-    ) -> dict[str, object]:
+    ) -> TranscriptPageResult:
         if self.file_index is None:
             raise RuntimeError("User file indexing is unavailable")
         await self._require_selected_asset(asset_id)
@@ -263,7 +285,7 @@ class ScopedAgentDataAccess:
         self,
         asset_id: str,
         expression: str,
-    ) -> dict[str, object]:
+    ) -> StructuredQueryResult:
         asset = await self._require_selected_asset(asset_id)
         route = classify_file(asset.filename).route
         if route not in {FileRoute.JSON, FileRoute.TABULAR}:
@@ -299,7 +321,7 @@ class ScopedAgentDataAccess:
         title: str,
         x_label: str | None,
         y_label: str | None,
-    ) -> dict[str, object]:
+    ) -> ChartCreationResult:
         asset = await self._require_selected_asset(asset_id)
         route = classify_file(asset.filename).route
         if route not in {FileRoute.JSON, FileRoute.TABULAR}:

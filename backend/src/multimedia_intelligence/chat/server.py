@@ -45,7 +45,11 @@ from multimedia_intelligence.billing.pricing import transcription_cost_microusd
 from multimedia_intelligence.billing.service import BillingService
 from multimedia_intelligence.config import get_settings
 from multimedia_intelligence.context import RequestContext
-from multimedia_intelligence.files.client_results import validate_client_tool_result
+from multimedia_intelligence.files.client_results import (
+    PdfRandomSampleResult,
+    validate_client_tool_result,
+)
+from multimedia_intelligence.files.client_tools import PDF_RANDOM_SAMPLE
 from multimedia_intelligence.observability import (
     AgentRunLoggingHooks,
     RunCorrelation,
@@ -435,7 +439,7 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
         if isinstance(latest_item, ClientToolCallItem) and latest_item.status == "completed":
             output: str | list[ResponseFunctionCallOutputItemParam] = json.dumps(latest_item.output)
             if (
-                latest_item.name == "pdf_random_sample"
+                latest_item.name == PDF_RANDOM_SAMPLE
                 and isinstance(latest_item.output, dict)
                 and latest_item.output.get("ok") is True
                 and latest_item.output.get("mode") == "as_files"
@@ -448,25 +452,17 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
                         text=json.dumps(latest_item.output),
                     )
                 ]
-                files = latest_item.output.get("files")
-                if not isinstance(files, list):
-                    raise ValueError("PDF sample result is missing files")
-                for file in files:
-                    if not isinstance(file, dict):
-                        raise ValueError("PDF sample result contains invalid file metadata")
-                    asset_id = file.get("assetId")
-                    filename = file.get("filename")
-                    if not isinstance(asset_id, str) or not isinstance(filename, str):
-                        raise ValueError("PDF sample file identity is invalid")
+                sample = PdfRandomSampleResult.model_validate(latest_item.output)
+                for file in sample.files:
                     file_url = await context.data_access.ready_file_download_url(
                         latest_item.thread_id,
-                        asset_id,
+                        file.asset_id,
                     )
                     output.append(
                         ResponseInputFileContentParam(
                             type="input_file",
                             file_url=file_url,
-                            filename=filename,
+                            filename=file.filename,
                             detail="low",
                         )
                     )

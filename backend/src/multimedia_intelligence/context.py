@@ -1,16 +1,108 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, Protocol, TypedDict
 
 from fastapi import Request
 from pydantic import SkipValidation
 
 
-class AgentDataAccess(Protocol):
-    async def collection_context(self) -> dict[str, object]: ...
+class CollectionContext(TypedDict):
+    collectionId: str
+    name: str
+    description: str
 
-    async def list_ready_file_references(self, thread_id: str) -> tuple[dict[str, object], ...]: ...
+
+class ReadyFileReference(TypedDict):
+    reference: str
+    assetId: str
+    includeId: str
+    filename: str
+    mediaType: str
+    sizeBytes: int
+    route: str
+    collectionId: str | None
+    previewPath: str
+
+
+class TextRangeResult(TypedDict):
+    assetId: str
+    start: int
+    end: int
+    text: str
+    hasMore: bool
+
+
+class PdfRange(TypedDict):
+    startPage: int
+    endPage: int
+
+
+class FileSearchResult(TypedDict):
+    assetId: str
+    artifactId: str
+    filename: str
+    mediaType: str
+    modality: str
+    artifactKind: str
+    score: float
+    snippets: list[str]
+    provenance: dict[str, object]
+    availableActions: list[str]
+
+
+class StructuredQueryResult(TypedDict):
+    assetId: str
+    expression: str
+    value: object
+    truncated: bool
+
+
+class ChartCreationResult(TypedDict):
+    artifactId: str
+    filename: str
+    mediaType: str
+    sizeBytes: int
+    sourceAssetId: str
+    collectionId: str
+    inlineImageData: str
+    downloadUrl: str
+    rowCount: int
+    plottedPoints: int
+    series: list[str]
+    caveat: str
+
+
+class TranscriptPageResult(TypedDict):
+    assetId: str
+    startSeconds: float | None
+    endSeconds: float | None
+    text: str
+    nextCursor: str | None
+    complete: bool
+    warning: object
+
+
+class IngestionAttemptResult(TypedDict):
+    ingestionId: str
+    assetId: str
+    collectionId: str
+    version: int
+    strategyVersion: str
+    status: str
+    route: str
+    preparedEvidence: object
+    description: str | None
+    error: str | None
+    active: bool
+
+
+class AgentDataAccess(Protocol):
+    async def collection_context(self) -> CollectionContext: ...
+
+    async def list_ready_file_references(
+        self, thread_id: str
+    ) -> tuple[ReadyFileReference, ...]: ...
 
     async def ready_file_download_url(self, thread_id: str, asset_id: str) -> str: ...
 
@@ -20,21 +112,21 @@ class AgentDataAccess(Protocol):
         asset_id: str,
         start: int,
         count: int,
-    ) -> dict[str, object]: ...
+    ) -> TextRangeResult: ...
 
-    async def prepare_ingestion(self, asset_id: str) -> dict[str, object]: ...
+    async def prepare_ingestion(self, asset_id: str) -> IngestionAttemptResult: ...
 
     async def commit_ingestion(
         self,
         ingestion_id: str,
         description: str,
-        pdf_ranges: list[dict[str, int]] | None = None,
+        pdf_ranges: list[PdfRange] | None = None,
         pdf_image_ids: list[str] | None = None,
-    ) -> dict[str, object]: ...
+    ) -> IngestionAttemptResult: ...
 
     async def file_search(
         self, query: str, max_results: int, file_types: list[str] | None = None
-    ) -> tuple[dict[str, object], ...]: ...
+    ) -> tuple[FileSearchResult, ...]: ...
 
     async def get_file(
         self,
@@ -43,7 +135,7 @@ class AgentDataAccess(Protocol):
         original: bool = False,
     ) -> dict[str, object]: ...
 
-    async def query_file(self, asset_id: str, expression: str) -> dict[str, object]: ...
+    async def query_file(self, asset_id: str, expression: str) -> StructuredQueryResult: ...
 
     async def create_chart(
         self,
@@ -57,7 +149,7 @@ class AgentDataAccess(Protocol):
         title: str,
         x_label: str | None,
         y_label: str | None,
-    ) -> dict[str, object]: ...
+    ) -> ChartCreationResult: ...
 
     async def get_transcript(
         self,
@@ -65,7 +157,7 @@ class AgentDataAccess(Protocol):
         start_seconds: float | None,
         end_seconds: float | None,
         cursor: str | None,
-    ) -> dict[str, object]: ...
+    ) -> TranscriptPageResult: ...
 
 
 @dataclass(frozen=True, slots=True)

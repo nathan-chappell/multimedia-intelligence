@@ -209,6 +209,7 @@ and completes a search plus modality-specific follow-up for every route.
 ```bash
 .venv/bin/ruff check --no-cache backend/src backend/tests
 .venv/bin/mypy --cache-dir=/tmp/multimedia-intelligence-mypy --config-file backend/pyproject.toml backend/src
+.venv/bin/pyright
 .venv/bin/pytest -q -s -p no:cacheprovider backend/tests
 npm --prefix frontend run build
 npm --prefix frontend run lint
