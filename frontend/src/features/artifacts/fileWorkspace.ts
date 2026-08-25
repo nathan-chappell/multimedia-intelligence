@@ -19,26 +19,74 @@ export interface IncludedLocalFile {
   durableAssetId?: string;
   includeId?: string;
   saveError?: string;
+  collectionId?: string;
+}
+
+export interface FileCollection {
+  id: string;
+  name: string;
+  description: string | null;
+  selected: boolean;
+}
+
+export interface CollectionFileSummary {
+  asset_id: string;
+  filename: string;
+  media_type: string;
+  route: FileRoute;
+  size_bytes: number;
+  created_at: string;
+  collection_id: string;
+  ingestion_status: string;
+  provider_status: "not_indexed" | "pending" | "ready" | "missing" | "error";
+  artifact_count: number;
+  provider_file_count: number;
+  included: boolean;
+  include_id: string | null;
+  last_error: string | null;
+}
+
+export interface ReconciliationSummary {
+  ready: number;
+  pending: number;
+  missing: number;
+  failed: number;
+  orphaned: number;
+  checked_at: string;
+  provider_error: string | null;
 }
 
 export interface TransientArtifact {
   id: string;
   sourceAssetId: string;
-  kind: "pdf_page_image" | "pdf_part";
+  kind: "pdf_page_image" | "pdf_part" | "chart";
   label: string;
   blob: Blob;
   previewUrl: string | null;
+  durability?: "transient" | "saved";
 }
 
 export interface FileWorkspaceValue {
   files: IncludedLocalFile[];
   artifacts: TransientArtifact[];
+  collections: FileCollection[];
+  collectionFiles: CollectionFileSummary[];
+  collectionFilesLoading: boolean;
+  collectionFilesError: string | null;
+  selectedCollectionId: string | null;
   addFiles: (files: FileList | readonly File[]) => void;
   removeFile: (assetId: string) => void;
   saveFile: (assetId: string) => Promise<void>;
   getFile: (assetId: string) => IncludedLocalFile | undefined;
   activeThreadId: string | null;
   setActiveThreadId: (threadId: string | null) => void;
+  restoreThread: (threadId: string) => void;
+  refreshThreadFiles: () => Promise<void>;
+  createCollection: (name: string, description?: string) => Promise<void>;
+  selectCollection: (collectionId: string) => Promise<void>;
+  refreshCollectionFiles: () => Promise<void>;
+  setCollectionFileIncluded: (assetId: string, included: boolean) => Promise<void>;
+  reconcileCollection: () => Promise<ReconciliationSummary>;
   registerArtifact: (
     sourceAssetId: string,
     kind: TransientArtifact["kind"],

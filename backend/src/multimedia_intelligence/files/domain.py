@@ -31,6 +31,7 @@ class ArtifactKind(StrEnum):
     JSON_PROFILE = "json_profile"
     TABLE_PROFILE = "table_profile"
     TABLE_PLOT = "table_plot"
+    CHART = "chart"
     TABLE_QUERY_DB = "table_query_db"
     PDF_PROFILE = "pdf_profile"
     PDF_PROBE_RESULT = "pdf_probe_result"
@@ -48,7 +49,6 @@ class ArtifactKind(StrEnum):
 class ObjectLocation:
     bucket: str
     key: str
-    expires_at: datetime
     etag: str | None = None
     version_id: str | None = None
 
@@ -66,6 +66,7 @@ class Asset:
     location: ObjectLocation
     state: AssetState
     created_at: datetime
+    collection_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +90,5 @@ class DerivedArtifact:
     source_asset_id: str
     kind: ArtifactKind
     location: ObjectLocation | None
-    expires_at: datetime
     provider: str | None = None
     provider_id: str | None = None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 from agents import Agent
 from agents.items import ModelResponse
@@ -9,6 +10,7 @@ from agents.tracing import custom_span
 from agents.tracing.create import get_current_trace
 from agents.usage import Usage
 
+from multimedia_intelligence.billing.service import BillingService
 from multimedia_intelligence.observability import (
     AgentRunLoggingHooks,
     RunCorrelation,
@@ -89,6 +91,43 @@ async def test_model_hook_logs_ids_and_usage_without_content(capsys: object) -> 
     assert f'"turn_id":"{correlation.turn_id}"' in captured.err
     assert "private prompt contents" not in captured.err
     assert "private model output" not in captured.err
+
+
+async def test_model_hook_appends_request_and_agent_span_correlated_cost() -> None:
+    class CapturingBilling:
+        def __init__(self) -> None:
+            self.values: dict[str, object] | None = None
+
+        async def append_event(self, **values: object) -> object:
+            self.values = values
+            return object()
+
+    billing = CapturingBilling()
+    correlation = RunCorrelation.create(group_id="thread-123", turn_id="message-456")
+    hook = AgentRunLoggingHooks(
+        correlation,
+        billing=cast(BillingService, billing),
+        user_id="user_test",
+        thread_id="thread-123",
+        settings=TEST_SETTINGS,
+    )
+    agent: Agent[None] = Agent(name="Test specialist", model="gpt-5.6-luna")
+    response = ModelResponse(
+        output=[],
+        usage=Usage(requests=1, input_tokens=100, output_tokens=20, total_tokens=120),
+        response_id="resp_cost",
+        request_id="req_cost",
+    )
+
+    with custom_span("agent billing test", data={}) as span:
+        await hook.on_llm_end(RunContextWrapper(context=None), agent, response)
+
+    assert billing.values is not None
+    assert billing.values["provider_request_id"] == "req_cost"
+    assert billing.values["provider_response_id"] == "resp_cost"
+    assert billing.values["trace_id"] == correlation.trace_id
+    assert billing.values["agent_span_id"] == span.span_id
+    assert int(cast(int, billing.values["amount_microusd"])) < 0
 
 
 async def test_handoff_hook_logs_only_agent_names(capsys: object) -> None:

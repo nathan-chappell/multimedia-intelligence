@@ -1,148 +1,201 @@
-import { useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { useFileWorkspace } from "./useFileWorkspace";
-import { useTransientStatus } from "../status/transientStatus";
+import type { CollectionFileSummary } from "./fileWorkspace";
 
 const acceptedExtensions = [
-  ".md",
-  ".txt",
-  ".json",
-  ".csv",
-  ".pdf",
-  ".png",
-  ".jpeg",
-  ".jpg",
-  ".webp",
-  ".gif",
-  ".flac",
-  ".mp3",
-  ".mpga",
-  ".m4a",
-  ".ogg",
-  ".wav",
-  ".mp4",
-  ".mpeg",
+  ".md", ".txt", ".json", ".csv", ".pdf", ".png", ".jpeg", ".jpg", ".webp",
+  ".gif", ".flac", ".mp3", ".mpga", ".m4a", ".ogg", ".wav", ".mp4", ".mpeg",
   ".webm",
 ].join(",");
 
-export function ArtifactPanel() {
+export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const { files, artifacts, addFiles, removeFile, saveFile } = useFileWorkspace();
-  const { showStatus } = useTransientStatus();
+  const [message, setMessage] = useState<string | null>(null);
+  const [busyAssetId, setBusyAssetId] = useState<string | null>(null);
+  const [reconciling, setReconciling] = useState(false);
+  const workspace = useFileWorkspace();
+  const stagedFiles = useMemo(
+    () => workspace.files.filter((file) => !file.durableAssetId || file.durability === "error"),
+    [workspace.files],
+  );
+
+  async function updateInclusion(file: CollectionFileSummary) {
+    setBusyAssetId(file.asset_id);
+    setMessage(null);
+    try {
+      await workspace.setCollectionFileIncluded(file.asset_id, !file.included);
+      setMessage(file.included ? "Removed from this conversation" : "Added to this conversation");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not update the conversation");
+    } finally {
+      setBusyAssetId(null);
+    }
+  }
+
+  async function refreshIndex() {
+    setReconciling(true);
+    setMessage("Checking OpenAI index status…");
+    try {
+      const result = await workspace.reconcileCollection();
+      setMessage(
+        result.provider_error
+          ? `Provider check failed: ${result.provider_error}`
+          : `${result.ready} ready · ${result.missing} missing · ${result.orphaned} orphaned`,
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not refresh index status");
+    } finally {
+      setReconciling(false);
+    }
+  }
 
   return (
-    <aside className="panel artifact-panel" aria-labelledby="artifact-title">
-      <div className="panel-heading">
+    <aside className={`panel artifact-panel${fullPage ? " artifact-panel-page" : ""}`} aria-labelledby="artifact-title">
+      <div className="panel-heading artifact-heading">
+        <div><span className="eyebrow">Artifacts</span><h2 id="artifact-title">Collection files</h2></div>
+        <span className="counter">{workspace.collectionFiles.length}</span>
+      </div>
+
+      <div className="collection-control">
+        <label htmlFor={fullPage ? "active-collection-page" : "active-collection"}>Active collection</label>
         <div>
-          <span className="eyebrow">Artifacts</span>
-          <h2 id="artifact-title">Conversation files</h2>
+          <select
+            id={fullPage ? "active-collection-page" : "active-collection"}
+            value={workspace.selectedCollectionId ?? ""}
+            disabled={workspace.collections.length === 0}
+            onChange={(event) => {
+              void workspace.selectCollection(event.currentTarget.value).catch((error: unknown) =>
+                setMessage(error instanceof Error ? error.message : "Could not select collection"),
+              );
+            }}
+          >
+            {workspace.collections.map((collection) => (
+              <option key={collection.id} value={collection.id}>{collection.name}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => {
+              const name = window.prompt("Name the new collection");
+              if (!name?.trim()) return;
+              void workspace.createCollection(name).catch((error: unknown) =>
+                setMessage(error instanceof Error ? error.message : "Could not create collection"),
+              );
+            }}
+          >New</button>
         </div>
-        <span className="counter">{files.length}</span>
+        <div className="collection-secondary-actions">
+          <button type="button" onClick={() => inputRef.current?.click()}>Upload files</button>
+          <button type="button" disabled={reconciling} onClick={() => void refreshIndex()}>
+            {reconciling ? "Refreshing…" : "Refresh index status"}
+          </button>
+        </div>
       </div>
 
       <input
         ref={inputRef}
         className="visually-hidden"
         type="file"
-        aria-label="Conversation files"
+        aria-label="Collection files"
         accept={acceptedExtensions}
         multiple
         onChange={(event) => {
           if (event.currentTarget.files?.length) {
-            const count = event.currentTarget.files.length;
-            addFiles(event.currentTarget.files);
-            showStatus(`${count} ${count === 1 ? "file" : "files"} staged`, {
-              tone: "success",
-            });
+            workspace.addFiles(event.currentTarget.files);
+            setMessage(`${event.currentTarget.files.length} file(s) staged for upload`);
           }
           event.currentTarget.value = "";
         }}
       />
 
-      {files.length === 0 ? (
-        <div className="empty-state">
-          <div className="file-glyph" aria-hidden="true">
-            <span />
-          </div>
-          <h3>No files staged</h3>
-          <p>Select files to inspect locally, then save the ones this conversation should keep.</p>
-          <button type="button" onClick={() => inputRef.current?.click()}>
-            Select local files
-          </button>
-        </div>
-      ) : (
-        <div className="artifact-content">
-          <button className="add-file-button" type="button" onClick={() => inputRef.current?.click()}>
-            Add more files
-          </button>
-          <div className="file-list" aria-label="Locally staged conversation files">
-            {files.map((entry) => (
-              <article className="file-card" key={entry.id}>
-                <div>
-                  <strong>{entry.file.name}</strong>
-                  <small>
-                    {entry.route} · {formatBytes(entry.file.size)}
-                  </small>
-                  <code title={entry.id}>{entry.id.slice(0, 20)}…</code>
-                  <small className={`durability durability-${entry.durability}`}>
-                    {durabilityLabel(entry.durability)}
-                  </small>
-                  {entry.saveError && <small className="save-error">{entry.saveError}</small>}
+      {message && <p className="collection-message" role="status">{message}</p>}
+      {workspace.collectionFilesError && (
+        <p className="collection-message collection-message-error" role="alert">{workspace.collectionFilesError}</p>
+      )}
+
+      <div className="artifact-content">
+        {stagedFiles.length > 0 && (
+          <section className="staged-files" aria-labelledby="staged-title">
+            <span className="eyebrow" id="staged-title">Ready to upload</span>
+            {stagedFiles.map((entry) => (
+              <div className="staged-file-row" key={entry.id}>
+                <span className="file-route-icon" aria-hidden="true">{routeIcon(entry.route)}</span>
+                <div><strong>{entry.file.name}</strong><small>{formatBytes(entry.file.size)}</small></div>
+                <button type="button" disabled={entry.durability === "uploading"} onClick={() => void workspace.saveFile(entry.id)}>
+                  {entry.durability === "uploading" ? "Saving…" : "Save"}
+                </button>
+                <button type="button" onClick={() => workspace.removeFile(entry.id)}>Remove</button>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {workspace.collectionFilesLoading ? (
+          <p className="compact-empty">Loading collection files…</p>
+        ) : workspace.collectionFiles.length === 0 ? (
+          <div className="empty-state compact-empty"><h3>This collection is empty</h3><p>Upload a file to make it available for indexing and conversations.</p></div>
+        ) : (
+          <div className="collection-file-list" aria-label="Files in the selected collection">
+            {workspace.collectionFiles.map((file) => (
+              <article className="collection-file-row" key={file.asset_id}>
+                <span className="file-route-icon" aria-hidden="true">{routeIcon(file.route)}</span>
+                <div className="collection-file-copy">
+                  <strong title={file.filename}>{file.filename}</strong>
+                  <small>{file.route} · {formatBytes(file.size_bytes)} · {formatDate(file.created_at)}</small>
+                  <span className={`index-badge index-badge-${file.provider_status}`}>{statusLabel(file)}</span>
+                  {file.last_error && <small className="save-error" title={file.last_error}>Indexing needs attention</small>}
                 </div>
-                <div className="file-actions">
-                  {entry.durability !== "included" && (
-                    <button
-                      type="button"
-                      disabled={entry.durability === "uploading"}
-                      onClick={() => void saveFile(entry.id)}
-                      aria-label={`Save ${entry.file.name}`}
-                    >
-                      {entry.durability === "uploading" ? "Saving…" : "Save"}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => removeFile(entry.id)}
-                    aria-label={`Remove ${entry.file.name}`}
-                  >
-                    Remove
-                  </button>
-                </div>
+                <button
+                  className={`include-toggle${file.included ? " included" : ""}`}
+                  type="button"
+                  disabled={!workspace.activeThreadId || busyAssetId === file.asset_id}
+                  title={workspace.activeThreadId ? undefined : "Start or select a conversation first"}
+                  onClick={() => void updateInclusion(file)}
+                >
+                  {busyAssetId === file.asset_id ? "…" : file.included ? "Included" : "Add"}
+                </button>
               </article>
             ))}
           </div>
+        )}
 
-          {artifacts.length > 0 && (
-            <section className="derived-artifacts" aria-labelledby="derived-title">
-              <span className="eyebrow" id="derived-title">
-                Transient derivatives
-              </span>
-              {artifacts.map((artifact) => (
-                <article className="artifact-card" key={artifact.id}>
-                  {artifact.previewUrl && <img src={artifact.previewUrl} alt={artifact.label} />}
-                  <div>
-                    <strong>{artifact.label}</strong>
-                    <small>{formatBytes(artifact.blob.size)} · local preview</small>
-                  </div>
-                </article>
-              ))}
-            </section>
-          )}
-        </div>
-      )}
+        {workspace.artifacts.length > 0 && (
+          <details className="derived-artifacts">
+            <summary>Derived previews ({workspace.artifacts.length})</summary>
+            {workspace.artifacts.map((artifact) => (
+              <article className="artifact-card" key={artifact.id}>
+                {artifact.previewUrl && <img src={artifact.previewUrl} alt={artifact.label} />}
+                <div>
+                  <strong>{artifact.label}</strong>
+                  <small>
+                    {formatBytes(artifact.blob.size)} · {artifact.durability === "saved" ? "saved" : "local preview"}
+                  </small>
+                </div>
+              </article>
+            ))}
+          </details>
+        )}
+      </div>
     </aside>
   );
 }
 
-function durabilityLabel(durability: string): string {
-  const labels: Record<string, string> = {
-    local: "Staged locally",
-    uploading: "Saving",
-    stored: "Stored; waiting for a conversation",
-    included: "Saved to this conversation",
-    error: "Save needs attention",
-  };
-  return labels[durability] ?? durability;
+function statusLabel(file: CollectionFileSummary): string {
+  if (file.provider_status === "ready") return `${file.provider_file_count} indexed`;
+  if (file.provider_status === "not_indexed") return "Not indexed";
+  if (file.provider_status === "missing") return "Provider file missing";
+  if (file.provider_status === "error") return "Index error";
+  return file.ingestion_status.replaceAll("_", " ");
+}
+
+function routeIcon(route: string): string {
+  const icons: Record<string, string> = { pdf: "PDF", csv: "CSV", json: "{ }", image: "IMG", audio: "AUD", video: "VID", text: "TXT" };
+  return icons[route] ?? "FILE";
+}
+
+function formatDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(value));
 }
 
 function formatBytes(bytes: number): string {

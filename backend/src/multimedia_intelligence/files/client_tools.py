@@ -9,7 +9,8 @@ from agents.tool_context import ToolContext
 from chatkit.agents import AgentContext, ClientToolCall
 from pydantic import Field
 
-from multimedia_intelligence.context import RequestContext
+from multimedia_intelligence.context import ClientToolRequest, RequestContext
+from multimedia_intelligence.observability import log_event
 
 ChatKitToolContext = ToolContext[AgentContext[RequestContext]]
 type ToolArguments = dict[str, Any]
@@ -17,18 +18,24 @@ type ClientToolInvoker = Callable[
     [ChatKitToolContext, str, ToolArguments], Awaitable[dict[str, object]]
 ]
 
-FILE_DISCOVERY_CLIENT_TOOLS = ("list_files",)
+LIST_FILES = "list_files"
+READ_TEXT_CHARS = "read_text_chars"
+PDF_RANDOM_SAMPLE = "pdf_random_sample"
+PDF_RENDER_PAGE = "pdf_render_page"
+PDF_EXTRACT_RANGE = "pdf_extract_range"
+JSON_CHARS = "json_chars"
+QUERY_STRUCTURED_DATA = "query_structured_data"
+
+FILE_DISCOVERY_CLIENT_TOOLS = (LIST_FILES,)
 DOCUMENT_CLIENT_TOOLS = (
-    "read_text_chars",
-    "pdf_random_sample",
-    "pdf_render_page",
-    "pdf_extract_range",
+    READ_TEXT_CHARS,
+    PDF_RANDOM_SAMPLE,
+    PDF_RENDER_PAGE,
+    PDF_EXTRACT_RANGE,
 )
 STRUCTURED_DATA_CLIENT_TOOLS = (
-    "csv_head",
-    "csv_stats",
-    "json_chars",
-    "json_path",
+    JSON_CHARS,
+    QUERY_STRUCTURED_DATA,
 )
 CLIENT_TOOL_NAMES = (
     *FILE_DISCOVERY_CLIENT_TOOLS,
@@ -48,6 +55,27 @@ async def _request_client_tool(
         raise RuntimeError("Only one client tool may be requested in an agent turn")
     call = ClientToolCall(name=name, arguments=arguments)
     context.context.client_tool_call = call
+    provider_item_id = (
+        context.tool_call.id
+        if context.tool_call is not None and isinstance(context.tool_call.id, str)
+        else None
+    )
+    bridge = context.context.request_context.client_tool_requests
+    if bridge is not None:
+        bridge.append(
+            ClientToolRequest(
+                name=name,
+                arguments=arguments,
+                item_id=provider_item_id,
+                call_id=context.tool_call_id,
+            )
+        )
+    log_event(
+        "client_tool.requested",
+        tool=name,
+        bridge_configured=bridge is not None,
+        provider_item_id_available=provider_item_id is not None,
+    )
     return {
         "client_tool": name,
         "status": "waiting_for_browser",
@@ -67,7 +95,7 @@ def build_file_client_tools(
     derivative before a provider upload or ingestion plan can depend on it.
     """
 
-    @function_tool(name_override="list_files")
+    @function_tool(name_override=LIST_FILES)
     async def list_files_tool(
         ctx: ChatKitToolContext,
         page: Annotated[int, Field(ge=1)] = 1,
@@ -82,11 +110,11 @@ def build_file_client_tools(
             )
         return await invoker(
             ctx,
-            "list_files",
+            LIST_FILES,
             {"page": page, "durableFiles": list(durable_files)},
         )
 
-    @function_tool(name_override="read_text_chars")
+    @function_tool(name_override=READ_TEXT_CHARS)
     async def read_text_chars_tool(
         ctx: ChatKitToolContext,
         asset_id: str,
@@ -97,11 +125,11 @@ def build_file_client_tools(
 
         return await invoker(
             ctx,
-            "read_text_chars",
+            READ_TEXT_CHARS,
             {"assetId": asset_id, "start": start, "count": count},
         )
 
-    @function_tool(name_override="json_chars")
+    @function_tool(name_override=JSON_CHARS)
     async def json_chars_tool(
         ctx: ChatKitToolContext,
         asset_id: str,
@@ -112,53 +140,25 @@ def build_file_client_tools(
 
         return await invoker(
             ctx,
-            "json_chars",
+            JSON_CHARS,
             {"assetId": asset_id, "start": start, "count": count},
         )
 
-    @function_tool(name_override="json_path")
-    async def json_path_tool(
+    @function_tool(name_override=QUERY_STRUCTURED_DATA)
+    async def query_structured_data_tool(
         ctx: ChatKitToolContext,
         asset_id: str,
-        queries: list[str],
+        expression: Annotated[str, Field(min_length=1, max_length=4096)],
     ) -> dict[str, object]:
-        """Evaluate up to eight safe JSONPath queries against a staged, bounded JSON file."""
+        """Evaluate one JMESPath expression against staged JSON or CSV converted to JSON rows."""
 
         return await invoker(
             ctx,
-            "json_path",
-            {"assetId": asset_id, "queries": queries},
+            QUERY_STRUCTURED_DATA,
+            {"assetId": asset_id, "expression": expression},
         )
 
-    @function_tool(name_override="csv_head")
-    async def csv_head_tool(
-        ctx: ChatKitToolContext,
-        asset_id: str,
-        count: int = 10,
-    ) -> dict[str, object]:
-        """Inspect headers, inferred types, and at most twenty rows from a staged CSV."""
-
-        return await invoker(
-            ctx,
-            "csv_head",
-            {"assetId": asset_id, "count": count},
-        )
-
-    @function_tool(name_override="csv_stats")
-    async def csv_stats_tool(
-        ctx: ChatKitToolContext,
-        asset_id: str,
-        columns: list[str] | None = None,
-    ) -> dict[str, object]:
-        """Compute bounded numeric summaries for selected columns in a staged CSV."""
-
-        return await invoker(
-            ctx,
-            "csv_stats",
-            {"assetId": asset_id, "columns": columns or []},
-        )
-
-    @function_tool(name_override="pdf_random_sample")
+    @function_tool(name_override=PDF_RANDOM_SAMPLE)
     async def pdf_random_sample_tool(
         ctx: ChatKitToolContext,
         asset_id: str,
@@ -171,7 +171,7 @@ def build_file_client_tools(
 
         return await invoker(
             ctx,
-            "pdf_random_sample",
+            PDF_RANDOM_SAMPLE,
             {
                 "assetId": asset_id,
                 "startPage": start_page,
@@ -181,7 +181,7 @@ def build_file_client_tools(
             },
         )
 
-    @function_tool(name_override="pdf_render_page")
+    @function_tool(name_override=PDF_RENDER_PAGE)
     async def pdf_render_page_tool(
         ctx: ChatKitToolContext,
         asset_id: str,
@@ -192,11 +192,11 @@ def build_file_client_tools(
 
         return await invoker(
             ctx,
-            "pdf_render_page",
+            PDF_RENDER_PAGE,
             {"assetId": asset_id, "page": page, "scale": scale},
         )
 
-    @function_tool(name_override="pdf_extract_range")
+    @function_tool(name_override=PDF_EXTRACT_RANGE)
     async def pdf_extract_range_tool(
         ctx: ChatKitToolContext,
         asset_id: str,
@@ -207,7 +207,7 @@ def build_file_client_tools(
 
         return await invoker(
             ctx,
-            "pdf_extract_range",
+            PDF_EXTRACT_RANGE,
             {
                 "assetId": asset_id,
                 "startPage": start_page,
@@ -218,13 +218,11 @@ def build_file_client_tools(
     tools: list[Tool] = [
         list_files_tool,
         read_text_chars_tool,
-        csv_head_tool,
-        csv_stats_tool,
         pdf_random_sample_tool,
         pdf_render_page_tool,
         pdf_extract_range_tool,
         json_chars_tool,
-        json_path_tool,
+        query_structured_data_tool,
     ]
     if names is None:
         return tools

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        VITE_API_BEARER_TOKEN: ${VITE_API_BEARER_TOKEN:-}
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
     ports:
       - "8000:8000"
     env_file:

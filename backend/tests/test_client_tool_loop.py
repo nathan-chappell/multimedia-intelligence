@@ -70,26 +70,31 @@ async def test_fixture_client_returns_valid_bounded_json_and_csv_results(
     )
 
     json_call = ClientToolCall(
-        name="json_path",
-        arguments={"assetId": "asset_json", "queries": ["$.events[*].type"]},
+        name="query_structured_data",
+        arguments={"assetId": "asset_json", "expression": "events[*].type"},
     )
-    csv_head_call = ClientToolCall(
-        name="csv_head",
-        arguments={"assetId": "asset_csv", "count": 2},
+    csv_rows_call = ClientToolCall(
+        name="query_structured_data",
+        arguments={
+            "assetId": "asset_csv",
+            "expression": "[].{region: region, revenue: revenue}",
+        },
     )
-    csv_stats_call = ClientToolCall(
-        name="csv_stats",
-        arguments={"assetId": "asset_csv", "columns": ["revenue"]},
+    csv_mean_call = ClientToolCall(
+        name="query_structured_data",
+        arguments={"assetId": "asset_csv", "expression": "avg([].revenue)"},
     )
 
     json_result = _validate(json_call, await client.execute(json_call))
-    head_result = _validate(csv_head_call, await client.execute(csv_head_call))
-    stats_result = _validate(csv_stats_call, await client.execute(csv_stats_call))
+    rows_result = _validate(csv_rows_call, await client.execute(csv_rows_call))
+    mean_result = _validate(csv_mean_call, await client.execute(csv_mean_call))
 
-    assert json_result["results"][0]["values"] == ["open", "close"]  # type: ignore[index]
-    assert head_result["head"]["sampledRowCount"] == 2  # type: ignore[index]
-    assert head_result["head"]["columns"][0]["inferredType"] == "datetime"  # type: ignore[index]
-    assert stats_result["stats"][0]["mean"] == pytest.approx(15.5)  # type: ignore[index]
+    assert json_result["value"] == ["open", "close"]
+    assert rows_result["value"] == [
+        {"region": "north", "revenue": 10.5},
+        {"region": "south", "revenue": 20.5},
+    ]
+    assert mean_result["value"] == pytest.approx(15.5)
 
 
 async def test_fixture_client_samples_text_and_extracts_pdf_range(tmp_path: Path) -> None:
@@ -99,9 +104,7 @@ async def test_fixture_client_samples_text_and_extracts_pdf_range(tmp_path: Path
         writer.add_blank_page(width=612, height=792)
     with path.open("wb") as handle:
         writer.write(handle)
-    client = FixtureFileClient(
-        [StagedFile("asset_pdf", path, "application/pdf")]
-    )
+    client = FixtureFileClient([StagedFile("asset_pdf", path, "application/pdf")])
     sample_call = ClientToolCall(
         name="pdf_random_sample",
         arguments={

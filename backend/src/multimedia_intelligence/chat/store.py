@@ -185,6 +185,45 @@ class SqlAlchemyChatKitStore(Store[RequestContext]):
         )
         return replacement_id, True
 
+    async def begin_conversation_turn(
+        self,
+        thread_id: str,
+        context: RequestContext,
+    ) -> tuple[str, bool]:
+        """Reserve a provider conversation for a turn and persist its in-flight state.
+
+        The Responses API appends function calls to a conversation before ChatKit has
+        necessarily persisted the corresponding client-tool item. If the HTTP stream is
+        interrupted in that gap, the provider conversation cannot accept another user
+        message. Leaving ``conversation_dirty`` set makes the next turn rotate the provider
+        conversation and replay the canonical local history instead.
+        """
+
+        conversation_id, replay_history = await self.prepare_conversation(thread_id, context)
+        async with self.sessions.begin() as session:
+            row = await session.get(ThreadRow, thread_id)
+            if row is None or row.owner_id != context.user_id:
+                raise NotFoundError(f"Thread {thread_id} not found")
+            if row.conversation_id != conversation_id:
+                raise RuntimeError("Conversation changed while beginning a turn")
+            row.conversation_dirty = True
+        return conversation_id, replay_history
+
+    async def complete_conversation_turn(
+        self,
+        thread_id: str,
+        conversation_id: str,
+        context: RequestContext,
+    ) -> None:
+        """Mark a fully consumed and persisted provider turn safe for continuation."""
+
+        async with self.sessions.begin() as session:
+            row = await session.get(ThreadRow, thread_id)
+            if row is None or row.owner_id != context.user_id:
+                raise NotFoundError(f"Thread {thread_id} not found")
+            if row.conversation_id == conversation_id:
+                row.conversation_dirty = False
+
     async def load_threads(
         self, limit: int, after: str | None, order: str, context: RequestContext
     ) -> Page[ThreadMetadata]:

@@ -11,7 +11,9 @@ requires-python = ">=3.12"
 dependencies = [
   "aiosqlite>=0.20,<1",
   "boto3>=1.35,<2",
+  "clerk-backend-api>=3.3,<4",
   "fastapi>=0.115,<1",
+  "jmespath>=1.0,<2",
   "lark>=1.2,<2",
   "openai>=1.109,<3",
   "openai-agents>=0.2,<1",
@@ -25,6 +27,9 @@ dependencies = [
   "sqlalchemy[asyncio]>=2.0,<3",
   "uvicorn[standard]>=0.34,<1",
 ]
+
+[project.scripts]
+multimedia-demo = "multimedia_intelligence.demo.cli:main"
 
 [project.optional-dependencies]
 dev = [

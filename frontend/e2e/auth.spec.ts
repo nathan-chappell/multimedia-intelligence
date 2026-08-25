@@ -1,59 +1,52 @@
 import { expect, test } from "@playwright/test";
 
-test("sends an unauthenticated visitor to sign in", async ({ page }) => {
-  await page.goto("/");
+const sessionUser = {
+  id: "user_test",
+  username: "Test User",
+  email: "test@example.com",
+  full_name: "Test User",
+  role: "user",
+  is_admin: false,
+  balance_microusd: 5_000_000,
+};
 
+test("sends an unauthenticated visitor to Clerk sign in", async ({ page }) => {
+  await page.goto("/");
   await expect(page).toHaveURL(/\/login$/);
-  await expect(page.getByRole("heading", { name: "Welcome back." })).toBeVisible();
 });
 
-test("signs in and stores the returned access token", async ({ page }) => {
-  await page.route("**/api/auth/token", async (route) => {
-    expect(route.request().postData()).toContain("username=admin");
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ access_token: "signed-test-token", token_type: "bearer" }),
-    });
+test("hydrates the app with a Clerk bearer token", async ({ page }) => {
+  await page.addInitScript(() =>
+    window.localStorage.setItem("e2e_clerk_token", "clerk-test-token"),
+  );
+  await page.route("**/api/auth/me", async (route) => {
+    expect(route.request().headers().authorization).toBe("Bearer clerk-test-token");
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(sessionUser) });
   });
-  await page.route("**/api/auth/me", (route) =>
+  await page.route("**/api/collections", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ id: "user_admin", username: "admin", is_admin: true }),
+      body: JSON.stringify([{ id: "collection_general", name: "General", description: null, selected: true }]),
     }),
   );
   await page.route("**/chatkit", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: "{}" }),
   );
 
-  await page.goto("/login");
-  await page.getByLabel("Username").fill("admin");
-  await page.getByLabel("Password").fill("local-development-admin-password");
-  await page.getByRole("button", { name: "Sign in" }).click();
-
-  await expect(page).toHaveURL(/\/$/);
+  await page.goto("/");
   await expect(page.getByRole("heading", { name: "Multimedia Intelligence" })).toBeVisible();
-  expect(await page.evaluate(() => localStorage.getItem("api_bearer_token"))).toBe(
-    "signed-test-token",
-  );
+  await expect(page.getByRole("link", { name: /\$5\.00 credit/ })).toBeVisible();
 });
 
-test("shows an error page for an invalid or expired token", async ({ page }) => {
+test("shows an inline error for a rejected Clerk session", async ({ page }) => {
   await page.addInitScript(() =>
-    window.localStorage.setItem("api_bearer_token", "expired-token"),
+    window.localStorage.setItem("e2e_clerk_token", "expired-token"),
   );
   await page.route("**/api/auth/me", (route) =>
-    route.fulfill({
-      status: 401,
-      contentType: "application/json",
-      body: JSON.stringify({ detail: "Invalid or expired bearer token" }),
-    }),
+    route.fulfill({ status: 401, contentType: "application/json", body: JSON.stringify({ detail: "Invalid Clerk session" }) }),
   );
 
   await page.goto("/");
-
-  await expect(page).toHaveURL(/\/auth-error$/);
-  await expect(page.getByText("Your session is invalid or has expired.")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Return to sign in" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Your Clerk session is invalid or has expired." })).toBeVisible();
 });

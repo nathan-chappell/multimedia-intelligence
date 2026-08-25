@@ -4,10 +4,8 @@ import asyncio
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from email.utils import format_datetime
 from tempfile import SpooledTemporaryFile
 from typing import BinaryIO, Protocol, cast
-from urllib.parse import urlencode
 
 import boto3  # type: ignore[import-untyped]
 from botocore.config import Config  # type: ignore[import-untyped]
@@ -70,12 +68,10 @@ class S3BlobStore:
         client: S3Client,
         *,
         spool_memory_bytes: int = 8 * MIB,
-        retention_hours: int = 24,
     ) -> None:
         self.bucket = bucket
         self.client = client
         self.spool_memory_bytes = spool_memory_bytes
-        self.retention = timedelta(hours=retention_hours)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> S3BlobStore:
@@ -85,11 +81,7 @@ class S3BlobStore:
             region_name=settings.object_store_region,
             config=Config(s3={"addressing_style": settings.object_store_url_style}),
         )
-        return cls(
-            settings.object_store_bucket,
-            cast(S3Client, client),
-            retention_hours=settings.file_retention_hours,
-        )
+        return cls(settings.object_store_bucket, cast(S3Client, client))
 
     async def put(
         self,
@@ -98,7 +90,6 @@ class S3BlobStore:
         *,
         media_type: str = "application/octet-stream",
     ) -> ObjectLocation:
-        expires_at = datetime.now(UTC) + self.retention
         with SpooledTemporaryFile(max_size=self.spool_memory_bytes, mode="w+b") as spool:
             async for chunk in chunks:
                 if chunk:
@@ -111,11 +102,9 @@ class S3BlobStore:
                 key,
                 {
                     "ContentType": media_type,
-                    "Expires": expires_at,
-                    "Tagging": _expiration_tag(expires_at),
                 },
             )
-        return self._location_from_head(key, await self._head_key(key), expires_at)
+        return self._location_from_head(key, await self._head_key(key))
 
     async def read_range(
         self,
@@ -157,8 +146,7 @@ class S3BlobStore:
         ttl_seconds: int,
     ) -> SignedUploadTicket:
         _validate_ttl(ttl_seconds)
-        expires_at = datetime.now(UTC) + self.retention
-        expiration_tag = _expiration_tag(expires_at)
+        expires_at = datetime.now(UTC) + timedelta(seconds=ttl_seconds)
         url = await asyncio.to_thread(
             self.client.generate_presigned_url,
             "put_object",
@@ -166,8 +154,6 @@ class S3BlobStore:
                 "Bucket": self.bucket,
                 "Key": key,
                 "ContentType": media_type,
-                "Expires": expires_at,
-                "Tagging": expiration_tag,
             },
             ExpiresIn=ttl_seconds,
         )
@@ -176,8 +162,6 @@ class S3BlobStore:
             expires_at=expires_at,
             required_headers={
                 "Content-Type": media_type,
-                "Expires": format_datetime(expires_at, usegmt=True),
-                "x-amz-tagging": expiration_tag,
             },
         )
 
@@ -214,12 +198,10 @@ class S3BlobStore:
         self,
         key: str,
         response: Mapping[str, object],
-        expires_at: datetime,
     ) -> ObjectLocation:
         return ObjectLocation(
             bucket=self.bucket,
             key=key,
-            expires_at=expires_at,
             etag=_optional_string(response.get("ETag")),
             version_id=_optional_string(response.get("VersionId")),
         )
@@ -236,7 +218,3 @@ def _validate_ttl(ttl_seconds: int) -> None:
 
 def _optional_string(value: object) -> str | None:
     return str(value) if value is not None else None
-
-
-def _expiration_tag(expires_at: datetime) -> str:
-    return urlencode({"expires-at": expires_at.isoformat()})

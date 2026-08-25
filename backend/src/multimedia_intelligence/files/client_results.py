@@ -52,7 +52,6 @@ class FileInfo(BaseModel):
     ]
     durable_asset_id: Identifier | None = Field(default=None, alias="durableAssetId")
     reference: ShortText | None = None
-    expires_at: ShortText | None = Field(default=None, alias="expiresAt")
     preview_path: ShortText | None = Field(default=None, alias="previewPath")
 
 
@@ -70,68 +69,11 @@ class TextCharsResult(ClientResult):
     text: str
 
 
-class JsonPathQueryResult(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    query: Annotated[str, Field(min_length=1, max_length=1024)]
-    values: Annotated[list[JsonValue], Field(max_length=100)]
+class StructuredQueryResult(ClientResult):
+    asset_id: Identifier = Field(alias="assetId")
+    expression: Annotated[str, Field(min_length=1, max_length=4096)]
+    value: JsonValue
     truncated: bool
-
-
-class JsonPathResult(ClientResult):
-    asset_id: Identifier = Field(alias="assetId")
-    results: Annotated[list[JsonPathQueryResult], Field(min_length=1, max_length=8)]
-
-
-class CsvColumn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: ShortText
-    inferred_type: Literal["integer", "number", "boolean", "datetime", "string", "unknown"] = Field(
-        alias="inferredType"
-    )
-    nullable: bool
-
-
-class CsvHead(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    columns: Annotated[list[CsvColumn], Field(min_length=1, max_length=500)]
-    rows: Annotated[list[dict[str, JsonValue]], Field(max_length=20)]
-    sampled_row_count: Annotated[int, Field(ge=0, le=200)] = Field(alias="sampledRowCount")
-
-
-class CsvHeadResult(ClientResult):
-    asset_id: Identifier = Field(alias="assetId")
-    head: CsvHead
-
-
-class CsvQuantiles(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    p25: float
-    p50: float
-    p75: float
-
-
-class CsvNumericStats(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    column: ShortText
-    count: Annotated[int, Field(ge=1)]
-    null_count: Annotated[int, Field(ge=0)] = Field(alias="nullCount")
-    invalid_count: Annotated[int, Field(ge=0)] = Field(alias="invalidCount")
-    minimum: float
-    maximum: float
-    mean: float
-    standard_deviation: float | None = Field(alias="standardDeviation")
-    quantiles: CsvQuantiles
-    approximate_quantiles: bool = Field(alias="approximateQuantiles")
-
-
-class CsvStatsResult(ClientResult):
-    asset_id: Identifier = Field(alias="assetId")
-    stats: Annotated[list[CsvNumericStats], Field(min_length=1, max_length=100)]
 
 
 class PdfPageRange(BaseModel):
@@ -217,9 +159,7 @@ type ValidClientResult = (
     ClientToolFailure
     | ListFilesResult
     | TextCharsResult
-    | JsonPathResult
-    | CsvHeadResult
-    | CsvStatsResult
+    | StructuredQueryResult
     | PdfRandomSampleResult
     | TransientArtifactResult
 )
@@ -228,9 +168,7 @@ _RESULT_MODELS: dict[str, type[BaseModel]] = {
     "list_files": ListFilesResult,
     "read_text_chars": TextCharsResult,
     "json_chars": TextCharsResult,
-    "json_path": JsonPathResult,
-    "csv_head": CsvHeadResult,
-    "csv_stats": CsvStatsResult,
+    "query_structured_data": StructuredQueryResult,
     "pdf_random_sample": PdfRandomSampleResult,
     "pdf_render_page": TransientArtifactResult,
     "pdf_extract_range": TransientArtifactResult,
@@ -274,6 +212,13 @@ def validate_client_tool_result(
             raise ValueError("File list result is incomplete for the requested page")
         if normalized["hasMore"] != (start + normalized["pageSize"] < normalized["total"]):
             raise ValueError("File list pagination metadata is inconsistent")
+
+    if (
+        tool_name == "query_structured_data"
+        and normalized["ok"] is True
+        and normalized["expression"] != arguments.get("expression")
+    ):
+        raise ValueError("Structured query result does not match the requested expression")
 
     expected_asset_id = arguments.get("assetId")
     actual_asset_id = normalized.get("assetId", normalized.get("sourceAssetId"))

@@ -1,12 +1,22 @@
 # Multimedia Intelligence
 
-A conversation-scoped multimedia assistant: each chat is grounded only in the files attached to that chat. The first-pass implementation combines a Vite/React frontend, self-hosted OpenAI ChatKit, a FastAPI backend, the OpenAI Agents SDK, and a SQLAlchemy-backed ChatKit store.
+A collection-scoped multimedia assistant: each user has a durable file library and one semantic
+reverse index, partitioned by user-created collections, while conversations retain explicit file
+includes for focused work. The implementation combines a
+Vite/React frontend, self-hosted OpenAI ChatKit, a FastAPI backend, the OpenAI Agents SDK, and a
+SQLAlchemy-backed ChatKit store.
 
-> Status: executable foundation. Chat streaming and persistence are wired. A request-scoped manager delegates to ingestion, document, structured-data, media, and image specialists. The artifact panel stages local files, can save originals to the configured Railway/S3 bucket and active conversation, and ChatKit can pause for bounded text, JSON, CSV, and PDF browser tools. The asset/include/artifact domain, descriptive ingestion strategy, typed object-store adapter, server CSV/PDF analysis, and transient PDF previews are implemented. Provider gateways, additional ingestion tools, and final artifact-to-agent input conversion remain milestones.
+> Status: executable foundation. Chat streaming and persistence are wired. A request-scoped manager
+> delegates to ingestion, document, structured-data, media, and image specialists. Modality-aware
+> ingestion commits versioned artifact sets to one OpenAI vector store per user. Discovery-only file
+> search resolves provider hits back to canonical assets; specialist tools then hydrate images/PDF
+> ranges, query JSON/CSV with JMESPath, or page through diarized transcripts.
 
 ## Why this shape
 
-The assignment asks for document-grounded conversational AI and values engineering decisions as much as breadth. This design sits between “chat with docs” and meeting intelligence: a conversation may contain text, tabular data, PDFs, images, or recorded meetings, but there is no global document collection and no cross-conversation retrieval.
+The design sits between “chat with docs” and meeting intelligence: a user library may contain text,
+tabular data, PDFs, images, or recorded meetings. Conversations can focus on explicit includes while
+the per-user reverse index supports safe discovery across that user's prior conversations.
 
 ```text
 Browser
@@ -33,11 +43,12 @@ Dockerfile multi-stage frontend build and single production server image
 
 ## Quick start
 
-Requirements: Python 3.12+, Node 20+, npm 10+, and an OpenAI API key.
+Requirements: Python 3.12+, Node 20+, npm 10+, OpenAI credentials, and a Clerk application.
 
 ```bash
 cp .env.example .env
-# Add OPENAI_API_KEY to .env
+# Add OPENAI_API_KEY, CLERK_SECRET_KEY, VITE_CLERK_PUBLISHABLE_KEY,
+# and the Clerk frontend origin to CLERK_AUTHORIZED_PARTIES.
 
 python3.12 -m venv .venv
 source .venv/bin/activate
@@ -51,7 +62,7 @@ Run the backend and frontend in separate terminals:
 ```bash
 ./scripts/create-dev-certs.sh
 set -a && source .env && set +a
-uvicorn multimedia_intelligence.main:app --reload --port 8000 \
+uvicorn multimedia_intelligence.main:app --reload --host 0.0.0.0 --port 8000 \
   --ssl-keyfile certs/localhost-key.pem \
   --ssl-certfile certs/localhost.pem
 ```
@@ -60,15 +71,29 @@ uvicorn multimedia_intelligence.main:app --reload --port 8000 \
 npm --prefix frontend run dev
 ```
 
+When working inside WSL with NVM, load NVM before running frontend commands so `npm` does not
+resolve to a Windows installation through the mounted PATH:
+
+```bash
+source "$NVM_DIR/nvm.sh"
+nvm use
+```
+
 Open <http://localhost:5173>. The Vite development server proxies `/api` and `/chatkit` to the
 HTTPS FastAPI server. The certificate is self-signed, so open <https://localhost:8000/api/health>
-once and accept the local certificate warning if the Vite proxy cannot connect. Sign in through the
-application with the built-in `ADMIN_USERNAME` and `ADMIN_PASSWORD`. Swagger remains available at
+once and accept the local certificate warning if the Vite proxy cannot connect. Sign in through
+Clerk. Set `public_metadata.role` to `admin` on the interviewer's Clerk user to expose the admin
+console. Swagger remains available at
 <https://localhost:8000/docs>.
 
-Set `JWT_SECRET_KEY` to at least 32 random characters outside local development. A build-time
-`VITE_API_BEARER_TOKEN` remains available for temporary testing but should not be used in a
-production image.
+For a LAN demo, rerun `./scripts/create-dev-certs.sh` after the machine receives its LAN address,
+then open `https://<lan-ip>:8000` and accept the certificate once. ChatKit requires this HTTPS
+origin because plain HTTP on a non-localhost address is not a secure browser context. Development
+CORS accepts localhost and RFC1918 private-network origins; production still requires explicit
+origins.
+
+Use a long random `COUPON_CODE_PEPPER`; changing it invalidates outstanding coupon codes. Clerk
+session tokens are resolved at request time and are never stored by the application.
 
 To exercise the production-shaped build:
 
@@ -81,6 +106,12 @@ Then open <http://localhost:8000>.
 ## Current decisions
 
 - **Self-hosted ChatKit:** preserves control over authentication, conversation-scoped context, tools, storage, and file lifecycle while retaining ChatKit's UI and streaming protocol.
+- **Clerk plus event-sourced access:** Clerk owns identity and administrator metadata. Signed
+  micro-USD ledger events are the sole source of truth for user balance; coupon redemptions,
+  administrator corrections, and model/transcription charges all append to the same table.
+- **Post-charge enforcement:** non-admin users need a positive balance to start billable work. The
+  completed request records its actual marked-up cost even if that makes the balance negative, and
+  later paid actions return HTTP 402. The default markup is `1.5`.
 - **Agents SDK:** owns the model/tool loop and streams through ChatKit's `stream_agent_response` adapter.
 - **Root plus specialists:** the root discovers files and hands content work to modality specialists.
   Specialists return control after gathering evidence; the ingestion strategist remains a structured
@@ -92,15 +123,29 @@ Then open <http://localhost:8000>.
   an ephemeral browser recording through the authenticated backend to `gpt-4o-mini-transcribe`;
   uploaded audio uses the custom asset and ingestion pipeline instead.
 - **SQLAlchemy store:** ChatKit thread/item payloads are stored as version-tolerant JSON with indexed relational identity and timestamps. Each thread owns one OpenAI conversation ID, reused for turns and client-tool continuations and deleted with the thread. Removing local history for a retry rotates the conversation and replays only the surviving items. SQLite keeps local setup small; the same boundary can move to Postgres.
-- **Conversation isolation:** attachment records carry a `thread_id`. Agent input assembly must reject any attachment not belonging to the active thread.
+- **History and isolation:** ChatKit history is backed by owner-filtered thread/item queries. Opening a
+  previous thread restores its saved files into the artifact panel; both thread ownership and
+  owner-matching include/asset rows are required. Bucket keys use
+  `assets/users/{user_id}/files/{asset_id}/...`, and inaccessible threads return `404` rather than
+  revealing whether another user's conversation exists.
 - **File routing before inference:** text-like files, PDFs, images, and transcribable media are classified explicitly. Unknown formats are rejected instead of being silently sent to a model.
 - **Bucket first:** every accepted original is durably written to our object store before inspection or provider upload. OpenAI file IDs and vector-store IDs are disposable references, not storage.
 - **Include is not upload:** a thread include is a reversible relationship to an asset. The same asset can be included in multiple threads without duplicating the original.
 - **Derived artifacts are replaceable:** previews, transcripts, page renders, sampled frames, chunks, profiles, and provider/index IDs can be deleted and regenerated without losing the original.
 - **Interactive ingestion:** the ingestion agent describes a provisional approach. The root performs
-  bounded work through ChatKit tool calls and revises the approach as results reveal more. Tool
-  boundaries validate ownership, limits, and side effects independently.
-- **Text retrieval, bounded vision:** OpenAI vector stores are the default text-retrieval path. Visual embeddings are deferred; PDFs, images, and sampled video frames use bounded vision calls with retained provenance.
+  bounded work through ChatKit tool calls and revises the approach as results reveal more. It also
+  commits the specialist's evidence-backed description to the asset's user index.
+- **Collections:** users create and globally select a collection in the file panel. New uploads and
+  ingestion attempts inherit that selection. One lazily created OpenAI vector store still serves
+  the user; `collection_id` attributes partition its files without multiplying stores.
+- **Per-user retrieval:** each modality contributes tailored profiles, transcript shards,
+  descriptions, source text, or page-aware PDF artifacts with provenance.
+- **Search routing:** `file_search` returns ranked metadata only. `get_file`, `query_file`, and
+  `get_transcript` perform explicit, owner- and selected-collection-scoped follow-up hydration.
+- **Saved charts:** the structured-data specialist can run bounded JMESPath and create line,
+  grouped-bar, or scatter PNGs. A chart is stored as a thread- and collection-scoped derived
+  artifact with source/query/spec provenance, rendered inline in ChatKit, and restored in the file
+  panel. Input and output limits keep chart generation predictable.
 
 ## Asset and inclusion pipeline
 
@@ -115,9 +160,12 @@ The state machine is deliberately split:
 
 1. **Upload asset:** validate envelope, stream to a quarantine key, scan/sniff, hash, and promote to an immutable bucket key.
 2. **Include asset:** create a `ThreadAssetInclude` with user intent; this does not copy or re-upload the original.
-3. **Describe an approach:** inspect metadata and bounded samples, then state a provisional strategy.
-4. **Work through ChatKit:** perform one validated tool call at a time and adapt to each result.
-5. **Use in chat:** materialize only ready artifacts belonging to active includes for the current thread.
+3. **Prepare ingestion:** persist modality evidence and reproducible artifacts; pause for ambiguous
+   PDF selections when necessary.
+4. **Commit ingestion:** upload a complete replacement set and atomically activate it after the
+   specialist supplies a grounded description.
+5. **Discover and hydrate:** search returns artifact provenance; follow-up tools provide only the
+   canonical evidence needed for the task.
 6. **Preview:** issue short-lived signed URLs and ranged/derived previews. Large originals are never loaded wholesale into browser memory.
 7. **Exclude/delete:** excluding removes the relationship. Asset deletion is a separate lifecycle operation that checks references and cleans up provider copies.
 
@@ -125,14 +173,38 @@ See [the ingestion architecture](docs/ingestion-architecture.md) for strategy ex
 See [the agent hierarchy](docs/agent-hierarchy.md) for root-agent delegation and the shared,
 owner-scoped application context.
 
-All bucket objects and disposable OpenAI file references currently have a fixed 24-hour lifetime.
-The backend records the expiration, tags bucket uploads, caps preview URLs to the remaining lifetime,
-and runs an hourly deletion sweep. During this prototype phase schema changes use a hard reset of the
-development database; migrations are intentionally deferred.
+## Demo collections
+
+The committed manifest under `demo/` defines three reproducible collections: Language Trends,
+Type Systems, and ML Foundations. Downloads and generated files stay ignored under `tmp/demo`.
+The language table is derived from official Stack Overflow survey files; Type Systems combines
+selected TAPL page ranges with official TypeScript documentation; ML Foundations contains ten
+manifest-pinned arXiv papers.
+
+```bash
+source .venv/bin/activate
+multimedia-demo prepare
+multimedia-demo seed
+multimedia-demo verify --live-search
+multimedia-demo rehearse
+```
+
+`prepare` is cache-aware, `seed` reuses matching ready checksums and resumable ingestion attempts,
+and `verify` checks expected readiness and collection-scoped provider results. TAPL must remain at
+`tmp/files/Pierce 2002 - Types and Programming Languages.pdf`; the existing Transformer PDF is
+reused when available. The rehearsal prompts are committed in `demo/prompts/`.
+
+Railway Bucket objects are durable and remain until an explicit asset-deletion operation removes
+them. Preview links are short-lived signed credentials, but their expiry does not affect the stored
+object. Disposable OpenAI resources may use provider-managed expiration. During this prototype phase
+schema changes use a hard reset of the development database; migrations are intentionally deferred.
 
 ## Tests
 
-The fast suite includes agent graph/tool-contract tests, storage adapter tests, and file analyzers. The PDF behavioral test uses the local textbook under `tmp/files` when present and verifies that a table-of-contents region is found without an API call.
+The fast suite includes agent graph/tool-contract tests, storage adapter tests, collection isolation,
+and a full modality integration matrix. The matrix ingests the real exchange-rate CSV and
+Transformer PDF under `tmp/files`, derives bounded representative fixtures for the other modalities,
+and completes a search plus modality-specific follow-up for every route.
 
 ```bash
 .venv/bin/ruff check --no-cache backend/src backend/tests
@@ -143,7 +215,46 @@ npm --prefix frontend run lint
 npm --prefix frontend run test:e2e
 ```
 
-Tests that spend OpenAI tokens or drive a complete browser/backend workflow should use the `live` or future `e2e` marker and remain opt-in. This keeps deterministic file behavior separate from provider and UI behavior.
+Tests that spend OpenAI tokens or drive a complete browser/backend workflow remain opt-in. This
+keeps deterministic file behavior separate from provider and UI behavior.
+
+The default Playwright suite includes a deterministic ChatKit protocol round trip that stages a
+file, executes `list_files` in the browser, posts the matching client-tool result, and requires a
+rendered assistant response. It also verifies that a generated chart renders inline and is restored
+as a saved collection artifact. An opt-in live browser test exercises the same path through the real
+FastAPI and OpenAI agent stack. With the backend already running:
+
+```bash
+RUN_OPENAI_E2E=1 \
+LIVE_E2E_BASE_URL=http://127.0.0.1:8000 \
+ADMIN_USERNAME=admin ADMIN_PASSWORD=admin \
+npm --prefix frontend run test:e2e -- e2e/live-agent.spec.ts --workers=1
+```
+
+Use the configured development credentials when they differ from the defaults.
+
+After `multimedia-demo seed`, the opt-in browser rehearsal runs all three collection scenarios,
+including the two inline language charts:
+
+```bash
+RUN_DEMO_E2E=1 \
+LIVE_E2E_BASE_URL=http://127.0.0.1:8000 \
+ADMIN_USERNAME=admin ADMIN_PASSWORD=admin \
+npm --prefix frontend run test:e2e -- e2e/live-demo.spec.ts --workers=1
+```
+
+The live vector-store test creates a temporary per-user store, ingests the real CSV and Transformer
+PDF, performs collection-filtered searches and follow-ups, and removes the OpenAI files/store in a
+`finally` block:
+
+```bash
+set -a
+source .env
+set +a
+RUN_OPENAI_INGESTION_LIVE=1 \
+  .venv/bin/pytest -vv -s -p no:cacheprovider \
+  backend/tests/live/test_vector_store_ingestion_live.py
+```
 
 The current live agent suite makes real `gpt-5.6` API calls for initial ingestion of text, JSON,
 CSV, PDF, image, audio, and video files. It stages a real representative file for each route instead
@@ -200,7 +311,7 @@ because debug HTTP logs may include request bodies.
 
 ## Quality and productionization backlog
 
-- Replace development user identity with authenticated tenant/user context and authorization checks on every thread and file operation.
+- Add Clerk webhooks for identity lifecycle cleanup and an explicit production data-retention policy.
 - Move SQLite to Postgres and connect the implemented `S3BlobStore` to upload-ticket/finalization routes, quarantine promotion, signed URLs, versioning, and lifecycle deletion.
 - Add bounded ingestion/transcription tools with idempotency, cancellation, and progress returned through ChatKit.
 - Add malware scanning, content-type sniffing, decompression limits, upload quotas, and image/media safety validation.

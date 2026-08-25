@@ -16,13 +16,16 @@ Root conversation agent
 
 ## Root conversation agent
 
-Discovers staged and durable files, selects a modality specialist, and synthesizes the final answer.
-It can list files but cannot read text, parse CSV or JSON, or inspect PDFs. Those capabilities belong
-to specialists. The root hands off content work and exposes the ingestion strategist as a tool.
+Discovers current-conversation files with `list_files` and searches the owner's durable library with
+`file_search`, then selects a modality specialist and synthesizes the final answer. Search is
+discovery-only and restricted to the user's globally selected collection; hydration remains a
+specialist capability. The root can start `prepare_ingestion`
+and exposes the ingestion strategist as a tool.
 
 For initial ingestion, the root discovers the file and hands off to the route-specific specialist.
 The specialist gathers bounded evidence, then returns control. The root asks the ingestion
-strategist for a provisional approach. The approach is descriptive and may change with new results.
+strategist for a provisional approach. The strategist commits a standalone retrieval description
+and any confirmed PDF selection through `commit_ingestion`.
 
 ## Behavioral test execution
 
@@ -37,18 +40,19 @@ back to the root, and ingestion-strategy delegation. The loop has a hard round l
 
 ## Specialists
 
-- **Ingestion strategist:** describes a provisional, adaptable approach; can list durable file
-  metadata. Its Pydantic output contains only a summary, an approach, and things to watch for.
+- **Ingestion strategist:** owns `commit_ingestion`, commits an evidence-backed description and
+  optional PDF selections to the user index, then
+  returns a provisional plan containing only a summary, approach, and things to watch for.
 - **Document specialist:** owns staged text reads and PDF inspect/render/extract tools, plus durable
-  file lookup and bounded text reads.
-- **Structured-data specialist:** owns staged CSV head/statistics and JSON character/JSONPath tools,
-  plus durable file lookup and bounded text reads.
-- **Media specialist:** interprets audio and video evidence; can list durable file metadata.
-- **Image specialist:** interprets visual evidence; can list durable file metadata.
+  `get_file` hydration and bounded text reads.
+- **Structured-data specialist:** owns browser JMESPath tools for included CSV/JSON and the
+  owner-scoped `query_file` JMESPath tool for assets discovered through the user index.
+- **Media specialist:** owns paginated `get_transcript` access for audio and video evidence.
+- **Image specialist:** owns `get_file` vision hydration for canonical images.
 
 Modality specialists cannot invoke one another; they only return control to the root. Client tools
-pause the active specialist and resume that specialist after validation. Durable tools remain
-read-only and owner/thread scoped.
+pause the active specialist and resume that specialist after validation. Index mutation belongs
+only to ingestion; retrieval and structured analysis are owner-scoped.
 
 ## Shared application context
 
@@ -58,16 +62,15 @@ read-only and owner/thread scoped.
 - `AgentDataAccess`: a narrow owner-scoped interface for database-backed entity information;
 - request metadata, selected model, and reasoning settings.
 
-`ScopedAgentDataAccess` exposes unexpired ready references and bounded text ranges for the active
-owner and thread. Agents never receive a raw SQLAlchemy session, unrestricted repository, bearer
-token, S3 credentials, or provider keys.
+`ScopedAgentDataAccess` exposes selected-collection conversation references, owner-library search,
+bounded reads, structured queries, and signed inputs after ownership and collection checks. Agents never receive a raw SQLAlchemy
+session, unrestricted repository, bearer token, S3 credentials, or provider keys.
 
 ## File lifetime
 
-All bucket objects and provider-file references expire after exactly 24 hours. Bucket uploads carry
-an expiration header and `expires-at` lifecycle tag; database rows retain the same timestamp so a
-cleanup worker can reconcile bucket and provider deletion. OpenAI file gateways must return an
-expiring `ProviderFileReference`, and provider deletion remains an application-owned responsibility.
+Bucket objects do not expire automatically. They remain durable until an explicit asset-deletion
+operation removes them; the expiry on a signed preview URL only limits access through that URL.
+Disposable OpenAI resources use provider-managed expiration controls.
 
 For the current prototype there are no migrations. Schema changes are applied through a hard reset
 of the development database.

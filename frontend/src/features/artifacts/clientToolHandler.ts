@@ -57,7 +57,6 @@ async function execute(
           durability: "included",
           durableAssetId: entry.assetId,
           reference: entry.reference,
-          expiresAt: entry.expiresAt,
           previewPath: entry.previewPath,
         })),
     ];
@@ -91,25 +90,16 @@ async function execute(
         ),
       };
     }
-    case "json_path": {
-      const { queryJsonPath } = await import("./jsonTools");
+    case "query_structured_data": {
+      if (entry.route !== "json" && entry.route !== "csv") {
+        throw new Error("JMESPath queries require a JSON or CSV file");
+      }
+      const expression = requiredString(params, "expression");
+      const { queryStructuredData } = await import("./structuredDataTools");
       return {
         assetId,
-        results: await queryJsonPath(entry.file, stringArray(params, "queries")),
-      };
-    }
-    case "csv_head": {
-      const { csvHead } = await import("./csvTools");
-      return {
-        assetId,
-        head: await csvHead(entry.file, integer(params, "count", 10, 1)),
-      };
-    }
-    case "csv_stats": {
-      const { csvStats } = await import("./csvTools");
-      return {
-        assetId,
-        stats: await csvStats(entry.file, optionalStringArray(params, "columns")),
+        expression,
+        ...(await queryStructuredData(entry.file, entry.route, expression)),
       };
     }
     case "pdf_random_sample": {
@@ -244,27 +234,6 @@ function number(params: Record<string, unknown>, key: string, fallback: number):
   const value = params[key] ?? fallback;
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`${key} must be a number`);
-  }
-  return value;
-}
-
-function stringArray(params: Record<string, unknown>, key: string): string[] {
-  const value = params[key];
-  if (
-    !Array.isArray(value) ||
-    !value.length ||
-    !value.every((entry) => typeof entry === "string")
-  ) {
-    throw new Error(`${key} must be a non-empty string array`);
-  }
-  return value;
-}
-
-function optionalStringArray(params: Record<string, unknown>, key: string): string[] {
-  const value = params[key];
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
-    throw new Error(`${key} must be a string array`);
   }
   return value;
 }

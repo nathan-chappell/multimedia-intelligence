@@ -24,9 +24,7 @@ class FakeS3Client:
     ) -> None:
         assert bucket == "bucket"
         assert ExtraArgs is not None
-        assert ExtraArgs["ContentType"] == "text/plain"
-        assert isinstance(ExtraArgs["Expires"], datetime)
-        assert str(ExtraArgs["Tagging"]).startswith("expires-at=")
+        assert ExtraArgs == {"ContentType": "text/plain"}
         self.objects[key] = fileobj.read()
 
     def get_object(self, **kwargs: object) -> Mapping[str, object]:
@@ -66,23 +64,18 @@ async def test_put_range_and_signed_urls() -> None:
     assert location.bucket == "bucket"
     assert location.key == "assets/one.txt"
     assert location.etag == '"etag"'
-    assert (
-        timedelta(hours=23, minutes=59)
-        < location.expires_at - datetime.now(UTC)
-        <= timedelta(hours=24)
-    )
     assert await store.read_range(location, 6, 11) == b"world"
     assert await store.signed_download_url(location, 60) == (
         "https://signed.example/get_object/assets/one.txt?ttl=60"
     )
     upload = await store.signed_upload_url("assets/two.txt", "text/plain", 60)
     assert upload.url == "https://signed.example/put_object/assets/two.txt?ttl=60"
-    assert upload.required_headers["x-amz-tagging"].startswith("expires-at=")
-    assert upload.expires_at - datetime.now(UTC) <= timedelta(hours=24)
+    assert upload.required_headers == {"Content-Type": "text/plain"}
+    assert timedelta(seconds=59) < upload.expires_at - datetime.now(UTC) <= timedelta(seconds=60)
 
 
 @pytest.mark.asyncio
 async def test_rejects_cross_bucket_locations() -> None:
     store = S3BlobStore("bucket", FakeS3Client())
     with pytest.raises(ValueError, match="different bucket"):
-        await store.read_range(ObjectLocation("other", "asset", datetime.now(UTC)), 0, 1)
+        await store.read_range(ObjectLocation("other", "asset"), 0, 1)

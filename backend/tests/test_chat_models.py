@@ -1,9 +1,14 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
+from chatkit.actions import Action
+from chatkit.agents import AgentContext
 from chatkit.types import (
     ClientToolCallItem,
     InferenceOptions,
+    NoticeEvent,
     ThreadMetadata,
     UserMessageItem,
     UserMessageTextContent,
@@ -12,7 +17,7 @@ from chatkit.types import (
 from multimedia_intelligence.agents import AssistantGraph, DescriptiveIngestionPlan
 from multimedia_intelligence.chat.models import resolve_chat_model
 from multimedia_intelligence.chat.server import MultimediaChatServer
-from multimedia_intelligence.context import ClientInfo, RequestContext
+from multimedia_intelligence.context import ClientInfo, ClientToolRequest, RequestContext
 
 
 def user_message(model: str | None) -> UserMessageItem:
@@ -60,6 +65,8 @@ def test_root_only_discovers_files_and_delegates_specialist_work() -> None:
     tool_names = {tool.name for tool in assistant.tools}
     assert tool_names == {
         "list_files",
+        "file_search",
+        "prepare_ingestion",
         "consult_ingestion_strategist",
     }
     assert {handoff.tool_name for handoff in assistant.handoffs} == {
@@ -86,23 +93,24 @@ def test_specialists_receive_modality_specific_tools() -> None:
         for specialist in graph.specialists
     }
     assert tool_names == {
-        "Ingestion strategist": set(),
+        "Ingestion strategist": {"commit_ingestion"},
         "Document specialist": {
             "read_text_chars",
             "pdf_random_sample",
             "pdf_render_page",
             "pdf_extract_range",
             "read_durable_text_range",
+            "get_file",
         },
         "Structured data specialist": {
-            "csv_head",
-            "csv_stats",
             "json_chars",
-            "json_path",
+            "query_structured_data",
             "read_durable_text_range",
+            "query_file",
+            "create_chart",
         },
-        "Media specialist": set(),
-        "Image specialist": set(),
+        "Media specialist": {"get_transcript"},
+        "Image specialist": {"get_file"},
     }
 
 
@@ -111,7 +119,9 @@ def test_client_tool_continuations_resume_with_the_owning_agent() -> None:
 
     assert graph.agent_for_client_tool("list_files") is graph.root
     assert graph.agent_for_client_tool("pdf_random_sample").name == "Document specialist"
-    assert graph.agent_for_client_tool("csv_stats").name == "Structured data specialist"
+    assert graph.agent_for_client_tool("query_structured_data").name == (
+        "Structured data specialist"
+    )
 
 
 def test_client_tool_continuation_keeps_the_originating_turn_correlation() -> None:
@@ -172,9 +182,9 @@ def test_client_tool_schemas_are_strict_and_pause_the_turn() -> None:
             "pdf_extract_range",
         ]
     }
-    structured = graph.agent_for_client_tool("csv_head")
+    structured = graph.agent_for_client_tool("query_structured_data")
     assert structured.tool_use_behavior == {
-        "stop_at_tool_names": ["csv_head", "csv_stats", "json_chars", "json_path"]
+        "stop_at_tool_names": ["json_chars", "query_structured_data"]
     }
 
 
@@ -189,6 +199,25 @@ async def test_conversation_turn_sends_only_the_current_user_message() -> None:
     assert result[0]["content"][0]["text"] == "hello"
 
 
+async def test_application_feedback_uses_native_chatkit_notices() -> None:
+    server = MultimediaChatServer(
+        store=cast(Any, SimpleNamespace()),
+        transcription_gateway=cast(Any, SimpleNamespace()),
+    )
+    context = RequestContext(client=ClientInfo(user_id="user_1", username="demo"))
+    events = [
+        event
+        async for event in server.action(
+            ThreadMetadata(id="thread_1", created_at=datetime.now(UTC)),
+            Action(type="app.notice", payload={"message": "Saved", "level": "info"}),
+            None,
+            context,
+        )
+    ]
+
+    assert events == [NoticeEvent(level="info", message="Saved")]
+
+
 async def test_conversation_continuation_sends_only_latest_client_tool_output() -> None:
     stale_call = ClientToolCallItem(
         id="tool_0",
@@ -196,7 +225,7 @@ async def test_conversation_continuation_sends_only_latest_client_tool_output() 
         created_at=datetime.now(UTC),
         status="completed",
         call_id="call_0",
-        name="csv_stats",
+        name="query_structured_data",
         arguments={"file_id": "file_0"},
         output={"ok": True, "rows": 1},
     )
@@ -294,3 +323,76 @@ async def test_rotated_conversation_replays_surviving_thread_history() -> None:
     )
 
     assert [item["role"] for item in result] == ["user", "user"]
+
+
+def test_missing_chatkit_client_tool_event_is_recovered_from_run_items() -> None:
+    thread = ThreadMetadata(id="thread_1", created_at=datetime.now(UTC))
+    context = RequestContext(client=ClientInfo(user_id="user_1", username="reader"))
+    agent_context = AgentContext(
+        thread=thread,
+        store=cast(Any, object()),
+        request_context=context,
+    )
+    result = SimpleNamespace(
+        new_items=[
+            SimpleNamespace(
+                type="tool_call_item",
+                tool_name="list_files",
+                call_id="call_provider",
+                raw_item=SimpleNamespace(id="fc_provider"),
+            ),
+            SimpleNamespace(
+                type="tool_call_output_item",
+                output=(
+                    "{'client_tool': 'list_files', 'status': 'waiting_for_browser', "
+                    "'arguments': {'page': 1, 'durableFiles': []}}"
+                ),
+            ),
+        ]
+    )
+    server = cast(
+        MultimediaChatServer,
+        SimpleNamespace(store=SimpleNamespace(generate_item_id=lambda *_args: "fallback")),
+    )
+
+    event = MultimediaChatServer._recover_client_tool_event(
+        server, result, agent_context, thread, context
+    )
+
+    assert event is not None
+    assert event.item.id == "fc_provider"
+    assert event.item.call_id == "call_provider"
+    assert event.item.name == "list_files"
+    assert event.item.arguments == {"page": 1, "durableFiles": []}
+
+
+def test_missing_chatkit_client_tool_event_is_recovered_from_tool_bridge() -> None:
+    thread = ThreadMetadata(id="thread_1", created_at=datetime.now(UTC))
+    context = RequestContext(
+        client=ClientInfo(user_id="user_1", username="reader"),
+        client_tool_requests=[
+            ClientToolRequest(
+                name="list_files",
+                arguments={"page": 1, "durableFiles": []},
+                item_id="fc_provider",
+                call_id="call_provider",
+            )
+        ],
+    )
+    agent_context = AgentContext(
+        thread=thread,
+        store=cast(Any, object()),
+        request_context=context,
+    )
+    server = cast(
+        MultimediaChatServer,
+        SimpleNamespace(store=SimpleNamespace(generate_item_id=lambda *_args: "fallback")),
+    )
+
+    event = MultimediaChatServer._recover_client_tool_event(
+        server, SimpleNamespace(new_items=[]), agent_context, thread, context
+    )
+
+    assert event is not None
+    assert event.item.id == "fc_provider"
+    assert event.item.call_id == "call_provider"

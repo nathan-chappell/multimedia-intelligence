@@ -1,149 +1,148 @@
-import { FormEvent, ReactNode, useEffect, useState } from "react";
-
+/* eslint-disable react-refresh/only-export-components */
+import { SignIn, SignUp, useAuth } from "@clerk/react";
 import {
-  clearBearerToken,
-  getAuthError,
-  getBearerToken,
-  markAuthFailure,
-  storeBearerToken,
-} from "../../lib/config";
+  createContext,
+  ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 
-type AuthState = "checking" | "authenticated";
+import { authenticatedFetch, setClerkTokenGetter } from "../../lib/config";
+
+export interface SessionUser {
+  id: string;
+  username: string;
+  email: string | null;
+  full_name: string | null;
+  role: "admin" | "user";
+  is_admin: boolean;
+  balance_microusd: number;
+}
+
+interface SessionContextValue {
+  user: SessionUser;
+  reload: () => Promise<void>;
+}
+
+const SessionContext = createContext<SessionContextValue | null>(null);
+
+export function useSessionUser(): SessionContextValue {
+  const value = useContext(SessionContext);
+  if (!value) throw new Error("useSessionUser must be used inside AuthGate");
+  return value;
+}
 
 export function AuthGate({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<AuthState>("checking");
+  if (import.meta.env.VITE_E2E_AUTH === "true") {
+    return <E2EAuthGate>{children}</E2EAuthGate>;
+  }
+  return <ClerkAuthGate>{children}</ClerkAuthGate>;
+}
+
+function ClerkAuthGate({ children }: { children: ReactNode }) {
+  const { getToken, isLoaded, isSignedIn } = useAuth();
+  const [user, setUser] = useState<SessionUser>();
+  const [error, setError] = useState<string>();
 
   useEffect(() => {
-    const token = getBearerToken();
-    if (!token) {
+    setClerkTokenGetter(async () => (await getToken()) ?? null);
+    return () => setClerkTokenGetter(undefined);
+  }, [getToken]);
+
+  const reload = useCallback(async () => {
+    const response = await authenticatedFetch("/api/auth/me");
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null) as { detail?: string } | null;
+      throw new Error(detail?.detail ?? "We could not verify your Clerk session.");
+    }
+    setUser((await response.json()) as SessionUser);
+  }, []);
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    if (!isSignedIn) {
       window.location.replace("/login");
       return;
     }
-
-    const controller = new AbortController();
-    fetch("/api/auth/me", {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    })
-      .then((response) => {
-        if (response.ok) {
-          setState("authenticated");
-          return;
-        }
-        if (response.status === 401) {
-          markAuthFailure("Your session is invalid or has expired.");
-        } else {
-          markAuthFailure("We could not verify your session.");
-        }
-        window.location.replace("/auth-error");
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        markAuthFailure("The authentication service could not be reached.");
-        window.location.replace("/auth-error");
+    queueMicrotask(() => {
+      void reload().catch((reason: unknown) => {
+        setError(reason instanceof Error ? reason.message : "Authentication failed");
       });
+    });
+  }, [isLoaded, isSignedIn, reload]);
 
-    return () => controller.abort();
-  }, []);
-
-  if (state === "checking") {
+  if (!isLoaded || (isSignedIn && !user && !error)) {
+    return <AuthStatus title="Checking your Clerk session…" />;
+  }
+  if (error) {
     return (
-      <main className="auth-page" aria-live="polite">
+      <main className="auth-page">
         <section className="auth-card auth-card-centered">
-          <span className="eyebrow">Multimedia Intelligence</span>
-          <h1>Checking your session…</h1>
+          <span className="eyebrow">Authentication error</span>
+          <h1>We couldn’t open your workspace.</h1>
+          <p>{error}</p>
+          <button type="button" onClick={() => window.location.reload()}>Try again</button>
         </section>
       </main>
     );
   }
+  if (!user) return null;
 
-  return children;
+  return <SessionContext.Provider value={{ user, reload }}>{children}</SessionContext.Provider>;
+}
+
+function E2EAuthGate({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<SessionUser>();
+  const [error, setError] = useState<string>();
+  const token = window.localStorage.getItem("e2e_clerk_token");
+
+  const reload = useCallback(async () => {
+    const response = await authenticatedFetch("/api/auth/me");
+    if (!response.ok) throw new Error("Your Clerk session is invalid or has expired.");
+    setUser((await response.json()) as SessionUser);
+  }, []);
+
+  useEffect(() => {
+    if (!token) {
+      window.location.replace("/login");
+      return;
+    }
+    setClerkTokenGetter(async () => token);
+    queueMicrotask(() => {
+      void reload().catch((reason: unknown) => setError(String(reason)));
+    });
+    return () => setClerkTokenGetter(undefined);
+  }, [reload, token]);
+
+  if (error) return <AuthStatus title={error} />;
+  if (!user) return <AuthStatus title="Checking your Clerk session…" />;
+  return <SessionContext.Provider value={{ user, reload }}>{children}</SessionContext.Provider>;
 }
 
 export function LoginPage() {
-  const [error, setError] = useState<string>();
-  const [submitting, setSubmitting] = useState(false);
-
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setError(undefined);
-    setSubmitting(true);
-    const form = new FormData(event.currentTarget);
-    const body = new URLSearchParams({
-      username: String(form.get("username") ?? ""),
-      password: String(form.get("password") ?? ""),
-    });
-
-    try {
-      const response = await fetch("/api/auth/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body,
-      });
-      if (!response.ok) {
-        setError(
-          response.status === 401
-            ? "The username or password is incorrect."
-            : "Sign-in is unavailable right now. Please try again.",
-        );
-        return;
-      }
-      const result = (await response.json()) as { access_token?: unknown };
-      if (typeof result.access_token !== "string" || !result.access_token) {
-        setError("The server returned an invalid sign-in response.");
-        return;
-      }
-      storeBearerToken(result.access_token);
-      window.location.replace("/");
-    } catch {
-      setError("The authentication service could not be reached.");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   return (
     <main className="auth-page">
-      <section className="auth-card">
-        <span className="eyebrow">Multimedia Intelligence</span>
-        <h1>Welcome back.</h1>
-        <p>Sign in to open your conversation workspace.</p>
-        <form onSubmit={submit}>
-          <label htmlFor="username">Username</label>
-          <input id="username" name="username" autoComplete="username" required autoFocus />
-          <label htmlFor="password">Password</label>
-          <input
-            id="password"
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            required
-          />
-          {error && <p className="form-error" role="alert">{error}</p>}
-          <button type="submit" disabled={submitting}>
-            {submitting ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-      </section>
+      <SignIn routing="path" path="/login" signUpUrl="/sign-up" forceRedirectUrl="/" />
     </main>
   );
 }
 
-export function AuthErrorPage() {
-  const message = getAuthError() ?? "Your session could not be verified.";
-
-  const resetSession = () => {
-    clearBearerToken();
-    window.sessionStorage.removeItem("auth_error");
-  };
-
+export function SignUpPage() {
   return (
     <main className="auth-page">
+      <SignUp routing="path" path="/sign-up" signInUrl="/login" forceRedirectUrl="/account" />
+    </main>
+  );
+}
+
+function AuthStatus({ title }: { title: string }) {
+  return (
+    <main className="auth-page" aria-live="polite">
       <section className="auth-card auth-card-centered">
-        <span className="eyebrow">Authentication error</span>
-        <h1>We couldn’t open your workspace.</h1>
-        <p>{message}</p>
-        <a href="/login" onClick={resetSession}>Return to sign in</a>
+        <span className="eyebrow">Multimedia Intelligence</span>
+        <h1>{title}</h1>
       </section>
     </main>
   );

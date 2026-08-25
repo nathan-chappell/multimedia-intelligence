@@ -1,48 +1,80 @@
+import { UserButton } from "@clerk/react";
 import { ArtifactPanel } from "../features/artifacts/ArtifactPanel";
 import { FileWorkspaceProvider } from "../features/artifacts/FileWorkspaceProvider";
 import { ChatPanel } from "../features/chat/ChatPanel";
-import { AuthErrorPage, AuthGate, LoginPage } from "../features/auth/AuthPages";
-import { TransientStatusProvider } from "../features/status/TransientStatusProvider";
+import { AuthGate, LoginPage, SignUpPage, useSessionUser } from "../features/auth/AuthPages";
+import { AccountPage, AdminPage } from "../features/billing/BillingPages";
 
 export function App() {
   if (window.location.pathname === "/login") {
     return <LoginPage />;
   }
 
-  if (window.location.pathname === "/auth-error") {
-    return <AuthErrorPage />;
+  if (window.location.pathname === "/sign-up") {
+    return <SignUpPage />;
   }
 
   return (
     <AuthGate>
-      {window.location.pathname === "/" ? <Workspace /> : <NotFoundPage />}
+      <AuthenticatedRoute />
     </AuthGate>
   );
 }
 
-function Workspace() {
-  return (
-    <TransientStatusProvider>
-      <FileWorkspaceProvider>
-        <main className="app-shell">
-          <header className="masthead">
-            <div>
-              <span className="eyebrow">Conversation workspace</span>
-              <h1>Multimedia Intelligence</h1>
-            </div>
-            <div className="scope-chip">
-              <span aria-hidden="true" /> Files stay scoped to this conversation
-            </div>
-          </header>
+function AuthenticatedRoute() {
+  const { user } = useSessionUser();
+  if (window.location.pathname === "/") return <Workspace />;
+  if (window.location.pathname === "/files") return <FilesPage />;
+  if (window.location.pathname === "/account") return <AccountPage />;
+  if (window.location.pathname === "/admin" && user.is_admin) return <AdminPage />;
+  return <NotFoundPage />;
+}
 
-          <section className="workspace" aria-label="Conversation workspace">
-            <ChatPanel />
-            <ArtifactPanel />
-          </section>
-        </main>
-      </FileWorkspaceProvider>
-    </TransientStatusProvider>
+function Workspace() {
+  const { user } = useSessionUser();
+  return (
+    <FileWorkspaceProvider>
+      <main className="app-shell">
+        <WorkspaceHeader user={user} eyebrow="Conversation workspace" />
+        <section className="workspace" aria-label="Conversation workspace">
+          <ChatPanel />
+          <ArtifactPanel />
+        </section>
+      </main>
+    </FileWorkspaceProvider>
   );
+}
+
+function FilesPage() {
+  const { user } = useSessionUser();
+  return (
+    <FileWorkspaceProvider>
+      <main className="app-shell files-page-shell">
+        <WorkspaceHeader user={user} eyebrow="Collection library" />
+        <ArtifactPanel fullPage />
+      </main>
+    </FileWorkspaceProvider>
+  );
+}
+
+function WorkspaceHeader({ user, eyebrow }: { user: ReturnType<typeof useSessionUser>["user"]; eyebrow: string }) {
+  return (
+    <header className="masthead">
+      <div><span className="eyebrow">{eyebrow}</span><h1>Multimedia Intelligence</h1></div>
+      <div className="masthead-actions">
+        <a href="/" className="nav-link">Chat</a>
+        <a href="/files" className="nav-link">Files</a>
+        <a href="/account" className="balance-chip">{formatUsd(user.balance_microusd)} credit</a>
+        {user.is_admin && <a href="/admin" className="nav-link">Admin</a>}
+        <UserButton />
+      </div>
+    </header>
+  );
+}
+
+function formatUsd(microusd: number): string {
+  return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" })
+    .format(microusd / 1_000_000);
 }
 
 function NotFoundPage() {

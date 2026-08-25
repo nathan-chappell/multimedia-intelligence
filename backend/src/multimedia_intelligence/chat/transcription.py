@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Protocol, cast
 
 from openai import AsyncOpenAI
+from openai.types.audio.transcription_verbose import TranscriptionVerbose
 
 _DICTATION_SUFFIXES = {
     "audio/mp4": ".mp4",
@@ -11,8 +13,19 @@ _DICTATION_SUFFIXES = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class TranscriptionOutput:
+    text: str
+    duration_seconds: float
+    request_id: str | None
+
+
 class TranscriptionGateway(Protocol):
-    async def transcribe(self, audio: bytes, media_type: str) -> str: ...
+    model: str
+
+    async def transcribe(
+        self, audio: bytes, media_type: str
+    ) -> TranscriptionOutput | str: ...
 
 
 class OpenAITranscriptionGateway:
@@ -37,7 +50,7 @@ class OpenAITranscriptionGateway:
             self._client = AsyncOpenAI(api_key=self.api_key)
         return self._client
 
-    async def transcribe(self, audio: bytes, media_type: str) -> str:
+    async def transcribe(self, audio: bytes, media_type: str) -> TranscriptionOutput:
         if not audio:
             raise ValueError("Dictation audio is empty")
         if len(audio) > self.max_audio_bytes:
@@ -46,9 +59,14 @@ class OpenAITranscriptionGateway:
         if suffix is None:
             raise ValueError(f"Unsupported dictation media type: {media_type}")
 
-        result = await self.client.audio.transcriptions.create(
+        raw = await self.client.audio.transcriptions.with_raw_response.create(
             file=(f"dictation{suffix}", audio, media_type),
             model=self.model,
-            response_format="json",
+            response_format="verbose_json",
         )
-        return result.text.strip()
+        result = cast(TranscriptionVerbose, raw.parse())
+        return TranscriptionOutput(
+            text=result.text.strip(),
+            duration_seconds=float(result.duration),
+            request_id=raw.request_id,
+        )

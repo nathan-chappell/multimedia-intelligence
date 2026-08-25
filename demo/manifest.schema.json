@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Multimedia Intelligence demo manifest",
+  "type": "object",
+  "required": ["version", "survey", "collections"],
+  "properties": {
+    "version": {"type": "integer", "minimum": 1},
+    "survey": {"type": "object"},
+    "collections": {"type": "array", "minItems": 1}
+  }
+}

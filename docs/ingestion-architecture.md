@@ -5,11 +5,16 @@ The system separates durable files, conversation scope, and model-facing represe
 ```text
 Asset (immutable original in Railway Bucket)
    │
+   ├── AssetIngestion 1..n ── versioned prepared evidence + status
+   │       └── AssetIndexArtifact 1..n ── bucket object + provider file + provenance
+   │                                      ↓
+   │                              UserVectorStore (one per owner)
+   │
    ├── ThreadAssetInclude (thread scope + user intent)
    │       │
    │       └── DerivedArtifact 0..n
    │              ├── profile/transcript/frame/page/chunks in our bucket
-   │              └── disposable OpenAI file/vector-store reference
+   │              └── replaceable provider-file reference
    │
    └── another ThreadAssetInclude (independent plan and lifecycle)
 
@@ -25,7 +30,13 @@ ChatKit Attachment = transport/UI metadata pointing at an include, never storage
 5. Each tool call validates authorization and limits independently and returns its result through ChatKit.
 6. Only ready artifacts from active includes owned by the current user enter a chat turn.
 7. Browser results are bounded proposals. The backend verifies identity, size, hash, and authorization before persisting or trusting them.
-8. Every bucket object and OpenAI file reference expires after 24 hours; provider IDs are deleted by the application rather than treated as durable storage.
+8. Bucket objects are durable until explicitly deleted. Disposable OpenAI resources use the
+   provider's expiration controls and are never treated as durable storage.
+9. A vector store belongs to a user, never to a conversation. Every provider hit is resolved back
+   through an owner-matching canonical asset before bytes or structured tools become available.
+10. A collection is a logical partition, not another vector store. Uploads, ingestion attempts,
+    provider attributes, search filters, and follow-up hydration must all match the user's global
+    selected collection.
 
 ## Storage: Railway Buckets
 
@@ -47,53 +58,60 @@ Presigned upload completion is not proof of safe ingestion. Finalization must `H
 ```text
 upload → quarantine → hash/sniff/scan → durable Asset
                                       ↓
-include + intent → bounded ChatKit inspection tool
+prepare_ingestion → persisted modality evidence and artifacts
                                       ↓
-                  specialist evidence + provisional approach
+               matching specialist produces a grounded description
                                       ↓
-                      next ChatKit tool call
-                              ↓
-                    result or new discovery
-                       ↓                 ↓
-                  continue          revise approach
+       commit_ingestion → replacement upload set → atomic activation
+                                      ↓
+              file_search returns ranked metadata only
+                  ↓                 ↓                   ↓
+              get_file          query_file        get_transcript
 ```
 
-The ingestion strategist returns a Pydantic-validated descriptive object with a short summary,
-provisional approach, and conditions to watch for. It is part of the conversation and is not stored
-as a database workflow. The active modality specialist chooses bounded inspection tools; the root
-routes work and revises the overall approach. Tool schemas and backend policy—not plan prose—enforce
-size, ownership, and expiration rules.
+`prepare_ingestion` persists each completed stage under a versioned attempt. States are
+`preparing`, `prepared`, `awaiting_guidance`, `indexing`, `ready`, and `failed`. The ingestion
+strategist alone calls `commit_ingestion`. A replacement is uploaded completely before its database
+records become active; failed replacements leave the previous ready attempt searchable. Retrying a
+commit reuses already uploaded artifacts and does not repeat provider uploads.
 
 ## Structured-data tools
 
-### CSV
+### CSV and JSON
 
-`CsvAnalyzer` implements the initial read-only tool surface:
+The browser exposes one `query_structured_data` tool for included files. JSON is parsed directly;
+CSV is parsed with its header row as object keys and dynamic JSON-compatible typing for values. The
+resulting array of row objects is queried with JMESPath (`jmespath.js`). Results are capped at 100
+top-level array entries and 256 KiB, and complete-file parsing has a 64 MiB browser ceiling.
 
-- `Head()` returns headers, inferred types, nullability, and up to ten coerced rows.
-- `Rows(start, count, columns?)` projects columns and enforces a per-call row limit.
-- `Stats(columns?)` streams finite numeric values through Welford variance. Quantiles use a deterministic 10,000-value reservoir and report when approximate.
-- `Plot({column,label?}, {column,label?})` produces a PNG. Numeric pairs become a sampled scatter plot; categorical-x/numeric-y becomes a top-category mean bar chart.
+The analyst starts with `[0]` for CSV or a focused object projection for JSON, then uses JMESPath
+filters, projections, multiselects, and functions for subsequent questions. CSV and JSON content
+never enters the prompt wholesale. Repeated calls should eventually use a materialized
+DuckDB/Polars-style artifact rather than rescanning remote bytes. For a user-library result found by
+`file_search`, the structured-data specialist uses `query_file` against the
+owner-checked canonical bucket object.
 
-The analyst should inspect the head, request relevant statistics and rows, inspect at most a few plots, summarize evidence, and ask the user what to pursue next. Plot PNGs become bucket-backed `TABLE_PLOT` artifacts before they are supplied as model vision input.
-
-CSV content never enters the prompt wholesale. Repeated calls should eventually use a materialized DuckDB/Polars-style artifact rather than rescanning remote bytes.
+`create_chart` applies a second bounded JMESPath expression to the canonical CSV/JSON asset and
+supports line, grouped-bar, and scatter charts. It accepts at most 5,000 rows, 12 series, and 50 bar
+categories, requires a numeric Y field, and emits an optimized 1200×675 PNG of at most 512 KiB.
+Each saved chart records its source asset, collection, thread, expression, complete chart spec,
+sample size, and plotted-series provenance. ChatKit receives an inline generated-image item while
+the authenticated artifact endpoint lets the file panel restore the same bucket object. The tool
+belongs only to the structured-data specialist, whose prompt requires sample-size and observational
+data caveats.
 
 For semantic search over a text column, do not create one OpenAI file per row. That creates provider-object and lifecycle overhead. First normalize rows into provenance-bearing shards with stable row IDs. Evaluate shard retrieval. If true row-level nearest-neighbor behavior is required, use a direct embeddings + pgvector path later; OpenAI vector stores ingest files and do not promise one vector per CSV row.
 
-### JSON
+For JSON only, `json_chars` remains available for streaming a bounded character range before a
+complete parse. Above the JMESPath input limit, a later server tool can provide streaming inspection
+or a structural index.
 
-The client tool layer implements:
+The OpenAI custom-tool contract embeds `jmespath.lark`, a Lark translation of the official JMESPath
+1.0 ABNF and binding order. The same grammar is validated server-side; grammar-constrained model
+output is still not authorization.
 
-- `Chars(start,count)`, using streaming UTF-8 decoding so a character range does not load the whole file;
-- `JsonPath(query|query...)`, using `jsonpath-plus`, capped at eight queries, 100 values per query, and a response-byte budget.
-
-JSONPath requires parsing the complete JSON value and therefore has a browser file-size ceiling.
-Above that limit, a later server tool can provide streaming inspection or a structural index.
-
-The OpenAI custom-tool contract includes `json_inspection.lark`. It allows property, array-index, wildcard, and quoted-property selectors but intentionally excludes script expressions and filters. The same grammar is validated server-side; grammar-constrained model output is not authorization.
-
-Selected JSON subtrees can later be normalized into structure-aware text shards with JSONPath provenance before vector-store ingestion.
+Selected subtrees can later be normalized into structure-aware text shards with JMESPath provenance
+before vector-store ingestion.
 
 ## PDF strategy
 
@@ -113,13 +131,16 @@ For very large PDFs, browser rendering can still inspect local pages through PDF
 is not a safe 1 GiB splitter. A bounded server-side splitting tool remains required. The browser is
 an accelerator; durable assets remain available for later ChatKit turns after the tab closes.
 
-The adaptive plan is:
+The durable adaptive plan is:
 
-1. Randomly sample a bounded range as text, retaining page numbers and truncation status.
-2. For a text-heavy document, extract structure-aware text and use retrieval when it exceeds direct context.
-3. For important figures, tables, formulas, or weak OCR, render selected pages and mark those images as preferred visual evidence.
-4. Use bounded PDF ranges as clearly labeled `input_file` evidence.
-5. Persist range manifests, page numbers, prompt, and compact result so every claim can be traced to the original.
+1. Extract page-aware text, outlines, and a bounded set of non-decorative embedded images.
+2. Propose outline-aware ranges of at most 20 pages and retain original page numbers.
+3. Auto-continue for small, readable, structurally simple files; pause as `awaiting_guidance` for
+   large, image-heavy, encrypted, weak-text, or ambiguous files.
+4. Materialize confirmed page ranges, caption at most 20 selected images, and index page-aware text
+   and caption documents alongside the range PDFs.
+5. Hydrate the PDF range matching the search artifact by default; `get_file(original=true)` remains
+   available when the complete original is required.
 
 A ten-page paper will normally use the full provider file plus rendered figure pages. A 300-page textbook should probe the table of contents, index, and representative ranges, then ask a focused user question before choosing direct ranges versus retrieval.
 
@@ -131,20 +152,31 @@ Responses call when context isolation is required.
 
 Audio uses `gpt-4o-transcribe-diarize` when speaker labeling is needed, producing timestamped labeled sections. Small transcripts enter bounded context; larger transcripts become structure-aware text artifacts for vector retrieval.
 
-Video keeps two aligned evidence channels:
-
-- diarized transcript segments with timestamps;
-- a retained frame manifest with sampled images and timestamps.
-
-There is no active Cohere or visual-embedding path. The agent receives a bounded frame set through vision and can request denser extraction for a time interval against the retained original. Scene-change sampling can replace fixed intervals after the basic pipeline is reliable.
+Supported MP4/WebM video containers are submitted directly to the same transcription endpoint; no
+FFmpeg dependency is required. The indexed transcript explicitly warns that only the audio track
+was analyzed. `get_transcript` returns a complete bounded transcript when possible and otherwise
+paginates with timestamp continuity.
 
 Images go directly to vision in bounded batches. If a thread includes too many images for one request, build small batches or contact sheets, summarize each batch with stable asset IDs, and perform a second synthesis pass. Never silently omit images; expose the batch/progress state and retain per-image provenance.
 
 ## Vector-store policy
 
-Use OpenAI vector stores/file search only for large text, text-heavy PDFs, transcripts, and deliberately normalized JSON/CSV text artifacts. Preserve structural boundaries before upload: headings, pages, transcript timestamps/speakers, JSONPath, and row IDs. Keep our chunk/provenance manifest even when OpenAI performs the final chunking.
+Each user has one lazily created OpenAI vector store. `FileCollection` records and the persisted
+`UserCollectionSelection` provide a global working scope. Assets snapshot the selected collection
+at upload, ingestion attempts snapshot it again, and every uploaded provider file carries a
+`collection_id` attribute.
 
-Use automatic provider chunking only when generic large text makes it reasonable. Retrieval results must retain OpenAI annotations/file references and map them back to our include and source artifact. A provider vector-store ID remains disposable state.
+CSV/JSON add bounded profiles; images add
+specialist descriptions; audio/video add timestamped diarized transcript shards; text adds the
+original with explicit provider chunking plus heading-aware shards; PDFs add range PDFs and
+page/image-caption documents.
+
+`file_search` preserves individual artifact hits and returns `assetId`, `artifactId`, score,
+snippets, modality, artifact kind, provenance, and allowed follow-ups. It never attaches bytes.
+Search sends an equality filter for the selected `collection_id` to OpenAI. Every returned hit must
+also match the current owner, selected collection, active ingestion attempt, artifact row, and exact
+provider file ID, so stale, cross-owner, and cross-collection hits are discarded. `get_file`, `query_file`, and
+`get_transcript` hydrate canonical evidence only after discovery.
 
 ## Agent boundaries
 
@@ -167,11 +199,7 @@ preview artifacts until explicitly saved.
 
 ## Next implementation slices
 
-1. Add upload-ticket/finalization endpoints, quarantine promotion, hashes, and the SQLAlchemy asset repository.
-2. Add include/exclude/list endpoints and connect them to the custom artifact-panel flow. ChatKit
-   attachments remain disabled and are never part of ingestion.
-3. Add the next bounded ingestion tools and render their calls/results as ChatKit activity.
-4. Materialize bucket objects into controlled temporary files for CSV, media, and PDF tools.
-5. Add isolated OpenAI PDF probe, Files, transcription/diarization, and vector-store gateways with expiry cleanup.
-6. Add per-tool cancellation, idempotency, quotas, and concise observability.
-7. Evaluate groundedness, page/timestamp provenance, table-stat correctness, isolation, and failure behavior.
+1. Add collection rename/delete/move operations and bulk import from URLs such as arXiv.
+2. Improve PDF outline/image heuristics and add OCR for scanned documents.
+3. Add quotas, cancellation, ingestion observability, and explicit deletion of provider artifacts.
+4. Expand opt-in live coverage to embedded-image PDFs and diarized MP4/WebM files.

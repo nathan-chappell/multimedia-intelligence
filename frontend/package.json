@@ -6,13 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test:e2e": "playwright test",
+    "test:e2e": "node scripts/run-e2e.mjs",
     "lint": "eslint . --max-warnings=0",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@clerk/react": "^6.1.0",
     "@openai/chatkit-react": "^1.1.1",
-    "jsonpath-plus": "^10.4.0",
+    "jmespath": "^0.16.0",
     "papaparse": "^5.6.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.2.108",
@@ -26,6 +27,7 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@playwright/test": "^1.62.1",
+    "@types/jmespath": "^0.15.2",
     "@vitejs/plugin-react": "^5.1.1",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",

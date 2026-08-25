@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Annotated, Literal
 
@@ -26,8 +25,20 @@ class Settings(BaseSettings):
         repr=False,
     )
     jwt_access_token_minutes: Annotated[int, Field(ge=5, le=24 * 60)] = 60
+    clerk_secret_key: SecretStr = Field(default=SecretStr(""), repr=False)
+    clerk_jwt_key: str | None = Field(default=None, repr=False)
+    clerk_authorized_parties: tuple[str, ...] = ()
+    clerk_clock_skew_ms: Annotated[int, Field(ge=0, le=60_000)] = 5_000
+    coupon_code_pepper: SecretStr = Field(
+        default=SecretStr("local-development-coupon-pepper-change-this"), repr=False
+    )
+    billing_markup_multiplier: Annotated[float, Field(ge=1, le=100)] = 1.5
+    billing_pricing_version: str = "demo-2026-08"
     openai_api_key: str | None = Field(default=None, repr=False)
     openai_dictation_model: str = "gpt-4o-mini-transcribe"
+    openai_diarization_model: str = "gpt-4o-transcribe-diarize"
+    openai_ingestion_model: str = "gpt-5.6-luna"
+    openai_title_model: str = "gpt-5.6-luna"
     openai_tracing_enabled: bool = True
     openai_trace_include_sensitive_data: bool = False
     database_url: str = "sqlite+aiosqlite:///./data/app.db"
@@ -53,9 +64,18 @@ class Settings(BaseSettings):
     max_dictation_bytes: Annotated[int, Field(ge=1024, le=25 * 1024 * 1024)] = 25 * 1024 * 1024
     max_client_tool_result_bytes: Annotated[int, Field(ge=1024, le=1024 * 1024)] = 256 * 1024
     chatkit_max_page_size: Annotated[int, Field(ge=1, le=500)] = 100
-    file_retention_hours: Literal[24] = 24
-    expiration_sweep_seconds: Annotated[int, Field(ge=60, le=24 * 60 * 60)] = 3600
     cors_origins: tuple[str, ...] = ("http://localhost:5173",)
+    cors_origin_regex: str | None = None
+
+    @property
+    def effective_cors_origin_regex(self) -> str | None:
+        if self.cors_origin_regex or self.app_env != "development":
+            return self.cors_origin_regex
+        return (
+            r"^https?://(?:localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|"
+            r"192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])"
+            r"(?:\.\d{1,3}){2})(?::\d+)?$"
+        )
 
     @field_validator("object_store_prefix")
     @classmethod
@@ -71,12 +91,6 @@ class Settings(BaseSettings):
         if len(value.get_secret_value()) < 32:
             raise ValueError("jwt_secret_key must contain at least 32 characters")
         return value
-
-    def file_expires_at(self, now: datetime | None = None) -> datetime:
-        baseline = now or datetime.now(UTC)
-        if baseline.tzinfo is None:
-            raise ValueError("Expiration timestamps require timezone-aware datetimes")
-        return baseline + timedelta(hours=self.file_retention_hours)
 
 
 @lru_cache

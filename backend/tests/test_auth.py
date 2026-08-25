@@ -39,73 +39,39 @@ async def test_builtin_admin_authenticates_with_signed_bearer_token() -> None:
         TEST_SETTINGS,
     )
 
-    assert user == admin
+    assert user.id == admin.id
+    assert user.is_admin is True
     await engine.dispose()
 
 
-async def test_user_crud_and_swagger_oauth_flow() -> None:
+async def test_local_login_and_user_crud_are_not_exposed() -> None:
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     await initialize_schema(engine)
     await ensure_builtin_admin(sessions, TEST_SETTINGS)
     app = FastAPI()
     app.include_router(build_user_router(sessions, TEST_SETTINGS), prefix="/api")
     schema = app.openapi()
-    assert schema["components"]["securitySchemes"]["OAuth2PasswordBearer"]["flows"][
-        "password"
-    ]["tokenUrl"] == "/api/auth/token"
-    assert schema["paths"]["/api/users"]["get"]["security"]
+    assert "/api/auth/token" not in schema["paths"]
+    assert "/api/users" not in schema["paths"]
+    assert schema["paths"]["/api/auth/me"]["get"]["security"]
+
+    admin = AuthenticatedUser(
+        id=TEST_SETTINGS.admin_user_id,
+        username=TEST_SETTINGS.admin_username,
+        is_admin=True,
+    )
+    token, _ = mint_access_token(admin, TEST_SETTINGS)
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
     ) as client:
-        login = await client.post(
-            "/api/auth/token",
-            data={"username": "admin", "password": "test-admin-password"},
+        response = await client.get(
+            "/api/auth/me",
+            headers={"Authorization": f"Bearer {token}"},
         )
-        assert login.status_code == 200
-        admin_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
-
-        created = await client.post(
-            "/api/users",
-            headers=admin_headers,
-            json={
-                "id": "user_reader",
-                "username": "reader",
-                "password": "reader-password-123",
-            },
-        )
-        assert created.status_code == 201, created.text
-        assert created.json() == {
-            "id": "user_reader",
-            "username": "reader",
-            "is_admin": False,
-        }
-
-        listed = await client.get("/api/users?limit=1&offset=0", headers=admin_headers)
-        assert listed.status_code == 200
-        assert listed.json()["total"] == 2
-        assert len(listed.json()["items"]) == 1
-
-        updated = await client.patch(
-            "/api/users/user_reader",
-            headers=admin_headers,
-            json={"username": "reviewer"},
-        )
-        assert updated.status_code == 200
-        assert updated.json()["username"] == "reviewer"
-
-        user_login = await client.post(
-            "/api/auth/token",
-            data={"username": "reviewer", "password": "reader-password-123"},
-        )
-        user_headers = {"Authorization": f"Bearer {user_login.json()['access_token']}"}
-        assert (await client.get("/api/users", headers=user_headers)).status_code == 403
-
-        assert (
-            await client.delete("/api/users/user_reader", headers=admin_headers)
-        ).status_code == 204
-        assert (await client.get("/api/auth/me", headers=user_headers)).status_code == 401
+        assert response.status_code == 200
+        assert response.json()["role"] == "admin"
 
     await engine.dispose()
 

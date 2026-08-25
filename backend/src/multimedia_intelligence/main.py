@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from agents import set_default_openai_key
 from chatkit.server import StreamingResult
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,23 +12,41 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 
 from multimedia_intelligence.api.assets import build_asset_router
+from multimedia_intelligence.api.billing import build_billing_router
+from multimedia_intelligence.api.collections import build_collection_router
 from multimedia_intelligence.api.health import router as health_router
+from multimedia_intelligence.api.threads import build_thread_router
 from multimedia_intelligence.api.users import build_user_router
-from multimedia_intelligence.auth import authenticate_request, ensure_builtin_admin
+from multimedia_intelligence.auth import authenticate_request
+from multimedia_intelligence.billing import BillingService
+from multimedia_intelligence.billing.pricing import validate_configured_pricing
 from multimedia_intelligence.chat.conversations import OpenAIConversationGateway
 from multimedia_intelligence.chat.server import MultimediaChatServer
 from multimedia_intelligence.chat.store import SqlAlchemyChatKitStore
+from multimedia_intelligence.chat.titles import OpenAITitleSuggestionGateway
 from multimedia_intelligence.chat.transcription import OpenAITranscriptionGateway
 from multimedia_intelligence.config import get_settings
 from multimedia_intelligence.context import ClientInfo, RequestContext
 from multimedia_intelligence.db import create_engine_and_session
 from multimedia_intelligence.files.access import ScopedAgentDataAccess
-from multimedia_intelligence.files.expiration import FileExpirationService
+from multimedia_intelligence.files.indexing import (
+    FileIngestionService,
+    OpenAIDiarizationGateway,
+    OpenAIVectorStoreGateway,
+    OpenAIVisionCaptionGateway,
+)
 from multimedia_intelligence.files.s3_store import S3BlobStore
 from multimedia_intelligence.observability import configure_logging
 
 settings = get_settings()
 configure_logging(settings)
+if settings.openai_api_key:
+    # Pydantic reads the project .env file, but the Agents SDK does not. Configure
+    # its default provider explicitly so agent turns use the same key as ingestion.
+    set_default_openai_key(
+        settings.openai_api_key,
+        use_for_tracing=settings.openai_tracing_enabled,
+    )
 engine, sessions = create_engine_and_session(settings.database_url)
 conversation_gateway = OpenAIConversationGateway(settings.openai_api_key)
 store = SqlAlchemyChatKitStore(
@@ -42,25 +60,52 @@ transcription_gateway = OpenAITranscriptionGateway(
     settings.openai_dictation_model,
     max_audio_bytes=settings.max_dictation_bytes,
 )
+billing = BillingService(sessions, settings)
+title_suggestions = OpenAITitleSuggestionGateway(
+    settings.openai_api_key,
+    settings.openai_title_model,
+    settings=settings,
+)
 chatkit_server = MultimediaChatServer(
     store=store,
     transcription_gateway=transcription_gateway,
+    billing=billing,
 )
 blob_store = S3BlobStore.from_settings(settings)
-file_expiration = FileExpirationService(sessions, lambda: blob_store)
+file_index = (
+    FileIngestionService(
+        sessions,
+        blob_store,
+        OpenAIVectorStoreGateway(settings.openai_api_key, settings),
+        OpenAIDiarizationGateway(settings.openai_api_key, settings.openai_diarization_model),
+        OpenAIVisionCaptionGateway(
+            settings.openai_api_key, settings.openai_ingestion_model, settings
+        ),
+        billing,
+        settings,
+    )
+    if settings.openai_api_key
+    else None
+)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    await store.initialize()
-    await ensure_builtin_admin(sessions, settings)
-    expiration_stop = asyncio.Event()
-    expiration_task = asyncio.create_task(
-        file_expiration.run(expiration_stop, settings.expiration_sweep_seconds)
+    validate_configured_pricing(
+        token_models=(
+            "gpt-5.6-luna",
+            "gpt-5.6-terra",
+            "gpt-5.6",
+            settings.openai_title_model,
+            settings.openai_ingestion_model,
+        ),
+        transcription_models=(
+            settings.openai_dictation_model,
+            settings.openai_diarization_model,
+        ),
     )
+    await store.initialize()
     yield
-    expiration_stop.set()
-    await expiration_task
     await engine.dispose()
 
 
@@ -68,13 +113,17 @@ app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),
+    allow_origin_regex=settings.effective_cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 app.include_router(health_router, prefix="/api")
 app.include_router(build_asset_router(sessions, settings, blob_store), prefix="/api")
+app.include_router(build_collection_router(sessions, settings, file_index), prefix="/api")
+app.include_router(build_thread_router(store, settings, title_suggestions), prefix="/api")
 app.include_router(build_user_router(sessions, settings), prefix="/api")
+app.include_router(build_billing_router(sessions, settings), prefix="/api")
 
 
 @app.get("/.well-known/appspecific/com.chrome.devtools.json", include_in_schema=False)
@@ -89,7 +138,7 @@ async def chatkit_endpoint(request: Request) -> Response:
     user = await authenticate_request(request, sessions, settings)
     context = RequestContext(
         client=ClientInfo(user_id=user.id, username=user.username, is_admin=user.is_admin),
-        data_access=ScopedAgentDataAccess(sessions, user.id, blob_store),
+        data_access=ScopedAgentDataAccess(sessions, user.id, blob_store, file_index),
         request=request,
     )
     result = await chatkit_server.process(await request.body(), context=context)

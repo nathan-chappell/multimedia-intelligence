@@ -14,9 +14,11 @@ from agents import Agent, ModelResponse, RunConfig, RunHooks
 from agents.run_context import AgentHookContext, RunContextWrapper
 from agents.tool import Tool
 from agents.tracing import gen_trace_id
-from agents.tracing.create import get_current_trace
+from agents.tracing.create import get_current_span, get_current_trace
 from agents.tracing.traces import TraceState, reattach_trace
 
+from multimedia_intelligence.billing.pricing import token_cost_microusd
+from multimedia_intelligence.billing.service import BillingService
 from multimedia_intelligence.config import Settings
 
 LOGGER_NAME = "multimedia_intelligence.agent_runs"
@@ -195,8 +197,20 @@ def _tool_call_id(context: RunContextWrapper[Any]) -> str | None:
 class AgentRunLoggingHooks(RunHooks[Any]):
     """Log agent/model/tool lifecycle metadata while deliberately excluding content."""
 
-    def __init__(self, correlation: RunCorrelation) -> None:
+    def __init__(
+        self,
+        correlation: RunCorrelation,
+        *,
+        billing: BillingService | None = None,
+        user_id: str | None = None,
+        thread_id: str | None = None,
+        settings: Settings | None = None,
+    ) -> None:
         self.correlation = correlation
+        self.billing = billing
+        self.user_id = user_id
+        self.thread_id = thread_id
+        self.settings = settings
 
     def _log(self, event: str, **fields: object) -> None:
         log_event(event, **self.correlation.fields(), **fields)
@@ -262,6 +276,41 @@ class AgentRunLoggingHooks(RunHooks[Any]):
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             total_tokens=usage.total_tokens,
+        )
+        if self.billing is None or self.user_id is None or self.settings is None:
+            return
+        model = _model_name(agent)
+        cached_tokens = usage.input_tokens_details.cached_tokens or 0
+        amount = token_cost_microusd(
+            model,
+            input_tokens=usage.input_tokens or 0,
+            cached_input_tokens=cached_tokens,
+            output_tokens=usage.output_tokens or 0,
+            markup=self.settings.billing_markup_multiplier,
+        )
+        current_span = get_current_span()
+        span_id = current_span.span_id if current_span is not None else None
+        correlation_id = response.request_id or response.response_id
+        await self.billing.append_event(
+            user_id=self.user_id,
+            amount_microusd=-amount,
+            event_type="agent_model_usage",
+            description=None if correlation_id or span_id else f"Agent model usage: {agent.name}",
+            thread_id=self.thread_id,
+            provider_request_id=response.request_id,
+            provider_response_id=response.response_id,
+            trace_id=self.correlation.trace_id,
+            agent_span_id=span_id,
+            idempotency_key=f"openai:{correlation_id or f'{self.correlation.trace_id}:{span_id}'}",
+            event_metadata={
+                "agent": agent.name,
+                "model": model,
+                "input_tokens": usage.input_tokens or 0,
+                "cached_input_tokens": cached_tokens,
+                "output_tokens": usage.output_tokens or 0,
+                "markup_multiplier": self.settings.billing_markup_multiplier,
+                "pricing_version": self.settings.billing_pricing_version,
+            },
         )
 
     async def on_tool_start(

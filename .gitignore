@@ -29,6 +29,9 @@ frontend/.vite/
 frontend/playwright-report/
 frontend/blob-report/
 frontend/test-results/
+frontend/coverage/
+.eslintcache
+*.lcov
 *.tsbuildinfo
 
 # Local application state

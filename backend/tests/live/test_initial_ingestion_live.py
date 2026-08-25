@@ -77,7 +77,7 @@ SCENARIOS = (
         intent="Explore event types and query selected nested payload fields later.",
         overview_tool="consult_structured_data_specialist",
         expected_client_tools=("list_files", "json_chars"),
-        strategy_terms=("jsonpath", "schema", "bounded"),
+        strategy_terms=("jmespath", "schema", "bounded"),
     ),
     InitialIngestionScenario(
         route="csv",
@@ -85,7 +85,7 @@ SCENARIOS = (
         media_type="text/csv",
         intent="Compare revenue trends and identify anomalous regions.",
         overview_tool="consult_structured_data_specialist",
-        expected_client_tools=("list_files", "csv_head", "csv_stats"),
+        expected_client_tools=("list_files", "query_structured_data"),
         strategy_terms=("schema", "revenue", "region", "numeric", "aggregate"),
     ),
     InitialIngestionScenario(

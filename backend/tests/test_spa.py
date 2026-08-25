@@ -12,13 +12,11 @@ async def test_spa_fallback_and_not_found_boundaries() -> None:
         spa_route = await client.get("/some/future/client-route")
         missing_api = await client.get("/api/does-not-exist")
         missing_asset = await client.get("/assets/does-not-exist.js")
-        devtools_probe = await client.get(
-            "/.well-known/appspecific/com.chrome.devtools.json"
-        )
+        devtools_probe = await client.get("/.well-known/appspecific/com.chrome.devtools.json")
 
     assert root.status_code == 200
     assert spa_route.status_code == 200
-    assert "<div id=\"root\"></div>" in spa_route.text
+    assert '<div id="root"></div>' in spa_route.text
     assert missing_api.status_code == 404
     assert missing_api.headers["content-type"].startswith("application/json")
     assert missing_asset.status_code == 404

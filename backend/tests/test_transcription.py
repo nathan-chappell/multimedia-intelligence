@@ -4,7 +4,6 @@ from typing import Any, cast
 import pytest
 from chatkit.types import AudioInput
 from openai import AsyncOpenAI
-from openai.types.audio import Transcription
 
 from multimedia_intelligence.chat.server import MultimediaChatServer
 from multimedia_intelligence.chat.store import SqlAlchemyChatKitStore
@@ -15,10 +14,12 @@ from multimedia_intelligence.context import ClientInfo, RequestContext
 class FakeTranscriptions:
     def __init__(self) -> None:
         self.arguments: dict[str, Any] | None = None
+        self.with_raw_response = self
 
-    async def create(self, **kwargs: Any) -> Transcription:
+    async def create(self, **kwargs: Any) -> SimpleNamespace:
         self.arguments = kwargs
-        return Transcription(text="  dictated text  ")
+        result = SimpleNamespace(text="  dictated text  ", duration=12.5)
+        return SimpleNamespace(request_id="req_dictation", parse=lambda: result)
 
 
 class FakeGateway:
@@ -43,13 +44,15 @@ async def test_openai_dictation_uses_mini_transcription_model_and_format_metadat
         client=client,
     )
 
-    text = await gateway.transcribe(b"webm-audio", "audio/webm")
+    result = await gateway.transcribe(b"webm-audio", "audio/webm")
 
-    assert text == "dictated text"
+    assert result.text == "dictated text"
+    assert result.duration_seconds == 12.5
+    assert result.request_id == "req_dictation"
     assert transcriptions.arguments == {
         "file": ("dictation.webm", b"webm-audio", "audio/webm"),
         "model": "gpt-4o-mini-transcribe",
-        "response_format": "json",
+        "response_format": "verbose_json",
     }
 
 

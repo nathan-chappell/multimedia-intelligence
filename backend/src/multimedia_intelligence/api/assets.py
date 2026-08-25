@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from multimedia_intelligence.auth import authenticate_request
 from multimedia_intelligence.chat.store import ThreadRow
 from multimedia_intelligence.config import Settings
+from multimedia_intelligence.files.collections import selected_collection
 from multimedia_intelligence.files.domain import (
     Asset,
     AssetState,
@@ -25,7 +27,11 @@ from multimedia_intelligence.files.domain import (
 )
 from multimedia_intelligence.files.policy import UnsupportedFileType, classify_file
 from multimedia_intelligence.files.ports import BlobStore
-from multimedia_intelligence.files.records import AssetRow, ThreadAssetIncludeRow
+from multimedia_intelligence.files.records import (
+    AssetRow,
+    DerivedArtifactRow,
+    ThreadAssetIncludeRow,
+)
 from multimedia_intelligence.files.repository import SqlAlchemyAssetRepository
 from multimedia_intelligence.files.retention import as_utc
 from multimedia_intelligence.files.s3_store import S3BlobStore
@@ -37,11 +43,21 @@ class SavedAsset(BaseModel):
     filename: str
     media_type: str
     size_bytes: int
-    expires_at: datetime
+    collection_id: str | None
 
 
 class IncludeAssetRequest(BaseModel):
     thread_id: str
+
+
+class SavedDerivedArtifact(BaseModel):
+    artifact_id: str
+    source_asset_id: str
+    filename: str
+    media_type: str
+    size_bytes: int
+    kind: str
+    collection_id: str | None
 
 
 def build_asset_router(
@@ -53,6 +69,44 @@ def build_asset_router(
     assets = SqlAlchemyAssetRepository(sessions)
     blobs = blob_store or S3BlobStore.from_settings(settings)
 
+    @router.get("", response_model=list[SavedAsset])
+    async def list_saved_assets(
+        request: Request,
+        thread_id: str = Query(min_length=1, max_length=128),
+    ) -> list[SavedAsset]:
+        """List saved files attached to one of the caller's conversations."""
+
+        user = await authenticate_request(request, sessions, settings)
+        collection = await selected_collection(sessions, user.id)
+        await _require_owned_thread(sessions, thread_id, user.id)
+        async with sessions() as session:
+            rows = (
+                await session.execute(
+                    select(ThreadAssetIncludeRow, AssetRow)
+                    .join(AssetRow, AssetRow.id == ThreadAssetIncludeRow.asset_id)
+                    .where(
+                        ThreadAssetIncludeRow.thread_id == thread_id,
+                        ThreadAssetIncludeRow.owner_id == user.id,
+                        ThreadAssetIncludeRow.state == IncludeState.READY,
+                        AssetRow.owner_id == user.id,
+                        AssetRow.collection_id == collection.id,
+                        AssetRow.state == AssetState.STORED,
+                    )
+                    .order_by(ThreadAssetIncludeRow.created_at.asc(), AssetRow.id.asc())
+                )
+            ).all()
+        return [
+            SavedAsset(
+                asset_id=asset.id,
+                include_id=include.id,
+                filename=asset.filename,
+                media_type=asset.media_type,
+                size_bytes=asset.size_bytes,
+                collection_id=asset.collection_id,
+            )
+            for include, asset in rows
+        ]
+
     @router.post("", response_model=SavedAsset, status_code=status.HTTP_201_CREATED)
     async def save_asset(
         request: Request,
@@ -60,6 +114,7 @@ def build_asset_router(
         thread_id: str | None = Query(default=None, min_length=1, max_length=128),
     ) -> SavedAsset:
         user = await authenticate_request(request, sessions, settings)
+        collection = await selected_collection(sessions, user.id)
         safe_filename = Path(filename).name
         if safe_filename != filename:
             raise HTTPException(
@@ -81,7 +136,8 @@ def build_asset_router(
         ]
         asset_id = f"asset_{uuid4().hex}"
         object_key = (
-            f"{settings.object_store_prefix}{user.id}/{asset_id}/original{decision.extension}"
+            f"{settings.object_store_prefix}users/{user.id}/files/"
+            f"{asset_id}/original{decision.extension}"
         )
         digest = hashlib.sha256()
         size_bytes = 0
@@ -116,6 +172,7 @@ def build_asset_router(
             location=location,
             state=AssetState.STORED,
             created_at=now,
+            collection_id=collection.id,
         )
         try:
             await assets.save_asset(asset)
@@ -132,7 +189,7 @@ def build_asset_router(
             filename=asset.filename,
             media_type=asset.media_type,
             size_bytes=asset.size_bytes,
-            expires_at=asset.location.expires_at,
+            collection_id=asset.collection_id,
         )
 
     @router.post("/{asset_id}/includes", response_model=SavedAsset)
@@ -142,10 +199,16 @@ def build_asset_router(
         request: Request,
     ) -> SavedAsset:
         user = await authenticate_request(request, sessions, settings)
+        collection = await selected_collection(sessions, user.id)
         await _require_owned_thread(sessions, payload.thread_id, user.id)
         async with sessions() as session:
             row = await session.get(AssetRow, asset_id)
-        if row is None or row.owner_id != user.id or row.state != AssetState.STORED:
+        if (
+            row is None
+            or row.owner_id != user.id
+            or row.collection_id != collection.id
+            or row.state != AssetState.STORED
+        ):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
         asset = _asset_from_row(row)
         include_id = await _include_asset(assets, sessions, asset, payload.thread_id)
@@ -155,31 +218,188 @@ def build_asset_router(
             filename=asset.filename,
             media_type=asset.media_type,
             size_bytes=asset.size_bytes,
-            expires_at=asset.location.expires_at,
+            collection_id=asset.collection_id,
+        )
+
+    @router.get("/derived", response_model=list[SavedDerivedArtifact])
+    async def list_derived_artifacts(
+        request: Request,
+        thread_id: str = Query(min_length=1, max_length=128),
+    ) -> list[SavedDerivedArtifact]:
+        user = await authenticate_request(request, sessions, settings)
+        collection = await selected_collection(sessions, user.id)
+        await _require_owned_thread(sessions, thread_id, user.id)
+        async with sessions() as session:
+            rows = (
+                await session.execute(
+                    select(DerivedArtifactRow, AssetRow)
+                    .join(
+                        ThreadAssetIncludeRow,
+                        ThreadAssetIncludeRow.id == DerivedArtifactRow.include_id,
+                    )
+                    .join(AssetRow, AssetRow.id == DerivedArtifactRow.source_asset_id)
+                    .where(
+                        ThreadAssetIncludeRow.thread_id == thread_id,
+                        ThreadAssetIncludeRow.owner_id == user.id,
+                        ThreadAssetIncludeRow.state == IncludeState.READY,
+                        AssetRow.owner_id == user.id,
+                        AssetRow.collection_id == collection.id,
+                        DerivedArtifactRow.state == "ready",
+                        DerivedArtifactRow.bucket.is_not(None),
+                        DerivedArtifactRow.object_key.is_not(None),
+                    )
+                    .order_by(DerivedArtifactRow.created_at.asc(), DerivedArtifactRow.id.asc())
+                )
+            ).all()
+        output: list[SavedDerivedArtifact] = []
+        for artifact, asset in rows:
+            metadata = _artifact_metadata(artifact)
+            output.append(
+                SavedDerivedArtifact(
+                    artifact_id=artifact.id,
+                    source_asset_id=asset.id,
+                    filename=_metadata_string(metadata, "filename") or f"{artifact.id}.bin",
+                    media_type=_metadata_string(metadata, "mediaType")
+                    or "application/octet-stream",
+                    size_bytes=_metadata_integer(metadata, "sizeBytes"),
+                    kind=artifact.kind,
+                    collection_id=asset.collection_id,
+                )
+            )
+        return output
+
+    @router.get("/derived/{artifact_id}/content", response_class=StreamingResponse)
+    async def download_derived_artifact(
+        artifact_id: str,
+        request: Request,
+        thread_id: str = Query(min_length=1, max_length=128),
+    ) -> StreamingResponse:
+        user = await authenticate_request(request, sessions, settings)
+        collection = await selected_collection(sessions, user.id)
+        await _require_owned_thread(sessions, thread_id, user.id)
+        async with sessions() as session:
+            row = (
+                await session.execute(
+                    select(DerivedArtifactRow, AssetRow)
+                    .join(
+                        ThreadAssetIncludeRow,
+                        ThreadAssetIncludeRow.id == DerivedArtifactRow.include_id,
+                    )
+                    .join(AssetRow, AssetRow.id == DerivedArtifactRow.source_asset_id)
+                    .where(
+                        DerivedArtifactRow.id == artifact_id,
+                        DerivedArtifactRow.state == "ready",
+                        ThreadAssetIncludeRow.thread_id == thread_id,
+                        ThreadAssetIncludeRow.owner_id == user.id,
+                        ThreadAssetIncludeRow.state == IncludeState.READY,
+                        AssetRow.owner_id == user.id,
+                        AssetRow.collection_id == collection.id,
+                    )
+                )
+            ).one_or_none()
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Derived artifact not found"
+            )
+        artifact, _asset = row
+        if artifact.bucket is None or artifact.object_key is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Derived artifact has no content"
+            )
+        metadata = _artifact_metadata(artifact)
+        location = ObjectLocation(bucket=artifact.bucket, key=artifact.object_key)
+        size_bytes = _metadata_integer(metadata, "sizeBytes")
+        if size_bytes <= 0:
+            size_bytes = (await blobs.head(location)).size_bytes
+
+        async def artifact_chunks() -> AsyncIterator[bytes]:
+            chunk_size = 8 * 1024 * 1024
+            for start in range(0, size_bytes, chunk_size):
+                yield await blobs.read_range(location, start, min(start + chunk_size, size_bytes))
+
+        return StreamingResponse(
+            artifact_chunks(),
+            media_type=_metadata_string(metadata, "mediaType") or "application/octet-stream",
+            headers={
+                "Content-Length": str(size_bytes),
+                "Content-Disposition": (
+                    f'inline; filename="{_metadata_string(metadata, "filename") or artifact.id}"'
+                ),
+            },
+        )
+
+    @router.get("/{asset_id}/content", response_class=StreamingResponse)
+    async def download_conversation_asset(
+        asset_id: str,
+        request: Request,
+        thread_id: str = Query(min_length=1, max_length=128),
+    ) -> StreamingResponse:
+        """Stream a saved file only through its owning conversation boundary."""
+
+        user = await authenticate_request(request, sessions, settings)
+        collection = await selected_collection(sessions, user.id)
+        await _require_owned_thread(sessions, thread_id, user.id)
+        async with sessions() as session:
+            asset = await session.scalar(
+                select(AssetRow)
+                .join(ThreadAssetIncludeRow, ThreadAssetIncludeRow.asset_id == AssetRow.id)
+                .where(
+                    ThreadAssetIncludeRow.thread_id == thread_id,
+                    ThreadAssetIncludeRow.owner_id == user.id,
+                    ThreadAssetIncludeRow.state == IncludeState.READY,
+                    AssetRow.id == asset_id,
+                    AssetRow.owner_id == user.id,
+                    AssetRow.collection_id == collection.id,
+                    AssetRow.state == AssetState.STORED,
+                )
+            )
+        if asset is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+        location = ObjectLocation(
+            bucket=asset.bucket,
+            key=asset.object_key,
+            etag=asset.etag,
+            version_id=asset.version_id,
+        )
+
+        async def content_chunks() -> AsyncIterator[bytes]:
+            chunk_size = 8 * 1024 * 1024
+            for start in range(0, asset.size_bytes, chunk_size):
+                yield await blobs.read_range(
+                    location,
+                    start,
+                    min(start + chunk_size, asset.size_bytes),
+                )
+
+        return StreamingResponse(
+            content_chunks(),
+            media_type=asset.media_type,
+            headers={"Content-Length": str(asset.size_bytes)},
         )
 
     @router.get("/{asset_id}/preview", response_class=RedirectResponse)
     async def preview_asset(asset_id: str, request: Request) -> RedirectResponse:
         user = await authenticate_request(request, sessions, settings)
+        collection = await selected_collection(sessions, user.id)
         async with sessions() as session:
             row = await session.get(AssetRow, asset_id)
-        if row is None or row.owner_id != user.id or row.state != AssetState.STORED:
+        if (
+            row is None
+            or row.owner_id != user.id
+            or row.collection_id != collection.id
+            or row.state != AssetState.STORED
+        ):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
 
-        expires_at = as_utc(row.expires_at)
-        remaining_seconds = int((expires_at - datetime.now(UTC)).total_seconds())
-        if remaining_seconds < 1:
-            raise HTTPException(status_code=status.HTTP_410_GONE, detail="Asset has expired")
         location = ObjectLocation(
             bucket=row.bucket,
             key=row.object_key,
-            expires_at=expires_at,
             etag=row.etag,
             version_id=row.version_id,
         )
         url = await blobs.signed_download_url(
             location,
-            min(settings.signed_download_ttl_seconds, remaining_seconds),
+            settings.signed_download_ttl_seconds,
         )
         return RedirectResponse(url=url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
@@ -237,10 +457,28 @@ def _asset_from_row(row: AssetRow) -> Asset:
         location=ObjectLocation(
             bucket=row.bucket,
             key=row.object_key,
-            expires_at=as_utc(row.expires_at),
             etag=row.etag,
             version_id=row.version_id,
         ),
         state=AssetState(row.state),
         created_at=as_utc(row.created_at),
+        collection_id=row.collection_id,
     )
+
+
+def _artifact_metadata(row: DerivedArtifactRow) -> dict[str, object]:
+    try:
+        value = json.loads(row.metadata_json)
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _metadata_string(metadata: dict[str, object], key: str) -> str | None:
+    value = metadata.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _metadata_integer(metadata: dict[str, object], key: str) -> int:
+    value = metadata.get(key)
+    return value if isinstance(value, int) and value >= 0 else 0

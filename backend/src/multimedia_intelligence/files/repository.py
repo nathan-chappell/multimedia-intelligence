@@ -31,6 +31,7 @@ class SqlAlchemyAssetRepository:
                 AssetRow(
                     id=asset.id,
                     owner_id=asset.owner_id,
+                    collection_id=asset.collection_id,
                     filename=asset.filename,
                     media_type=asset.media_type,
                     size_bytes=asset.size_bytes,
@@ -39,7 +40,6 @@ class SqlAlchemyAssetRepository:
                     object_key=asset.location.key,
                     etag=asset.location.etag,
                     version_id=asset.location.version_id,
-                    expires_at=asset.location.expires_at,
                     state=asset.state,
                     created_at=asset.created_at,
                 )
@@ -81,7 +81,6 @@ class SqlAlchemyAssetRepository:
                     object_key=location.key if location else None,
                     provider=artifact.provider,
                     provider_id=artifact.provider_id,
-                    expires_at=artifact.expires_at,
                     state="ready",
                     metadata_json="{}",
                     created_at=datetime.now(UTC),

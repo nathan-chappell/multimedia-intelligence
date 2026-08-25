@@ -46,6 +46,22 @@ def test_text_result_enforces_serialized_byte_limit() -> None:
         )
 
 
+def test_structured_query_result_must_echo_the_requested_expression() -> None:
+    with pytest.raises(ValueError, match="expression"):
+        validate_client_tool_result(
+            "query_structured_data",
+            {"assetId": "asset_1", "expression": "[].revenue"},
+            {
+                "ok": True,
+                "assetId": "asset_1",
+                "expression": "[*].secret",
+                "value": [10, 20],
+                "truncated": False,
+            },
+            max_result_bytes=1024,
+        )
+
+
 def test_client_failure_does_not_require_an_asset_id() -> None:
     result = validate_client_tool_result(
         "pdf_render_page",

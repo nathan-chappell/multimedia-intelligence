@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import csv
 import json
-import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+import jmespath
 import pypdfium2 as pdfium
 from agents import Agent, RunConfig, RunHooks, Runner, RunResult
 from agents.items import HandoffCallItem, ToolCallItem
@@ -17,8 +18,7 @@ from pypdf import PdfReader, PdfWriter
 from multimedia_intelligence.context import RequestContext
 from multimedia_intelligence.files.client_results import validate_client_tool_result
 from multimedia_intelligence.files.policy import FileRoute, classify_file
-from multimedia_intelligence.files.tools.csv_analysis import CsvAnalyzer
-from multimedia_intelligence.files.tools.json_commands import JsonCommandValidator
+from multimedia_intelligence.files.tools.jmespath_commands import JmesPathValidator
 
 type AgentInput = str | list[Any]
 type ToolExecutor = Callable[[ClientToolCall], Awaitable[object]]
@@ -181,13 +181,9 @@ class StagedFile:
 class FixtureFileClient:
     """Python equivalent of the bounded frontend file-tool surface for behavioral tests."""
 
-    _SELECTOR = re.compile(
-        r"\.([A-Za-z_][A-Za-z0-9_-]*)|\[(-?\d+|\*|\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')\]"
-    )
-
     def __init__(self, files: list[StagedFile]) -> None:
         self.files = {file.asset_id: file for file in files}
-        self.json_validator = JsonCommandValidator()
+        self.jmespath_validator = JmesPathValidator()
 
     async def execute(self, call: ClientToolCall) -> object:
         try:
@@ -217,61 +213,26 @@ class FixtureFileClient:
             count = _integer(arguments, "count", default=16_384, minimum=1)
             text = file.path.read_text(encoding="utf-8")
             return {"assetId": asset_id, "start": start, "text": text[start : start + count]}
-        if name == "json_path":
-            queries = arguments.get("queries")
-            if (
-                not isinstance(queries, list)
-                or not queries
-                or not all(isinstance(query, str) for query in queries)
-            ):
-                raise ValueError("queries must be a non-empty string array")
-            document = json.loads(file.path.read_text(encoding="utf-8"))
+        if name == "query_structured_data":
+            expression = _required_string(arguments, "expression")
+            self.jmespath_validator.validate(expression)
+            if file.route is FileRoute.TABULAR:
+                with file.path.open(encoding="utf-8", newline="") as handle:
+                    document = [
+                        {key: _coerce_csv_value(value) for key, value in row.items()}
+                        for row in csv.DictReader(handle)
+                    ]
+            else:
+                document = json.loads(file.path.read_text(encoding="utf-8"))
+            value = jmespath.search(expression, document)
+            truncated = isinstance(value, list) and len(value) > 100
+            if truncated:
+                value = value[:100]
             return {
                 "assetId": asset_id,
-                "results": [self._json_path(document, query) for query in queries[:8]],
-            }
-        if name == "csv_head":
-            count = _integer(arguments, "count", default=10, minimum=1)
-            head = CsvAnalyzer(file.path).head(min(count, 20))
-            return {
-                "assetId": asset_id,
-                "head": {
-                    "columns": [
-                        {
-                            "name": column.name,
-                            "inferredType": column.inferred_type,
-                            "nullable": column.nullable,
-                        }
-                        for column in head.columns
-                    ],
-                    "rows": list(head.rows),
-                    "sampledRowCount": head.count,
-                },
-            }
-        if name == "csv_stats":
-            requested = arguments.get("columns")
-            if not isinstance(requested, list) or not all(
-                isinstance(column, str) for column in requested
-            ):
-                raise ValueError("columns must be a string array")
-            stats = CsvAnalyzer(file.path).stats(tuple(requested) or None)
-            return {
-                "assetId": asset_id,
-                "stats": [
-                    {
-                        "column": entry.column,
-                        "count": entry.count,
-                        "nullCount": entry.null_count,
-                        "invalidCount": entry.invalid_count,
-                        "minimum": entry.minimum,
-                        "maximum": entry.maximum,
-                        "mean": entry.mean,
-                        "standardDeviation": entry.standard_deviation,
-                        "quantiles": entry.quantiles,
-                        "approximateQuantiles": entry.approximate_quantiles,
-                    }
-                    for entry in stats
-                ],
+                "expression": expression,
+                "value": value,
+                "truncated": truncated,
             }
         if name == "pdf_random_sample":
             reader = PdfReader(file.path, strict=False)
@@ -349,28 +310,6 @@ class FixtureFileClient:
             "durability": "local_browser_only",
         }
 
-    def _json_path(self, document: object, query: str) -> dict[str, object]:
-        self.json_validator.validate(f"JsonPath({query})")
-        values = [document]
-        position = 1
-        while position < len(query):
-            match = self._SELECTOR.match(query, position)
-            if match is None:
-                raise ValueError(f"Unsupported JSONPath selector in {query}")
-            property_name, bracket = match.groups()
-            if property_name is not None:
-                selector: str | int = property_name
-            elif bracket == "*":
-                selector = "*"
-            elif bracket is not None and bracket[0] in {'"', "'"}:
-                selector = json.loads(bracket) if bracket[0] == '"' else bracket[1:-1]
-            else:
-                selector = int(cast(str, bracket))
-            values = _select_json(values, selector)
-            position = match.end()
-        bounded = values[:100]
-        return {"query": query, "values": bounded, "truncated": len(values) > len(bounded)}
-
     @staticmethod
     def _extract_pdf(file: StagedFile, start_page: int, end_page: int) -> dict[str, object]:
         reader = PdfReader(file.path)
@@ -429,21 +368,19 @@ class FixtureFileClient:
         }
 
 
-def _select_json(values: list[object], selector: str | int) -> list[object]:
-    selected: list[object] = []
-    for value in values:
-        if selector == "*":
-            if isinstance(value, dict):
-                selected.extend(value.values())
-            elif isinstance(value, list):
-                selected.extend(value)
-        elif isinstance(selector, int) and isinstance(value, list):
-            index = selector if selector >= 0 else len(value) + selector
-            if 0 <= index < len(value):
-                selected.append(value[index])
-        elif isinstance(selector, str) and isinstance(value, dict) and selector in value:
-            selected.append(value[selector])
-    return selected
+def _coerce_csv_value(value: str | None) -> object:
+    if value is None or value.strip() == "" or value.strip().casefold() == "null":
+        return None
+    normalized = value.strip()
+    if normalized.casefold() in {"true", "false"}:
+        return normalized.casefold() == "true"
+    try:
+        return int(normalized)
+    except ValueError:
+        try:
+            return float(normalized)
+        except ValueError:
+            return value
 
 
 def _required_string(arguments: dict[str, Any], key: str) -> str:

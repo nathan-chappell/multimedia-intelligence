@@ -2,8 +2,8 @@
 
 FROM node:22-alpine AS frontend-build
 WORKDIR /app/frontend
-ARG VITE_API_BEARER_TOKEN=
-ENV VITE_API_BEARER_TOKEN=${VITE_API_BEARER_TOKEN}
+ARG VITE_CLERK_PUBLISHABLE_KEY
+ENV VITE_CLERK_PUBLISHABLE_KEY=${VITE_CLERK_PUBLISHABLE_KEY}
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./

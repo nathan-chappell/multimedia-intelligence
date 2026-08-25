@@ -36,6 +36,7 @@ async def initialize_schema(engine: AsyncEngine) -> None:
     # Import every model module before create_all. This keeps the ChatKit transport
     # tables and canonical asset tables separate while sharing one metadata registry.
     from multimedia_intelligence import auth as _auth_models  # noqa: F401
+    from multimedia_intelligence.billing import models as _billing_models  # noqa: F401
     from multimedia_intelligence.chat import store as _chat_models  # noqa: F401
     from multimedia_intelligence.files import records as _asset_models  # noqa: F401
 
