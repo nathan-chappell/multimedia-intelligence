@@ -18,7 +18,7 @@ from pypdf import PdfReader, PdfWriter
 from multimedia_intelligence.context import RequestContext
 from multimedia_intelligence.files.client_results import validate_client_tool_result
 from multimedia_intelligence.files.policy import FileRoute, classify_file
-from multimedia_intelligence.files.tools.jmespath_commands import JmesPathValidator
+from tests.support.jmespath_commands import JmesPathValidator
 
 type AgentInput = str | list[Any]
 type ToolExecutor = Callable[[ClientToolCall], Awaitable[object]]

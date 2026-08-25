@@ -14,7 +14,6 @@ dependencies = [
   "clerk-backend-api>=3.3,<4",
   "fastapi>=0.115,<1",
   "jmespath>=1.0,<2",
-  "lark>=1.2,<2",
   "openai>=1.109,<3",
   "openai-agents>=0.2,<1",
   "openai-chatkit>=1.4,<2",
@@ -34,6 +33,7 @@ multimedia-demo = "multimedia_intelligence.demo.cli:main"
 [project.optional-dependencies]
 dev = [
   "httpx>=0.28,<1",
+  "lark>=1.2,<2",
   "mypy>=1.14,<2",
   "pypdfium2>=4.30,<5",
   "pyright>=1.1.411,<2",

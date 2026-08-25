@@ -15,6 +15,7 @@ from chatkit.types import (
 )
 
 from multimedia_intelligence.agents import AssistantGraph, DescriptiveIngestionPlan
+from multimedia_intelligence.chat.conversations import ConversationRepair
 from multimedia_intelligence.chat.models import resolve_chat_model
 from multimedia_intelligence.chat.server import MultimediaChatServer
 from multimedia_intelligence.context import ClientInfo, ClientToolRequest, RequestContext
@@ -312,17 +313,21 @@ async def test_pdf_file_sample_is_attached_to_function_output_by_signed_url() ->
     }
 
 
-async def test_rotated_conversation_replays_surviving_thread_history() -> None:
-    first = user_message("gpt-5.6-terra").model_copy(update={"id": "message_0"})
+async def test_repaired_conversation_adds_removed_suffix_playback_to_current_input() -> None:
     current = user_message("gpt-5.6")
+    recovery = ConversationRepair(
+        removed_items=({"id": "fc_interrupted", "type": "function_call"},),
+        strategy="checkpoint",
+    )
 
     result = await MultimediaChatServer._conversation_input(
         current,
-        [first, current],
-        replay_history=True,
+        [current],
+        recovery=recovery,
     )
 
-    assert [item["role"] for item in result] == ["user", "user"]
+    assert [item["role"] for item in result] == ["developer", "user"]
+    assert "fc_interrupted" in result[0]["content"][0]["text"]
 
 
 def test_missing_chatkit_client_tool_event_is_recovered_from_run_items() -> None:

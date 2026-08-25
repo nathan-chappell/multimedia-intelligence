@@ -122,7 +122,7 @@ Then open <http://localhost:8000>.
 - **Separate dictation and ingestion:** ChatKit attachments stay disabled. Composer dictation sends
   an ephemeral browser recording through the authenticated backend to `gpt-4o-mini-transcribe`;
   uploaded audio uses the custom asset and ingestion pipeline instead.
-- **SQLAlchemy store:** ChatKit thread/item payloads are stored as version-tolerant JSON with indexed relational identity and timestamps. Each thread owns one OpenAI conversation ID, reused for turns and client-tool continuations and deleted with the thread. Removing local history for a retry rotates the conversation and replays only the surviving items. SQLite keeps local setup small; the same boundary can move to Postgres.
+- **SQLAlchemy store:** ChatKit thread/item payloads are stored as version-tolerant JSON with indexed relational identity and timestamps. Each thread owns one OpenAI conversation ID, reused for turns and client-tool continuations and deleted with the thread. Successful turns checkpoint the newest provider item. An interrupted or invalid turn removes only the uncommitted provider suffix, supplies those removed items to the retry as JSON playback, and preserves the earlier conversation history. SQLite keeps local setup small; the same boundary can move to Postgres.
 - **History and isolation:** ChatKit history is backed by owner-filtered thread/item queries. Opening a
   previous thread restores its saved files into the artifact panel; both thread ownership and
   owner-matching include/asset rows are required. Bucket keys use

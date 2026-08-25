@@ -1,6 +1,8 @@
+from sqlalchemy import inspect, text
+
 from multimedia_intelligence import auth  # noqa: F401
 from multimedia_intelligence.billing import models as billing_models  # noqa: F401
-from multimedia_intelligence.db import Base
+from multimedia_intelligence.db import Base, create_engine_and_session, initialize_schema
 from multimedia_intelligence.files import records  # noqa: F401
 
 
@@ -23,6 +25,7 @@ def test_asset_domain_uses_separate_tables() -> None:
     assert "chat_attachments" not in Base.metadata.tables
     assert "conversation_id" in Base.metadata.tables["chat_threads"].columns
     assert "conversation_dirty" in Base.metadata.tables["chat_threads"].columns
+    assert "conversation_checkpoint_id" in Base.metadata.tables["chat_threads"].columns
     assert "password_hash" in Base.metadata.tables["users"].columns
     assert "token_hash" not in Base.metadata.tables["users"].columns
     assert Base.metadata.tables["user_vector_stores"].primary_key.columns.keys() == ["owner_id"]
@@ -42,3 +45,28 @@ def test_high_volume_queries_have_composite_indexes() -> None:
     for table_name, index_names in expected.items():
         actual = {index.name for index in Base.metadata.tables[table_name].indexes}
         assert index_names <= actual
+
+
+async def test_schema_upgrade_adds_conversation_checkpoint_to_existing_database() -> None:
+    engine, _sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "CREATE TABLE chat_threads ("
+                "id VARCHAR(128) PRIMARY KEY, conversation_id VARCHAR(128), "
+                "conversation_dirty BOOLEAN, owner_id VARCHAR(128), "
+                "created_at DATETIME, payload TEXT)"
+            )
+        )
+
+    await initialize_schema(engine)
+    async with engine.connect() as connection:
+        columns = await connection.run_sync(
+            lambda sync_connection: {
+                column["name"]
+                for column in inspect(sync_connection).get_columns("chat_threads")
+            }
+        )
+
+    assert "conversation_checkpoint_id" in columns
+    await engine.dispose()

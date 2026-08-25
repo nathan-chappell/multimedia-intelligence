@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Protocol
 
 from openai import AsyncOpenAI
-from openai.types.audio.transcription_verbose import TranscriptionVerbose
 
 _DICTATION_SUFFIXES = {
     "audio/mp4": ".mp4",
@@ -64,7 +63,7 @@ class OpenAITranscriptionGateway:
             model=self.model,
             response_format="verbose_json",
         )
-        result = cast(TranscriptionVerbose, raw.parse())
+        result = raw.parse()
         return TranscriptionOutput(
             text=result.text.strip(),
             duration_seconds=float(result.duration),

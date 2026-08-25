@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -29,7 +30,7 @@ from multimedia_intelligence.context import RequestContext
 from multimedia_intelligence.db import Base, initialize_schema
 from multimedia_intelligence.observability import log_event, opaque_id
 
-from .conversations import ConversationGateway
+from .conversations import ConversationGateway, ConversationRepair
 
 
 class ThreadRow(Base):
@@ -38,6 +39,7 @@ class ThreadRow(Base):
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     conversation_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     conversation_dirty: Mapped[bool] = mapped_column(Boolean, default=False)
+    conversation_checkpoint_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     payload: Mapped[str] = mapped_column(Text)
@@ -68,6 +70,13 @@ class FeedbackRow(Base):
 
 
 _THREAD_ITEM_ADAPTER: TypeAdapter[ThreadItem] = TypeAdapter(ThreadItem)
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationTurn:
+    conversation_id: str
+    checkpoint_item_id: str | None = None
+    recovery: ConversationRepair | None = None
 
 
 class SqlAlchemyChatKitStore(Store[RequestContext]):
@@ -154,60 +163,94 @@ class SqlAlchemyChatKitStore(Store[RequestContext]):
         self,
         thread_id: str,
         context: RequestContext,
-    ) -> tuple[str, bool]:
-        """Return the active conversation, rotating it after local history is removed."""
+    ) -> ConversationTurn:
+        """Repair an interrupted provider suffix while preserving committed history."""
 
         await self.initialize()
-        replacement_id: str | None = None
-        previous_id: str | None = None
-        try:
-            async with self.sessions.begin() as session:
-                row = await session.get(ThreadRow, thread_id)
-                if row is None or row.owner_id != context.user_id:
-                    raise NotFoundError(f"Thread {thread_id} not found")
-                if not row.conversation_dirty:
-                    return row.conversation_id, False
-                replacement_id = await self.conversation_gateway.create()
-                previous_id = row.conversation_id
-                row.conversation_id = replacement_id
-                row.conversation_dirty = False
-        except Exception:
-            if replacement_id is not None:
-                await self.conversation_gateway.delete(replacement_id)
-            raise
+        async with self.sessions() as session:
+            row = await session.get(ThreadRow, thread_id)
+        if row is None or row.owner_id != context.user_id:
+            raise NotFoundError(f"Thread {thread_id} not found")
+        if not row.conversation_dirty:
+            return ConversationTurn(
+                conversation_id=row.conversation_id,
+                checkpoint_item_id=row.conversation_checkpoint_id,
+            )
 
-        assert replacement_id is not None and previous_id is not None
-        await self.conversation_gateway.delete(previous_id)
-        log_event(
-            "conversation.rotated",
-            thread=opaque_id(thread_id),
-            conversation=opaque_id(replacement_id),
+        repair = await self.conversation_gateway.repair(
+            row.conversation_id,
+            row.conversation_checkpoint_id,
         )
-        return replacement_id, True
+        log_event(
+            "conversation.repaired",
+            thread=opaque_id(thread_id),
+            conversation=opaque_id(row.conversation_id),
+            removed_items=len(repair.removed_items),
+            strategy=repair.strategy,
+        )
+        return ConversationTurn(
+            conversation_id=row.conversation_id,
+            checkpoint_item_id=row.conversation_checkpoint_id,
+            recovery=repair,
+        )
 
     async def begin_conversation_turn(
         self,
         thread_id: str,
         context: RequestContext,
-    ) -> tuple[str, bool]:
+    ) -> ConversationTurn:
         """Reserve a provider conversation for a turn and persist its in-flight state.
 
         The Responses API appends function calls to a conversation before ChatKit has
         necessarily persisted the corresponding client-tool item. If the HTTP stream is
         interrupted in that gap, the provider conversation cannot accept another user
-        message. Leaving ``conversation_dirty`` set makes the next turn rotate the provider
-        conversation and replay the canonical local history instead.
+        message. Leaving ``conversation_dirty`` set makes the next turn remove only the
+        provider items added after the last committed checkpoint and replay that suffix.
         """
 
-        conversation_id, replay_history = await self.prepare_conversation(thread_id, context)
+        turn = await self.prepare_conversation(thread_id, context)
         async with self.sessions.begin() as session:
             row = await session.get(ThreadRow, thread_id)
             if row is None or row.owner_id != context.user_id:
                 raise NotFoundError(f"Thread {thread_id} not found")
-            if row.conversation_id != conversation_id:
+            if row.conversation_id != turn.conversation_id:
                 raise RuntimeError("Conversation changed while beginning a turn")
+            if row.conversation_checkpoint_id != turn.checkpoint_item_id:
+                raise RuntimeError("Conversation checkpoint changed while beginning a turn")
             row.conversation_dirty = True
-        return conversation_id, replay_history
+        return turn
+
+    async def repair_conversation(
+        self,
+        thread_id: str,
+        conversation_id: str,
+        context: RequestContext,
+        *,
+        latest_turn: bool,
+    ) -> ConversationRepair:
+        """Repair a known-invalid provider conversation without changing its identity."""
+
+        async with self.sessions() as session:
+            row = await session.get(ThreadRow, thread_id)
+        if (
+            row is None
+            or row.owner_id != context.user_id
+            or row.conversation_id != conversation_id
+        ):
+            raise NotFoundError(f"Thread {thread_id} not found")
+        repair = await self.conversation_gateway.repair(
+            conversation_id,
+            row.conversation_checkpoint_id,
+            latest_turn=latest_turn,
+        )
+        log_event(
+            "conversation.repaired",
+            thread=opaque_id(thread_id),
+            conversation=opaque_id(conversation_id),
+            removed_items=len(repair.removed_items),
+            strategy=repair.strategy,
+        )
+        return repair
 
     async def complete_conversation_turn(
         self,
@@ -217,12 +260,14 @@ class SqlAlchemyChatKitStore(Store[RequestContext]):
     ) -> None:
         """Mark a fully consumed and persisted provider turn safe for continuation."""
 
+        checkpoint_item_id = await self.conversation_gateway.latest_item_id(conversation_id)
         async with self.sessions.begin() as session:
             row = await session.get(ThreadRow, thread_id)
             if row is None or row.owner_id != context.user_id:
                 raise NotFoundError(f"Thread {thread_id} not found")
             if row.conversation_id == conversation_id:
                 row.conversation_dirty = False
+                row.conversation_checkpoint_id = checkpoint_item_id
 
     async def load_threads(
         self, limit: int, after: str | None, order: str, context: RequestContext
@@ -390,6 +435,7 @@ class SqlAlchemyChatKitStore(Store[RequestContext]):
             row = await session.get(ThreadRow, thread_id)
             if row is not None:
                 row.conversation_dirty = True
+                row.conversation_checkpoint_id = None
 
     async def save_attachment(self, attachment: Attachment, context: RequestContext) -> None:
         raise RuntimeError("ChatKit attachments are disabled")

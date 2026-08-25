@@ -4,12 +4,13 @@ from importlib.resources import files
 
 from lark import Lark
 
-GRAMMAR_RESOURCE = "files/grammars/jmespath.lark"
-
 
 def load_jmespath_grammar() -> str:
-    package_root = files("multimedia_intelligence")
-    return package_root.joinpath(GRAMMAR_RESOURCE).read_text(encoding="utf-8")
+    return (
+        files("multimedia_intelligence.files")
+        .joinpath("grammars", "jmespath.lark")
+        .read_text(encoding="utf-8")
+    )
 
 
 class JmesPathValidator:

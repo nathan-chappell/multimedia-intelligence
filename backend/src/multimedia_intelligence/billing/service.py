@@ -51,7 +51,7 @@ class BillingService:
             )
             if existing is not None:
                 return existing
-            row = LedgerEventRow(**values)  # type: ignore[arg-type]
+            row = LedgerEventRow(**values)
             session.add(row)
             await session.flush()
             return row

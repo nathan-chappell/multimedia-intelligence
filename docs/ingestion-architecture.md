@@ -106,9 +106,9 @@ For JSON only, `json_chars` remains available for streaming a bounded character 
 complete parse. Above the JMESPath input limit, a later server tool can provide streaming inspection
 or a structural index.
 
-The OpenAI custom-tool contract embeds `jmespath.lark`, a Lark translation of the official JMESPath
-1.0 ABNF and binding order. The same grammar is validated server-side; grammar-constrained model
-output is still not authorization.
+The test client uses `jmespath.lark`, a Lark translation of the official JMESPath 1.0 ABNF and
+binding order, to validate representative generated expressions. Production structured queries
+remain bounded and owner-scoped regardless of expression syntax.
 
 Selected subtrees can later be normalized into structure-aware text shards with JMESPath provenance
 before vector-store ingestion.

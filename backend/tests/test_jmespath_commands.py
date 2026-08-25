@@ -2,7 +2,7 @@ import pytest
 from lark import Lark, Tree
 from lark.exceptions import UnexpectedInput
 
-from multimedia_intelligence.files.tools.jmespath_commands import (
+from tests.support.jmespath_commands import (
     JmesPathValidator,
     jmespath_custom_tool,
     load_jmespath_grammar,

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from multimedia_intelligence.files.tools.pdf_analysis import (
+from tests.support.pdf_analysis import (
     PdfAnalyzer,
     table_of_contents_score,
 )

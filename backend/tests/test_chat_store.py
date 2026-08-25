@@ -14,6 +14,7 @@ from chatkit.types import (
 from sqlalchemy import select
 
 from multimedia_intelligence.auth import UserRow, ensure_builtin_admin, hash_password
+from multimedia_intelligence.chat.conversations import ConversationRepair
 from multimedia_intelligence.chat.store import FeedbackRow, SqlAlchemyChatKitStore, ThreadRow
 from multimedia_intelligence.context import ClientInfo, RequestContext
 from multimedia_intelligence.db import create_engine_and_session
@@ -25,6 +26,7 @@ class FakeConversationGateway:
     def __init__(self) -> None:
         self.created: list[str] = []
         self.deleted: list[str] = []
+        self.repair_calls: list[tuple[str, str | None, bool]] = []
 
     async def create(self) -> str:
         conversation_id = f"conv_{len(self.created)}"
@@ -33,6 +35,22 @@ class FakeConversationGateway:
 
     async def delete(self, conversation_id: str) -> None:
         self.deleted.append(conversation_id)
+
+    async def latest_item_id(self, conversation_id: str) -> str | None:
+        return f"item_{conversation_id}"
+
+    async def repair(
+        self,
+        conversation_id: str,
+        checkpoint_item_id: str | None,
+        *,
+        latest_turn: bool = False,
+    ) -> ConversationRepair:
+        self.repair_calls.append((conversation_id, checkpoint_item_id, latest_turn))
+        return ConversationRepair(
+            removed_items=({"id": f"removed_{conversation_id}", "type": "message"},),
+            strategy="latest_turn" if latest_turn or checkpoint_item_id is None else "checkpoint",
+        )
 
 
 async def test_feedback_submission_stores_thread_items_and_type_together() -> None:
@@ -117,13 +135,14 @@ async def test_thread_pagination_preserves_chatkit_after_id_contract() -> None:
     )
     await store.add_thread_item("thread_1", item, context)
     await store.delete_thread_item("thread_1", item.id, context)
-    replacement_id, replay_history = await store.prepare_conversation("thread_1", context)
-    assert replacement_id == "conv_4"
-    assert replay_history
-    assert conversations.deleted == ["conv_1"]
+    turn = await store.prepare_conversation("thread_1", context)
+    assert turn.conversation_id == "conv_1"
+    assert turn.recovery is not None and turn.recovery.repaired
+    assert conversations.repair_calls == [("conv_1", None, False)]
+    assert conversations.deleted == []
 
     await store.delete_thread("thread_2", context)
-    assert conversations.deleted == ["conv_1", "conv_2"]
+    assert conversations.deleted == ["conv_2"]
     await engine.dispose()
 
 
@@ -202,7 +221,7 @@ async def test_repeated_workflow_done_event_updates_the_existing_item() -> None:
     await engine.dispose()
 
 
-async def test_interrupted_turn_rotates_and_replays_local_history() -> None:
+async def test_interrupted_turn_repairs_suffix_without_rotating_conversation() -> None:
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     conversations = FakeConversationGateway()
     store = SqlAlchemyChatKitStore(engine, sessions, conversations)
@@ -218,14 +237,15 @@ async def test_interrupted_turn_rotates_and_replays_local_history() -> None:
     thread = ThreadMetadata(id="thread_interrupted", created_at=datetime(2026, 1, 1, tzinfo=UTC))
     await store.save_thread(thread, context)
 
-    first_id, first_replay = await store.begin_conversation_turn(thread.id, context)
-    replacement_id, replacement_replay = await store.begin_conversation_turn(thread.id, context)
+    first_turn = await store.begin_conversation_turn(thread.id, context)
+    recovered_turn = await store.begin_conversation_turn(thread.id, context)
 
-    assert first_id == "conv_0"
-    assert not first_replay
-    assert replacement_id == "conv_1"
-    assert replacement_replay
-    assert conversations.deleted == ["conv_0"]
+    assert first_turn.conversation_id == "conv_0"
+    assert first_turn.recovery is None
+    assert recovered_turn.conversation_id == "conv_0"
+    assert recovered_turn.recovery is not None and recovered_turn.recovery.repaired
+    assert conversations.repair_calls == [("conv_0", None, False)]
+    assert conversations.deleted == []
     async with sessions() as session:
         row = await session.get(ThreadRow, thread.id)
         assert row is not None and row.conversation_dirty
@@ -248,12 +268,15 @@ async def test_completed_turn_reuses_the_provider_conversation() -> None:
     thread = ThreadMetadata(id="thread_completed", created_at=datetime(2026, 1, 1, tzinfo=UTC))
     await store.save_thread(thread, context)
 
-    first_id, first_replay = await store.begin_conversation_turn(thread.id, context)
-    await store.complete_conversation_turn(thread.id, first_id, context)
-    reused_id, reused_replay = await store.begin_conversation_turn(thread.id, context)
+    first_turn = await store.begin_conversation_turn(thread.id, context)
+    await store.complete_conversation_turn(thread.id, first_turn.conversation_id, context)
+    reused_turn = await store.begin_conversation_turn(thread.id, context)
 
-    assert first_id == reused_id == "conv_0"
-    assert not first_replay
-    assert not reused_replay
+    assert first_turn.conversation_id == reused_turn.conversation_id == "conv_0"
+    assert first_turn.recovery is None
+    assert reused_turn.recovery is None
     assert conversations.deleted == []
+    async with sessions() as session:
+        row = await session.get(ThreadRow, thread.id)
+        assert row is not None and row.conversation_checkpoint_id == "item_conv_0"
     await engine.dispose()

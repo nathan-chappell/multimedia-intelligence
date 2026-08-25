@@ -6,7 +6,7 @@ import jmespath
 import pytest
 from openai import OpenAI
 
-from multimedia_intelligence.files.tools.jmespath_commands import (
+from tests.support.jmespath_commands import (
     JmesPathValidator,
     jmespath_custom_tool,
 )

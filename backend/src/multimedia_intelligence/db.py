@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from sqlalchemy import event
+from sqlalchemy import event, inspect, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -13,6 +14,22 @@ from sqlalchemy.pool import StaticPool
 
 class Base(DeclarativeBase):
     pass
+
+
+def _ensure_compatibility_columns(connection: Connection) -> None:
+    """Apply small additive upgrades while the prototype does not use migrations."""
+
+    inspector = inspect(connection)
+    if "chat_threads" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("chat_threads")}
+    if "conversation_checkpoint_id" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE chat_threads "
+                "ADD COLUMN conversation_checkpoint_id VARCHAR(128) NULL"
+            )
+        )
 
 
 def create_engine_and_session(
@@ -42,3 +59,4 @@ async def initialize_schema(engine: AsyncEngine) -> None:
 
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        await connection.run_sync(_ensure_compatibility_columns)

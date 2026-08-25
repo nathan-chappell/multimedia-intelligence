@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from multimedia_intelligence.files.tools.csv_analysis import ColumnSpec, CsvAnalyzer
+from tests.support.csv_analysis import ColumnSpec, CsvAnalyzer
 
 
 @pytest.fixture
