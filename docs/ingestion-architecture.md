@@ -26,7 +26,7 @@ ChatKit Attachment = transport/UI metadata pointing at an include, never storage
 1. The accepted original reaches our bucket before an agent or external provider processes it.
 2. Any bytes uploaded to OpenAI also have a canonical or reproducible bucket copy. OpenAI IDs are never recovery paths.
 3. An include is reversible and thread-scoped. Excluding a file does not delete the asset.
-4. The agent's ingestion plan is provisional conversation guidance, not executable state.
+4. Runtime agents cannot prepare or commit ingestion; those mutations belong to the offline demo seeder.
 5. Each tool call validates authorization and limits independently and returns its result through ChatKit.
 6. Only ready artifacts from active includes owned by the current user enter a chat turn.
 7. Browser results are bounded proposals. The backend verifies identity, size, hash, and authorization before persisting or trusting them.
@@ -34,9 +34,8 @@ ChatKit Attachment = transport/UI metadata pointing at an include, never storage
    provider's expiration controls and are never treated as durable storage.
 9. A vector store belongs to a user, never to a conversation. Every provider hit is resolved back
    through an owner-matching canonical asset before bytes or structured tools become available.
-10. A collection is a logical partition, not another vector store. Uploads, ingestion attempts,
-    provider attributes, search filters, and follow-up hydration must all match the user's global
-    selected collection.
+10. A collection is a logical partition, not another vector store. Provider attributes, search
+    filters, and follow-up hydration must all match the user's global selected collection.
 
 ## Storage: Railway Buckets
 
@@ -51,29 +50,24 @@ Railway Buckets are S3-compatible and private. `S3BlobStore` uses boto3 with Rai
 
 The existing `OBJECT_STORE_*` names remain local-development aliases. Browser uploads use backend-issued presigned PUT URLs; no S3 credential reaches JavaScript. Reads use short-lived GET URLs or authenticated ranged proxy responses. For backend uploads, async chunks spool to disk and boto3 performs multipart transfer without accumulating the object in memory.
 
-Presigned upload completion is not proof of safe ingestion. Finalization must `HEAD` the exact key, stream it through hashing/type-sniffing/malware checks, and only then promote the asset from quarantine to `STORED`.
+The server validates the upload envelope and object metadata but does not open, decode, parse, or
+transform the file body.
 
-## Interactive ingestion flow
+## Runtime and demo boundaries
 
 ```text
-upload → quarantine → hash/sniff/scan → durable Asset
-                                      ↓
-prepare_ingestion → persisted modality evidence and artifacts
-                                      ↓
-               matching specialist produces a grounded description
-                                      ↓
-       commit_ingestion → replacement upload set → atomic activation
-                                      ↓
-              file_search returns ranked metadata only
-                  ↓                 ↓                   ↓
-              get_file          query_file        get_transcript
+runtime: upload → immutable object → browser inspection / signed hydration
+
+offline demo seeder: source file → local preparation → OpenAI vector artifacts
+                                                   ↓
+runtime reader:       file_search → get_file / get_transcript
 ```
 
-`prepare_ingestion` persists each completed stage under a versioned attempt. States are
+The demo seeder's `prepare_ingestion` persists each completed stage under a versioned attempt. States are
 `preparing`, `prepared`, `awaiting_guidance`, `indexing`, `ready`, and `failed`. The ingestion
-strategist alone calls `commit_ingestion`. A replacement is uploaded completely before its database
-records become active; failed replacements leave the previous ready attempt searchable. Retrying a
-commit reuses already uploaded artifacts and does not repeat provider uploads.
+CLI calls `commit_ingestion`. A replacement is uploaded completely before its database records
+become active; failed replacements leave the previous ready attempt searchable. None of these
+mutation methods or processors are imported by the application server.
 
 ## Structured-data tools
 
@@ -86,25 +80,15 @@ top-level array entries and 256 KiB, and complete-file parsing has a 64 MiB brow
 
 The analyst starts with `[0]` for CSV or a focused object projection for JSON, then uses JMESPath
 filters, projections, multiselects, and functions for subsequent questions. CSV and JSON content
-never enters the prompt wholesale. Repeated calls should eventually use a materialized
-DuckDB/Polars-style artifact rather than rescanning remote bytes. For a user-library result found by
-`file_search`, the structured-data specialist uses `query_file` against the
-owner-checked canonical bucket object.
-
-`create_chart` applies a second bounded JMESPath expression to the canonical CSV/JSON asset and
-supports line, grouped-bar, and scatter charts. It accepts at most 5,000 rows, 12 series, and 50 bar
-categories, requires a numeric Y field, and emits an optimized 1200×675 PNG of at most 512 KiB.
-Each saved chart records its source asset, collection, thread, expression, complete chart spec,
-sample size, and plotted-series provenance. ChatKit receives an inline generated-image item while
-the authenticated artifact endpoint lets the file panel restore the same bucket object. The tool
-belongs only to the structured-data specialist, whose prompt requires sample-size and observational
-data caveats.
+never enters the prompt wholesale. Canonical bucket assets are not parsed by the server: a file must
+be explicitly included so the browser can run these tools. Chart rendering remains a demo/test
+helper and is not exposed as a server tool.
 
 For semantic search over a text column, do not create one OpenAI file per row. That creates provider-object and lifecycle overhead. First normalize rows into provenance-bearing shards with stable row IDs. Evaluate shard retrieval. If true row-level nearest-neighbor behavior is required, use a direct embeddings + pgvector path later; OpenAI vector stores ingest files and do not promise one vector per CSV row.
 
 For JSON only, `json_chars` remains available for streaming a bounded character range before a
-complete parse. Above the JMESPath input limit, a later server tool can provide streaming inspection
-or a structural index.
+complete parse. Above the JMESPath input limit, a future browser worker or external processing
+service can provide streaming inspection or a structural index.
 
 The test client uses `jmespath.lark`, a Lark translation of the official JMESPath 1.0 ABNF and
 binding order, to validate representative generated expressions. Production structured queries
@@ -128,10 +112,9 @@ directly to the application, and the resumed function output supplies the model 
 `input_file` URL. This avoids base64 expansion and keeps bucket storage canonical.
 
 For very large PDFs, browser rendering can still inspect local pages through PDF.js, but `pdf-lib`
-is not a safe 1 GiB splitter. A bounded server-side splitting tool remains required. The browser is
-an accelerator; durable assets remain available for later ChatKit turns after the tab closes.
+is not a safe 1 GiB splitter. The application does not fall back to server-side splitting.
 
-The durable adaptive plan is:
+The demo seeder's offline preparation plan is:
 
 1. Extract page-aware text, outlines, and a bounded set of non-decorative embedded images.
 2. Propose outline-aware ranges of at most 20 pages and retain original page numbers.
@@ -150,14 +133,16 @@ Responses call when context isolation is required.
 
 ## Audio, video, and images
 
-Audio uses `gpt-4o-transcribe-diarize` when speaker labeling is needed, producing timestamped labeled sections. Small transcripts enter bounded context; larger transcripts become structure-aware text artifacts for vector retrieval.
+The demo seeder uses `gpt-4o-transcribe-diarize` when speaker labeling is needed, producing
+timestamped labeled sections. The application server never constructs this processor.
 
 Supported MP4/WebM video containers are submitted directly to the same transcription endpoint; no
 FFmpeg dependency is required. The indexed transcript explicitly warns that only the audio track
 was analyzed. `get_transcript` returns a complete bounded transcript when possible and otherwise
 paginates with timestamp continuity.
 
-Images go directly to vision in bounded batches. If a thread includes too many images for one request, build small batches or contact sheets, summarize each batch with stable asset IDs, and perform a second synthesis pass. Never silently omit images; expose the batch/progress state and retain per-image provenance.
+Runtime images are supplied to the model through signed URLs without local decoding or
+manipulation. Demo PDF-image captioning remains in the offline seeder.
 
 ## Vector-store policy
 
@@ -166,7 +151,7 @@ Each user has one lazily created OpenAI vector store. `FileCollection` records a
 at upload, ingestion attempts snapshot it again, and every uploaded provider file carries a
 `collection_id` attribute.
 
-CSV/JSON add bounded profiles; images add
+During demo seeding, CSV/JSON add bounded profiles; images add
 specialist descriptions; audio/video add timestamped diarized transcript shards; text adds the
 original with explicit provider chunking plus heading-aware shards; PDFs add range PDFs and
 page/image-caption documents.
@@ -175,14 +160,12 @@ page/image-caption documents.
 snippets, modality, artifact kind, provenance, and allowed follow-ups. It never attaches bytes.
 Search sends an equality filter for the selected `collection_id` to OpenAI. Every returned hit must
 also match the current owner, selected collection, active ingestion attempt, artifact row, and exact
-provider file ID, so stale, cross-owner, and cross-collection hits are discarded. `get_file`, `query_file`, and
+provider file ID, so stale, cross-owner, and cross-collection hits are discarded. `get_file` and
 `get_transcript` hydrate canonical evidence only after discovery.
 
 ## Agent boundaries
 
 - **Conversation manager:** discovers files, routes to modality specialists, and synthesizes results.
-- **Ingestion strategist:** combines intent, metadata, and specialist evidence into a provisional
-  descriptive approach. It does not create jobs or executable steps.
 - **Document specialist:** interprets browser PDF probes, isolated provider probes, text extraction, and page/layout evidence.
 - **Structured-data specialist:** interprets CSV head/statistic results plus bounded JSON characters and safe JSONPath results.
 - **Media specialist:** plans diarization and bounded frame sampling/refinement as separate aligned evidence channels.
@@ -200,6 +183,6 @@ preview artifacts until explicitly saved.
 ## Next implementation slices
 
 1. Add collection rename/delete/move operations and bulk import from URLs such as arXiv.
-2. Improve PDF outline/image heuristics and add OCR for scanned documents.
-3. Add quotas, cancellation, ingestion observability, and explicit deletion of provider artifacts.
+2. Improve browser-side PDF inspection and OCR without introducing server-side media processing.
+3. Add quotas and explicit deletion of provider artifacts.
 4. Expand opt-in live coverage to embedded-image PDFs and diarized MP4/WebM files.

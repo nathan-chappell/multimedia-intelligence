@@ -17,15 +17,14 @@ from sqlalchemy import select
 from multimedia_intelligence.auth import ensure_builtin_admin
 from multimedia_intelligence.context import ClientInfo, RequestContext
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
-from multimedia_intelligence.files.access import ScopedAgentDataAccess
-from multimedia_intelligence.files.domain import AssetState, ObjectLocation
-from multimedia_intelligence.files.indexing import (
+from multimedia_intelligence.demo.ingestion import (
     DiarizedTranscript,
     FileIngestionService,
     ProviderFileState,
     TranscriptSegment,
     VectorSearchHit,
 )
+from multimedia_intelligence.files.domain import AssetState, ObjectLocation
 from multimedia_intelligence.files.records import (
     AssetIndexArtifactRow,
     AssetIngestionRow,
@@ -262,11 +261,11 @@ async def test_csv_profile_commit_and_text_chunking_are_modality_aware() -> None
     await engine.dispose()
 
 
-async def test_json_profile_is_bounded_and_query_file_uses_canonical_asset() -> None:
+async def test_demo_json_profile_is_bounded() -> None:
     content = json.dumps(
         {"items": [{"name": f"item-{index}", "value": index} for index in range(40)]}
     ).encode()
-    engine, sessions, blobs, vectors, _, service = await setup_service(
+    engine, _, _, vectors, _, service = await setup_service(
         [("json", "items.json", "application/json", content)]
     )
     prepared = await service.prepare(TEST_SETTINGS.admin_user_id, "json")
@@ -274,9 +273,6 @@ async def test_json_profile_is_bounded_and_query_file_uses_canonical_asset() -> 
     assert isinstance(evidence, dict)
     assert len(evidence["representativeValue"]["items"]) == 5
     await service.commit(TEST_SETTINGS.admin_user_id, str(prepared["ingestionId"]), "Item values.")
-    access = ScopedAgentDataAccess(sessions, TEST_SETTINGS.admin_user_id, blobs, service)
-    result = await access.query_file("json", "sum(items[].value)")
-    assert result["value"] == 780
     assert vectors.created == [TEST_SETTINGS.admin_user_id]
     await engine.dispose()
 

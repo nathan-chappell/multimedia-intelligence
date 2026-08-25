@@ -18,7 +18,7 @@ from multimedia_intelligence.files.collections import (
     selected_collection,
 )
 from multimedia_intelligence.files.domain import AssetState, IncludeState, IntentKind
-from multimedia_intelligence.files.indexing import FileIngestionService, ReconciliationSummary
+from multimedia_intelligence.files.indexing import FileIndexReader, ReconciliationSummary
 from multimedia_intelligence.files.policy import classify_file
 from multimedia_intelligence.files.records import (
     AssetIndexArtifactRow,
@@ -101,7 +101,7 @@ class ReconciliationView(BaseModel):
 def build_collection_router(
     sessions: async_sessionmaker[AsyncSession],
     settings: Settings,
-    file_index: FileIngestionService | None = None,
+    file_index: FileIndexReader | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/collections", tags=["collections"])
 

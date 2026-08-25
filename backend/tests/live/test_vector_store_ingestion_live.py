@@ -10,13 +10,14 @@ from sqlalchemy import select
 from multimedia_intelligence.auth import ensure_builtin_admin
 from multimedia_intelligence.config import get_settings
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
-from multimedia_intelligence.files.access import ScopedAgentDataAccess
-from multimedia_intelligence.files.collections import selected_collection
-from multimedia_intelligence.files.domain import AssetState
-from multimedia_intelligence.files.indexing import (
+from multimedia_intelligence.demo.ingestion import (
     FileIngestionService,
     OpenAIVectorStoreGateway,
 )
+from multimedia_intelligence.files.access import ScopedAgentDataAccess
+from multimedia_intelligence.files.collections import selected_collection
+from multimedia_intelligence.files.domain import AssetState
+from multimedia_intelligence.files.indexing import FileIndexReader
 from multimedia_intelligence.files.records import (
     AssetIndexArtifactRow,
     AssetRow,
@@ -65,7 +66,6 @@ async def test_real_openai_vector_store_ingests_and_searches_csv_and_pdf() -> No
     service = FileIngestionService(
         sessions, blobs, vectors, FixtureDiarization(), FixtureCaptions()
     )
-    access = ScopedAgentDataAccess(sessions, TEST_SETTINGS.admin_user_id, blobs, service)
     async with sessions.begin() as session:
         session.add_all(
             [
@@ -89,17 +89,19 @@ async def test_real_openai_vector_store_ingests_and_searches_csv_and_pdf() -> No
         )
 
     try:
-        csv_prepared = await access.prepare_ingestion("csv_live")
-        await access.commit_ingestion(
+        csv_prepared = await service.prepare(TEST_SETTINGS.admin_user_id, "csv_live")
+        await service.commit(
+            TEST_SETTINGS.admin_user_id,
             str(csv_prepared["ingestionId"]),
             "US Treasury exchange rates by country and currency, including Afghanistan-Afghani.",
         )
-        pdf_prepared = await access.prepare_ingestion("pdf_live")
+        pdf_prepared = await service.prepare(TEST_SETTINGS.admin_user_id, "pdf_live")
         evidence = pdf_prepared["preparedEvidence"]
         assert isinstance(evidence, dict)
         ranges = evidence.get("proposedRanges")
         images = evidence.get("proposedImages")
-        await access.commit_ingestion(
+        await service.commit(
+            TEST_SETTINGS.admin_user_id,
             str(pdf_prepared["ingestionId"]),
             "Attention Is All You Need, introducing Transformer multi-head attention.",
             ranges if pdf_prepared["status"] == "awaiting_guidance" else None,
@@ -108,14 +110,18 @@ async def test_real_openai_vector_store_ingests_and_searches_csv_and_pdf() -> No
             else None,
         )
 
+        access = ScopedAgentDataAccess(
+            sessions,
+            TEST_SETTINGS.admin_user_id,
+            blobs,
+            FileIndexReader(sessions, blobs, vectors),
+        )
         csv_hits = await access.file_search("Afghanistan Afghani exchange rate", 5, ["csv"])
         pdf_hits = await access.file_search("Transformer multi-head attention", 5, ["pdf"])
         assert csv_hits and csv_hits[0]["assetId"] == "csv_live"
         assert pdf_hits and pdf_hits[0]["assetId"] == "pdf_live"
-        afghani_rate = (
-            '[?"Country - Currency Description" == `Afghanistan-Afghani`]."Exchange Rate" | [0]'
-        )
-        assert (await access.query_file("csv_live", afghani_rate))["value"] == 65.09
+        csv_profile = await access.get_file("csv_live", str(csv_hits[0]["artifactId"]))
+        assert "csv profile" in str(csv_profile["profile"]).casefold()
         hydrated = await access.get_file("pdf_live", str(pdf_hits[0]["artifactId"]))
         assert hydrated["inputKind"] == "file"
     finally:

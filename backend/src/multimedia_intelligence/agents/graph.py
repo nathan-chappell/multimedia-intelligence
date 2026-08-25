@@ -6,7 +6,6 @@ from agents import Agent, ModelSettings, RunHooks, StopAtTools, handoff
 from agents.tool import Tool
 from chatkit.agents import AgentContext
 from openai.types.shared import Reasoning
-from pydantic import BaseModel, ConfigDict, Field
 
 from multimedia_intelligence.context import RequestContext
 from multimedia_intelligence.files.client_tools import (
@@ -22,16 +21,6 @@ from multimedia_intelligence.files.server_tools import (
 )
 
 type ChatAgent = Agent[AgentContext[RequestContext]]
-
-
-class DescriptiveIngestionPlan(BaseModel):
-    """Provisional guidance returned to the root, never an executable job specification."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    summary: str = Field(min_length=1, max_length=1_000)
-    approach: tuple[str, ...] = Field(min_length=1, max_length=8)
-    watch_for: tuple[str, ...] = Field(default=(), max_length=6)
 
 
 class AssistantGraph:
@@ -58,30 +47,9 @@ class AssistantGraph:
             tool.name: tool for tool in [*build_durable_text_tools(), *build_file_index_tools()]
         }
 
-        self.ingestion = Agent(
-            name="Ingestion strategist",
-            model=model,
-            model_settings=self.model_settings,
-            instructions="""Describe a provisional ingestion approach from evidence and user intent.
-Use the file metadata already discovered by the root.
-Keep the approach adaptable as new evidence appears.
-When an ingestion ID and specialist evidence are available, call commit_ingestion exactly once
-with a standalone retrieval description before returning the plan. Include content, structure,
-important entities, time/page/row coverage, and limitations supported by the evidence. For an
-awaiting_guidance PDF, preserve the user's confirmed page ranges and extracted-image IDs.""",
-            tools=self._tools("commit_ingestion"),
-            output_type=DescriptiveIngestionPlan,
-        )
-        ingestion_tool = self.ingestion.as_tool(
-            tool_name="consult_ingestion_strategist",
-            tool_description="Describe a provisional, adaptable ingestion approach.",
-            hooks=hooks,
-        )
-
         root_tools = [
             *self._tools("list_files"),
-            *self._tools("file_search", "prepare_ingestion"),
-            ingestion_tool,
+            *self._tools("file_search"),
         ]
         self.root = Agent(
             name="Root conversation agent",
@@ -92,12 +60,11 @@ Use list_files for files included in the current conversation.
 Use file_search to discover relevant durable files across the current user's library. Search is
 discovery-only and automatically restricted to the user's globally selected collection: preserve
 the returned collection, assetId, and artifactId, then hand work to the matching specialist.
-Use prepare_ingestion when a durable file needs to be indexed, and send its prepared evidence to
-the matching specialist before consulting the ingestion strategist.
 Start list_files with page 1 and follow hasMore only when needed.
 Hand off content inspection to the matching modality specialist.
-Consult the ingestion strategist when ingestion guidance is needed.
-Treat strategies as provisional and use only returned evidence.""",
+The server only reads artifacts prepared by the demo seeder; inspect user-provided files with the
+browser tools and never claim that the server parsed or transformed them.
+Use only returned evidence.""",
             tools=root_tools,
             tool_use_behavior=self._stop_at_client_tools(root_tools),
         )
@@ -132,8 +99,7 @@ Return control to the root after producing the needed overview.""",
         structured_data_tools = self._tools(
             *STRUCTURED_DATA_CLIENT_TOOLS,
             "read_durable_text_range",
-            "query_file",
-            "create_chart",
+            "get_file",
         )
         self.structured_data = Agent(
             name="Structured data specialist",
@@ -143,11 +109,9 @@ Return control to the root after producing the needed overview.""",
 Use query_structured_data with valid JMESPath. CSV files are converted to arrays of JSON rows;
 start with [0] to inspect columns and inferred value types, then make focused projections,
 filters, or function calls. Summarize structure, samples, and statistics.
-For assets discovered by file_search, use query_file instead of a browser
-tool; it is owner-scoped and reads the canonical bucket asset.
-Use create_chart for requested line, grouped-bar, or scatter charts. Narrow the JMESPath expression
-first, use explicit fields, and report the chart's sample sizes. Treat observational relationships
-as correlation rather than causation and preserve relevant dataset caveats.
+For assets discovered by file_search, use get_file to read only the prepared demo profile. Use the
+browser tools for queries against an explicitly included source file. The server does not parse
+canonical CSV or JSON assets or render charts.
 Return control to the root after producing the needed overview.""",
             tools=structured_data_tools,
             handoffs=[return_to_root],
@@ -209,7 +173,6 @@ observation from inference, then return control to the root.""",
     @property
     def specialists(self) -> tuple[ChatAgent, ...]:
         return (
-            self.ingestion,
             self.document,
             self.structured_data,
             self.media,

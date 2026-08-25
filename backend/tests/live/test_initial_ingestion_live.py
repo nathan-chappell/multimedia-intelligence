@@ -54,8 +54,8 @@ class InitialIngestionScenario(BaseModel):
     def prompt(self) -> str:
         return (
             "I have staged one new browser file for this conversation. Identify and inspect it "
-            "with the available client tools, obtain the required specialist overview, and then "
-            "recommend an ingestion strategy. Do not assume file contents that the tools have not "
+            "with the available client tools and obtain the required specialist overview. "
+            "Do not request server-side ingestion or assume file contents that the tools have not "
             f"shown you. My intent is: {self.intent}"
         )
 
@@ -276,7 +276,7 @@ def test_scenarios_cover_every_supported_file_route() -> None:
     reason="Set RUN_OPENAI_BEHAVIORAL=1 to allow OpenAI API calls",
 )
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda scenario: scenario.route)
-async def test_root_builds_initial_ingestion_strategy(
+async def test_root_inspects_browser_file_without_server_processing(
     scenario: InitialIngestionScenario,
     tmp_path: Path,
 ) -> None:
@@ -293,10 +293,8 @@ async def test_root_builds_initial_ingestion_strategy(
             f"Expected one of {alternatives} for {scenario.route}; got {client_calls}"
         )
     assert scenario.overview_tool in result.agent_tool_calls
-    if "consult_ingestion_strategist" in result.agent_tool_calls:
-        assert result.agent_tool_calls.index(
-            scenario.overview_tool
-        ) < result.agent_tool_calls.index("consult_ingestion_strategist")
+    assert "prepare_ingestion" not in result.agent_tool_calls
+    assert "commit_ingestion" not in result.agent_tool_calls
 
     output = str(result.result.final_output).casefold()
     assert len(output) >= 100, f"Expected a substantive strategy for {scenario.route}"

@@ -14,7 +14,7 @@ from chatkit.types import (
     UserMessageTextContent,
 )
 
-from multimedia_intelligence.agents import AssistantGraph, DescriptiveIngestionPlan
+from multimedia_intelligence.agents import AssistantGraph
 from multimedia_intelligence.chat.conversations import ConversationRepair
 from multimedia_intelligence.chat.models import resolve_chat_model
 from multimedia_intelligence.chat.server import MultimediaChatServer
@@ -52,7 +52,6 @@ def test_selected_model_is_applied_to_manager_and_every_specialist() -> None:
     assert graph.root.model == "gpt-5.6"
     assert {agent.model for agent in graph.specialists} == {"gpt-5.6"}
     assert graph.specialists == (
-        graph.ingestion,
         graph.document,
         graph.structured_data,
         graph.media,
@@ -67,8 +66,6 @@ def test_root_only_discovers_files_and_delegates_specialist_work() -> None:
     assert tool_names == {
         "list_files",
         "file_search",
-        "prepare_ingestion",
-        "consult_ingestion_strategist",
     }
     assert {handoff.tool_name for handoff in assistant.handoffs} == {
         "consult_document_specialist",
@@ -78,13 +75,14 @@ def test_root_only_discovers_files_and_delegates_specialist_work() -> None:
     }
 
 
-def test_initial_ingestion_instructions_require_two_stage_delegation() -> None:
+def test_runtime_instructions_forbid_server_side_file_processing() -> None:
     assistant = AssistantGraph(model="gpt-5.6").root
     assert isinstance(assistant.instructions, str)
     instructions = assistant.instructions
 
     assert "Hand off content inspection" in instructions
-    assert "Consult the ingestion strategist" in instructions
+    assert "server only reads artifacts prepared by the demo seeder" in instructions
+    assert "never claim that the server parsed or transformed" in instructions
 
 
 def test_specialists_receive_modality_specific_tools() -> None:
@@ -94,7 +92,6 @@ def test_specialists_receive_modality_specific_tools() -> None:
         for specialist in graph.specialists
     }
     assert tool_names == {
-        "Ingestion strategist": {"commit_ingestion"},
         "Document specialist": {
             "read_text_chars",
             "pdf_random_sample",
@@ -107,8 +104,7 @@ def test_specialists_receive_modality_specific_tools() -> None:
             "json_chars",
             "query_structured_data",
             "read_durable_text_range",
-            "query_file",
-            "create_chart",
+            "get_file",
         },
         "Media specialist": {"get_transcript"},
         "Image specialist": {"get_file"},
@@ -150,17 +146,6 @@ def test_client_tool_continuation_keeps_the_originating_turn_correlation() -> No
     resumed = MultimediaChatServer._turn_source_id(thread, None, [message, tool_call])
 
     assert initial == resumed == message.id
-
-
-def test_ingestion_plan_is_descriptive_structured_output() -> None:
-    graph = AssistantGraph(model="gpt-5.6")
-    ingestion = next(agent for agent in graph.specialists if agent.name == "Ingestion strategist")
-
-    assert ingestion.output_type is DescriptiveIngestionPlan
-    schema = DescriptiveIngestionPlan.model_json_schema()
-    assert set(schema["properties"]) == {"summary", "approach", "watch_for"}
-    assert "state" not in schema["properties"]
-    assert "steps" not in schema["properties"]
 
 
 def test_client_tool_schemas_are_strict_and_pause_the_turn() -> None:

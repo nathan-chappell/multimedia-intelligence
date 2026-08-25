@@ -16,16 +16,17 @@ from pypdf import PdfReader
 
 from multimedia_intelligence.auth import ensure_builtin_admin
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
-from multimedia_intelligence.files.access import ScopedAgentDataAccess
-from multimedia_intelligence.files.collections import selected_collection
-from multimedia_intelligence.files.domain import AssetState, ObjectLocation
-from multimedia_intelligence.files.indexing import (
+from multimedia_intelligence.demo.ingestion import (
     DiarizedTranscript,
     FileIngestionService,
     ProviderFileState,
     TranscriptSegment,
     VectorSearchHit,
 )
+from multimedia_intelligence.files.access import ScopedAgentDataAccess
+from multimedia_intelligence.files.collections import selected_collection
+from multimedia_intelligence.files.domain import AssetState, ObjectLocation
+from multimedia_intelligence.files.indexing import FileIndexReader
 from multimedia_intelligence.files.records import AssetRow
 
 from .settings import TEST_SETTINGS
@@ -224,7 +225,6 @@ async def test_every_modality_ingests_and_supports_a_follow_up_query() -> None:
         FixtureDiarization(),
         FixtureCaptions(),
     )
-    access = ScopedAgentDataAccess(sessions, TEST_SETTINGS.admin_user_id, blobs, service)
     descriptions = {
         "csv": "US Treasury exchange rates by country and currency, including Afghanistan-Afghani.",
         "json": "A JSON currency sample with Albania-Lek and numeric exchange rates.",
@@ -235,35 +235,32 @@ async def test_every_modality_ingests_and_supports_a_follow_up_query() -> None:
         "pdf": "Attention Is All You Need, the Transformer encoder-decoder research paper.",
     }
     for asset_id in inputs:
-        prepared = await access.prepare_ingestion(asset_id)
+        prepared = await service.prepare(TEST_SETTINGS.admin_user_id, asset_id)
         evidence = prepared["preparedEvidence"]
         assert isinstance(evidence, dict)
         needs_guidance = prepared["status"] == "awaiting_guidance"
         ranges = evidence.get("proposedRanges") if needs_guidance else None
         images = evidence.get("proposedImages") if needs_guidance else None
-        await access.commit_ingestion(
+        await service.commit(
+            TEST_SETTINGS.admin_user_id,
             str(prepared["ingestionId"]),
             descriptions[asset_id],
             ranges if isinstance(ranges, list) else None,
             [str(item["imageId"]) for item in images] if isinstance(images, list) else None,
         )
 
+    reader = FileIndexReader(sessions, blobs, vectors)
+    access = ScopedAgentDataAccess(sessions, TEST_SETTINGS.admin_user_id, blobs, reader)
+
     csv_hits = await access.file_search("Afghanistan exchange rate", 5, ["csv"])
-    assert csv_hits and csv_hits[0]["availableActions"] == [
-        "get_file",
-        "query_file",
-        "create_chart",
-    ]
-    csv_query = await access.query_file(
-        "csv",
-        '[?"Country - Currency Description" == `Afghanistan-Afghani`]."Exchange Rate" | [0]',
-    )
-    assert csv_query["value"] == 65.09
+    assert csv_hits and csv_hits[0]["availableActions"] == ["get_file"]
+    csv_profile = await access.get_file("csv", str(csv_hits[0]["artifactId"]))
+    assert "csv profile" in str(csv_profile["profile"]).casefold()
 
     json_hits = await access.file_search("Albania currency rate", 5, ["json"])
     assert json_hits
-    json_query = await access.query_file("json", "currencies[?country == 'Albania-Lek'].rate | [0]")
-    assert json_query["value"] == 82.4
+    json_profile = await access.get_file("json", str(json_hits[0]["artifactId"]))
+    assert "json profile" in str(json_profile["profile"]).casefold()
 
     text_hits = await access.file_search("scaled dot product attention", 5, ["text"])
     assert text_hits

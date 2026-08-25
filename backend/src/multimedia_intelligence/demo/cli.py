@@ -21,14 +21,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from multimedia_intelligence.auth import AuthenticatedUser, ensure_identity_row
 from multimedia_intelligence.config import Settings, get_settings
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
-from multimedia_intelligence.files.collections import create_collection, select_collection
-from multimedia_intelligence.files.domain import AssetState
-from multimedia_intelligence.files.indexing import (
+from multimedia_intelligence.demo.ingestion import (
     FileIngestionService,
     OpenAIDiarizationGateway,
     OpenAIVectorStoreGateway,
     OpenAIVisionCaptionGateway,
 )
+from multimedia_intelligence.files.collections import create_collection, select_collection
+from multimedia_intelligence.files.domain import AssetState
 from multimedia_intelligence.files.ports import BlobStore
 from multimedia_intelligence.files.records import (
     AssetIngestionRow,

@@ -114,14 +114,15 @@ Then open <http://localhost:8000>.
   later paid actions return HTTP 402. The default markup is `1.5`.
 - **Agents SDK:** owns the model/tool loop and streams through ChatKit's `stream_agent_response` adapter.
 - **Root plus specialists:** the root discovers files and hands content work to modality specialists.
-  Specialists return control after gathering evidence; the ingestion strategist remains a structured
-  agent tool. ChatKit's model picker applies to the entire graph.
+  Specialists return control after gathering evidence. ChatKit's model picker applies to the entire
+  graph.
 - **Client tools:** the root can list staged files. Document and structured-data specialists own the
   relevant text, PDF, CSV, and JSON browser tools. Results are typed evidence, not proof of durable
   storage.
-- **Separate dictation and ingestion:** ChatKit attachments stay disabled. Composer dictation sends
-  an ephemeral browser recording through the authenticated backend to `gpt-4o-mini-transcribe`;
-  uploaded audio uses the custom asset and ingestion pipeline instead.
+- **Separate dictation and file inspection:** ChatKit attachments stay disabled. Composer dictation
+  forwards an ephemeral browser recording through the authenticated backend to
+  `gpt-4o-mini-transcribe` without locally decoding or transforming it. Uploaded files are stored
+  byte-for-byte and inspected with browser tools; only the explicit demo seeder prepares indexes.
 - **SQLAlchemy store:** ChatKit thread/item payloads are stored as version-tolerant JSON with indexed relational identity and timestamps. Each thread owns one OpenAI conversation ID, reused for turns and client-tool continuations and deleted with the thread. Successful turns checkpoint the newest provider item. An interrupted or invalid turn removes only the uncommitted provider suffix, supplies those removed items to the retry as JSON playback, and preserves the earlier conversation history. SQLite keeps local setup small; the same boundary can move to Postgres.
 - **History and isolation:** ChatKit history is backed by owner-filtered thread/item queries. Opening a
   previous thread restores its saved files into the artifact panel; both thread ownership and
@@ -131,21 +132,19 @@ Then open <http://localhost:8000>.
 - **File routing before inference:** text-like files, PDFs, images, and transcribable media are classified explicitly. Unknown formats are rejected instead of being silently sent to a model.
 - **Bucket first:** every accepted original is durably written to our object store before inspection or provider upload. OpenAI file IDs and vector-store IDs are disposable references, not storage.
 - **Include is not upload:** a thread include is a reversible relationship to an asset. The same asset can be included in multiple threads without duplicating the original.
-- **Derived artifacts are replaceable:** previews, transcripts, page renders, sampled frames, chunks, profiles, and provider/index IDs can be deleted and regenerated without losing the original.
-- **Interactive ingestion:** the ingestion agent describes a provisional approach. The root performs
-  bounded work through ChatKit tool calls and revises the approach as results reveal more. It also
-  commits the specialist's evidence-backed description to the asset's user index.
+- **Demo artifacts are replaceable:** demo transcripts, PDF ranges, chunks, profiles, and provider
+  IDs can be regenerated without losing the original.
+- **No runtime media processing:** the application server does not parse PDFs, decode or manipulate
+  images, extract audio/video, parse canonical CSV/JSON files, or render charts. Browser tools own
+  interactive file inspection. Demo-only preparation lives under `multimedia_intelligence.demo`.
 - **Collections:** users create and globally select a collection in the file panel. New uploads and
   ingestion attempts inherit that selection. One lazily created OpenAI vector store still serves
   the user; `collection_id` attributes partition its files without multiplying stores.
 - **Per-user retrieval:** each modality contributes tailored profiles, transcript shards,
   descriptions, source text, or page-aware PDF artifacts with provenance.
-- **Search routing:** `file_search` returns ranked metadata only. `get_file`, `query_file`, and
-  `get_transcript` perform explicit, owner- and selected-collection-scoped follow-up hydration.
-- **Saved charts:** the structured-data specialist can run bounded JMESPath and create line,
-  grouped-bar, or scatter PNGs. A chart is stored as a thread- and collection-scoped derived
-  artifact with source/query/spec provenance, rendered inline in ChatKit, and restored in the file
-  panel. Input and output limits keep chart generation predictable.
+- **Search routing:** `file_search` returns ranked metadata only. `get_file` and `get_transcript`
+  provide owner- and selected-collection-scoped read access to artifacts already created by the
+  demo seeder.
 
 ## Asset and inclusion pipeline
 
@@ -156,18 +155,17 @@ The policy currently recognizes:
 - images: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`
 - transcribable media: `.flac`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.m4a`, `.ogg`, `.wav`, `.webm`
 
-The state machine is deliberately split:
+The production asset path is deliberately small:
 
-1. **Upload asset:** validate envelope, stream to a quarantine key, scan/sniff, hash, and promote to an immutable bucket key.
+1. **Upload asset:** validate the envelope and stream the original bytes to immutable object storage.
 2. **Include asset:** create a `ThreadAssetInclude` with user intent; this does not copy or re-upload the original.
-3. **Prepare ingestion:** persist modality evidence and reproducible artifacts; pause for ambiguous
-   PDF selections when necessary.
-4. **Commit ingestion:** upload a complete replacement set and atomically activate it after the
-   specialist supplies a grounded description.
-5. **Discover and hydrate:** search returns artifact provenance; follow-up tools provide only the
-   canonical evidence needed for the task.
-6. **Preview:** issue short-lived signed URLs and ranged/derived previews. Large originals are never loaded wholesale into browser memory.
-7. **Exclude/delete:** excluding removes the relationship. Asset deletion is a separate lifecycle operation that checks references and cleans up provider copies.
+3. **Inspect:** browser-side PDF.js, pdf-lib, and structured-data tools inspect explicit files.
+4. **Preview:** issue short-lived signed URLs or stream stored bytes without parsing them.
+5. **Exclude/delete:** excluding removes the relationship. Asset deletion is a separate lifecycle operation that checks references.
+
+`multimedia-demo seed` has a separate offline preparation path for reproducible interview fixtures.
+It may parse and transform media before the application starts; Pillow, pypdf, and pypdfium2 are
+therefore development dependencies and are absent from the production server image.
 
 See [the ingestion architecture](docs/ingestion-architecture.md) for strategy examples, agent roles, retrieval choices, and invariants.
 See [the agent hierarchy](docs/agent-hierarchy.md) for root-agent delegation and the shared,
@@ -244,7 +242,7 @@ ADMIN_USERNAME=admin ADMIN_PASSWORD=admin \
 npm --prefix frontend run test:e2e -- e2e/live-demo.spec.ts --workers=1
 ```
 
-The live vector-store test creates a temporary per-user store, ingests the real CSV and Transformer
+The demo-only live vector-store test creates a temporary per-user store, ingests the real CSV and Transformer
 PDF, performs collection-filtered searches and follow-ups, and removes the OpenAI files/store in a
 `finally` block:
 
@@ -257,11 +255,11 @@ RUN_OPENAI_INGESTION_LIVE=1 \
   backend/tests/live/test_vector_store_ingestion_live.py
 ```
 
-The current live agent suite makes real `gpt-5.6` API calls for initial ingestion of text, JSON,
+The current live agent suite makes real `gpt-5.6` API calls for browser inspection of text, JSON,
 CSV, PDF, image, audio, and video files. It stages a real representative file for each route instead
 of inserting a prewritten inspection result into the prompt. Each scenario verifies the browser
-tool requests, checks that the root calls the route-appropriate overview specialist before the
-ingestion strategist, and checks the resulting strategy. Load the test key without printing it and
+tool requests, checks that the root calls the route-appropriate overview specialist, verifies that
+no server-ingestion tool is used, and checks the resulting overview. Load the test key without printing it and
 opt in explicitly:
 
 ```bash

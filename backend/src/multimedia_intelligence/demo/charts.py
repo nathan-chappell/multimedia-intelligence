@@ -1,3 +1,5 @@
+"""Demo-only chart rendering helpers."""
+
 from __future__ import annotations
 
 from collections import defaultdict

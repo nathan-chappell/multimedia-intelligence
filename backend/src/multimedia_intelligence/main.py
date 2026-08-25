@@ -30,10 +30,8 @@ from multimedia_intelligence.context import ClientInfo, RequestContext
 from multimedia_intelligence.db import create_engine_and_session
 from multimedia_intelligence.files.access import ScopedAgentDataAccess
 from multimedia_intelligence.files.indexing import (
-    FileIngestionService,
-    OpenAIDiarizationGateway,
+    FileIndexReader,
     OpenAIVectorStoreGateway,
-    OpenAIVisionCaptionGateway,
 )
 from multimedia_intelligence.files.s3_store import S3BlobStore
 from multimedia_intelligence.observability import configure_logging
@@ -73,16 +71,10 @@ chatkit_server = MultimediaChatServer(
 )
 blob_store = S3BlobStore.from_settings(settings)
 file_index = (
-    FileIngestionService(
+    FileIndexReader(
         sessions,
         blob_store,
         OpenAIVectorStoreGateway(settings.openai_api_key, settings),
-        OpenAIDiarizationGateway(settings.openai_api_key, settings.openai_diarization_model),
-        OpenAIVisionCaptionGateway(
-            settings.openai_api_key, settings.openai_ingestion_model, settings
-        ),
-        billing,
-        settings,
     )
     if settings.openai_api_key
     else None
@@ -97,12 +89,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             "gpt-5.6-terra",
             "gpt-5.6",
             settings.openai_title_model,
-            settings.openai_ingestion_model,
         ),
-        transcription_models=(
-            settings.openai_dictation_model,
-            settings.openai_diarization_model,
-        ),
+        transcription_models=(settings.openai_dictation_model,),
     )
     await store.initialize()
     yield
