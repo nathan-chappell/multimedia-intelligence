@@ -120,7 +120,10 @@ test("completes a browser tool call and renders the agent response", async ({ pa
         name: "notes.md",
         route: "text",
       });
-      await fulfillEvents(route, assistantEvents("I found notes.md and can inspect it."));
+      await fulfillEvents(route, [
+        toolResultWidgetEvent(),
+        ...assistantEvents("I found notes.md and can inspect it."),
+      ]);
       return;
     }
     throw new Error(`Unexpected ChatKit request: ${request.type}`);
@@ -143,6 +146,12 @@ test("completes a browser tool call and renders the agent response", async ({ pa
   await expect(chat.getByText("I found notes.md and can inspect it.")).toBeVisible({
     timeout: 15_000,
   });
+  const resultSummary = chat.getByText("Found 1 conversation file");
+  await expect(resultSummary).toBeVisible();
+  await expect(chat.getByText("Browser tool result · List files")).toBeHidden();
+  await resultSummary.locator("..").getByRole("button").click();
+  await expect(chat.getByText("Browser tool result · List files")).toBeVisible();
+  await expect(chat.getByText('"route": "text"')).toBeVisible();
   expect(continuationSeen).toBe(true);
 });
 
@@ -385,6 +394,54 @@ function assistantEvents(text: string): object[] {
       },
     },
   ];
+}
+
+function toolResultWidgetEvent(): object {
+  const preview = JSON.stringify(
+    {
+      ok: true,
+      page: 1,
+      pageSize: 10,
+      total: 1,
+      hasMore: false,
+      files: [
+        {
+          name: "notes.md",
+          mediaType: "text/markdown",
+          sizeBytes: 47,
+          route: "text",
+          durability: "local",
+        },
+      ],
+    },
+    null,
+    2,
+  );
+  return {
+    type: "thread.item.done",
+    item: {
+      id: "tool_result_e2e_list_files",
+      thread_id: threadId,
+      created_at: "2026-08-24T10:00:01Z",
+      type: "widget",
+      widget: {
+        type: "Card",
+        size: "sm",
+        collapsed: true,
+        status: { text: "Found 1 conversation file" },
+        children: [
+          {
+            type: "Caption",
+            value: "Browser tool result · List files",
+            color: "secondary",
+            size: "sm",
+          },
+          { type: "Markdown", value: `\`\`\`json\n${preview}\n\`\`\`` },
+        ],
+      },
+      copy_text: preview,
+    },
+  };
 }
 
 interface ChatKitRequest {

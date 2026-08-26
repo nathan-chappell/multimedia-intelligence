@@ -64,6 +64,7 @@ from multimedia_intelligence.openai_metadata import response_metadata, safety_id
 from .conversations import ConversationRepair
 from .models import resolve_chat_model
 from .store import SqlAlchemyChatKitStore
+from .tool_results import build_tool_result_widget, tool_result_widget_id
 from .transcription import TranscriptionGateway
 
 MAX_RECENT_ITEMS = 40
@@ -231,6 +232,9 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
                     **correlation.fields(),
                 )
             await self.store.save_item(thread.id, history_item, context)
+        continuation_tool = (
+            self._continuation_tool_call(items) if input_user_message is None else None
+        )
         selected_model = resolve_chat_model(input_user_message, items)
         selected_context = replace(
             context,
@@ -251,6 +255,12 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
             recovery=turn.recovery,
             context=selected_context,
         )
+        if continuation_tool is not None:
+            result_widget_id = tool_result_widget_id(continuation_tool)
+            if all(item.id != result_widget_id for item in items):
+                result_widget = build_tool_result_widget(continuation_tool)
+                await self.store.save_item(thread.id, result_widget, context)
+                yield ThreadItemDoneEvent(item=result_widget)
         hooks = AgentRunLoggingHooks(
             correlation,
             billing=self.billing,
@@ -272,10 +282,8 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
             ),
         )
         starting_agent = graph.root
-        if input_user_message is None and items:
-            latest_item = items[-1]
-            if isinstance(latest_item, ClientToolCallItem):
-                starting_agent = graph.agent_for_client_tool(latest_item.name)
+        if continuation_tool is not None:
+            starting_agent = graph.agent_for_client_tool(continuation_tool.name)
         trace_metadata = {
             "thread": correlation.group_id,
             "conversation": opaque_id(conversation_id),
@@ -563,9 +571,7 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
             agent_input = list(await simple_to_agent_input(input_user_message))
         elif not items:
             agent_input = []
-        elif isinstance(items[-1], ClientToolCallItem) and items[-1].status == "completed":
-            latest_item = items[-1]
-            assert isinstance(latest_item, ClientToolCallItem)
+        elif (latest_item := MultimediaChatServer._continuation_tool_call(items)) is not None:
             output: str | list[ResponseFunctionCallOutputItemParam] = json.dumps(latest_item.output)
             if (
                 latest_item.name == PDF_RANDOM_SAMPLE
@@ -637,3 +643,17 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
             },
         )
         return [repair_context, *agent_input]
+
+    @staticmethod
+    def _continuation_tool_call(
+        items: Sequence[ThreadItem],
+    ) -> ClientToolCallItem | None:
+        """Find a continuation result while ignoring its presentation-only card."""
+
+        for item in reversed(items):
+            if isinstance(item, WidgetItem) and item.id.startswith("tool_result_"):
+                continue
+            if isinstance(item, ClientToolCallItem) and item.status == "completed":
+                return item
+            return None
+        return None

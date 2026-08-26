@@ -1,0 +1,5 @@
+{
+  "version": "1.0",
+  "name": "tool_result",
+  "template": "{\"type\":\"Card\",\"size\":\"sm\",\"collapsed\":true,\"status\":{\"text\":{{ summary | tojson }}},\"children\":[{\"type\":\"Caption\",\"value\":{{ detail | tojson }},\"color\":\"secondary\",\"size\":\"sm\"},{\"type\":\"Markdown\",\"value\":{{ markdown | tojson }} }]}"
+}
