@@ -71,6 +71,10 @@ uvicorn multimedia_intelligence.main:app --reload --host 0.0.0.0 --port 8000 \
 npm --prefix frontend run dev
 ```
 
+Vite reads frontend variables from the repository-root `.env` file and refuses to start or build
+when `VITE_CLERK_PUBLISHABLE_KEY` is empty or missing. This prevents serving a bundle that can only
+fail later in the browser.
+
 When working inside WSL with NVM, load NVM before running frontend commands so `npm` does not
 resolve to a Windows installation through the mounted PATH:
 

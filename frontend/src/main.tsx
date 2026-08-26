@@ -7,7 +7,9 @@ import "./styles/global.css";
 
 const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 if (!clerkPublishableKey) {
-  throw new Error("VITE_CLERK_PUBLISHABLE_KEY is required");
+  throw new Error(
+    "Missing required frontend environment variable: VITE_CLERK_PUBLISHABLE_KEY",
+  );
 }
 
 createRoot(document.getElementById("root")!).render(
