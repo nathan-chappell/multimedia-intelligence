@@ -11,8 +11,7 @@ export const setClerkTokenGetter = (getter: TokenGetter | undefined): void => {
 export const config = {
   chatkitUrl: optionalString(import.meta.env.VITE_CHATKIT_API_URL) ?? "/chatkit",
   domainKey:
-    optionalString(import.meta.env.VITE_CHATKIT_API_DOMAIN_KEY) ??
-    "domain_pk_localhost_dev",
+    optionalString(import.meta.env.VITE_CHATKIT_API_DOMAIN_KEY),
 };
 
 export const authenticatedFetch: typeof fetch = async (input, init = {}) => {

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ChatKit, useChatKit } from "@openai/chatkit-react";
 
 import { executeFileClientTool } from "../artifacts/clientToolHandler";
@@ -9,10 +9,31 @@ export function ChatPanel() {
   const fileWorkspace = useFileWorkspace();
   const activeThreadRef = useRef<string | null>(null);
   const titleLoadGeneration = useRef(0);
+  const toastTimer = useRef<number | undefined>(undefined);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [savedTitle, setSavedTitle] = useState("");
   const [draftTitle, setDraftTitle] = useState("");
   const [titleBusy, setTitleBusy] = useState(false);
+  const [toast, setToast] = useState<AppToast>();
+
+  const dismissToast = useCallback(() => {
+    if (toastTimer.current !== undefined) window.clearTimeout(toastTimer.current);
+    toastTimer.current = undefined;
+    setToast(undefined);
+  }, []);
+
+  const showToast = useCallback((nextToast: AppToast) => {
+    if (toastTimer.current !== undefined) window.clearTimeout(toastTimer.current);
+    setToast(nextToast);
+    toastTimer.current = window.setTimeout(() => {
+      setToast(undefined);
+      toastTimer.current = undefined;
+    }, nextToast.level === "danger" ? 10_000 : 6_000);
+  }, []);
+
+  useEffect(() => () => {
+    if (toastTimer.current !== undefined) window.clearTimeout(toastTimer.current);
+  }, []);
 
   const loadTitle = useCallback(async (threadId: string, generation: number) => {
     try {
@@ -34,11 +55,22 @@ export function ChatPanel() {
     initialThread: window.sessionStorage.getItem("mi_active_thread_id") || null,
     api: {
       url: config.chatkitUrl,
-      domainKey: config.domainKey,
+      domainKey: config.domainKey ?? "",
       fetch: authenticatedFetch,
     },
     onClientTool: async (toolCall) => {
       return executeFileClientTool(fileWorkspace, toolCall);
+    },
+    onEffect: ({ name, data }) => {
+      if (name !== "app.toast") return;
+      const message = typeof data?.message === "string" ? data.message : "";
+      if (!message) return;
+      const level = isToastLevel(data?.level) ? data.level : "info";
+      showToast({
+        level,
+        message,
+        title: typeof data?.title === "string" ? data.title : undefined,
+      });
     },
     onThreadChange: ({ threadId }) => {
       activeThreadRef.current = threadId;
@@ -153,6 +185,21 @@ export function ChatPanel() {
 
   return (
     <article className="panel chat-panel">
+      {toast && (
+        <div
+          className={`app-toast app-toast-${toast.level}`}
+          role={toast.level === "danger" ? "alert" : "status"}
+          aria-live={toast.level === "danger" ? "assertive" : "polite"}
+        >
+          <div>
+            {toast.title && <strong>{toast.title}</strong>}
+            <span>{toast.message}</span>
+          </div>
+          <button type="button" onClick={dismissToast} aria-label="Dismiss notification">
+            ×
+          </button>
+        </div>
+      )}
       <div className="panel-heading">
         <div className="thread-title-block">
           <span className="eyebrow">Conversation</span>
@@ -195,6 +242,18 @@ export function ChatPanel() {
 interface ThreadTitleResponse {
   thread_id: string;
   title: string | null;
+}
+
+type ToastLevel = "info" | "warning" | "danger";
+
+interface AppToast {
+  level: ToastLevel;
+  message: string;
+  title?: string;
+}
+
+function isToastLevel(value: unknown): value is ToastLevel {
+  return value === "info" || value === "warning" || value === "danger";
 }
 
 async function responseError(response: Response, fallback: string): Promise<string> {

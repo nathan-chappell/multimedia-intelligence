@@ -4,13 +4,16 @@ import { FileWorkspaceProvider } from "../features/artifacts/FileWorkspaceProvid
 import { ChatPanel } from "../features/chat/ChatPanel";
 import { AuthGate, LoginPage, SignUpPage, useSessionUser } from "../features/auth/AuthPages";
 import { AccountPage, AdminPage } from "../features/billing/BillingPages";
+import { Link } from "../lib/Link";
+import { usePathname } from "../lib/navigation";
 
 export function App() {
-  if (window.location.pathname === "/login") {
+  const pathname = usePathname();
+  if (pathname === "/login") {
     return <LoginPage />;
   }
 
-  if (window.location.pathname === "/sign-up") {
+  if (pathname === "/sign-up") {
     return <SignUpPage />;
   }
 
@@ -23,10 +26,11 @@ export function App() {
 
 function AuthenticatedRoute() {
   const { user } = useSessionUser();
-  if (window.location.pathname === "/") return <Workspace />;
-  if (window.location.pathname === "/files") return <FilesPage />;
-  if (window.location.pathname === "/account") return <AccountPage />;
-  if (window.location.pathname === "/admin" && user.is_admin) return <AdminPage />;
+  const pathname = usePathname();
+  if (pathname === "/") return <Workspace />;
+  if (pathname === "/files") return <FilesPage />;
+  if (pathname === "/account") return <AccountPage />;
+  if (pathname === "/admin" && user.is_admin) return <AdminPage />;
   return <NotFoundPage />;
 }
 
@@ -62,10 +66,10 @@ function WorkspaceHeader({ user, eyebrow }: { user: ReturnType<typeof useSession
     <header className="masthead">
       <div><span className="eyebrow">{eyebrow}</span><h1>Multimedia Intelligence</h1></div>
       <div className="masthead-actions">
-        <a href="/" className="nav-link">Chat</a>
-        <a href="/files" className="nav-link">Files</a>
-        <a href="/account" className="balance-chip">{formatUsd(user.balance_microusd)} credit</a>
-        {user.is_admin && <a href="/admin" className="nav-link">Admin</a>}
+        <Link href="/" className="nav-link">Chat</Link>
+        <Link href="/files" className="nav-link">Files</Link>
+        <Link href="/account" className="balance-chip">{formatUsd(user.balance_microusd)} credit</Link>
+        {user.is_admin && <Link href="/admin" className="nav-link">Admin</Link>}
         <UserButton />
       </div>
     </header>
@@ -83,7 +87,7 @@ function NotFoundPage() {
       <p className="eyebrow">404 · Not found</p>
       <h1>This page isn’t part of the workspace.</h1>
       <p>The address may be outdated, or the page may have moved.</p>
-      <a href="/">Return to the conversation workspace</a>
+      <Link href="/">Return to the conversation workspace</Link>
     </main>
   );
 }

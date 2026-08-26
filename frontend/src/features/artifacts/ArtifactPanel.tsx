@@ -15,6 +15,7 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
   const [busyAssetId, setBusyAssetId] = useState<string | null>(null);
   const [reconciling, setReconciling] = useState(false);
   const workspace = useFileWorkspace();
+  const selectedCollection = workspace.collections.find((collection) => collection.selected);
   const stagedFiles = useMemo(
     () => workspace.files.filter((file) => !file.durableAssetId || file.durability === "error"),
     [workspace.files],
@@ -50,6 +51,21 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
     }
   }
 
+  async function updateVisibility() {
+    if (!selectedCollection?.can_manage) return;
+    setMessage(null);
+    try {
+      await workspace.setCollectionPublic(selectedCollection.id, !selectedCollection.is_public);
+      setMessage(
+        selectedCollection.is_public
+          ? "Collection is now private"
+          : "Collection is now public and visible to signed-in users",
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not update visibility");
+    }
+  }
+
   return (
     <aside className={`panel artifact-panel${fullPage ? " artifact-panel-page" : ""}`} aria-labelledby="artifact-title">
       <div className="panel-heading artifact-heading">
@@ -71,7 +87,9 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
             }}
           >
             {workspace.collections.map((collection) => (
-              <option key={collection.id} value={collection.id}>{collection.name}</option>
+              <option key={collection.id} value={collection.id}>
+                {collectionLabel(collection)}
+              </option>
             ))}
           </select>
           <button
@@ -85,9 +103,36 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
             }}
           >New</button>
         </div>
+        {selectedCollection && (
+          <div className="collection-access-summary">
+            <span className={`visibility-badge${selectedCollection.is_public ? " public" : ""}`}>
+              {selectedCollection.is_public ? "Public" : "Private"}
+            </span>
+            <small>
+              {selectedCollection.read_only
+                ? "Shared read-only collection. Chat can search its indexed files."
+                : selectedCollection.description || "Only you can add files to this collection."}
+            </small>
+            {selectedCollection.can_manage && (
+              <button type="button" onClick={() => void updateVisibility()}>
+                {selectedCollection.is_public ? "Make private" : "Make public"}
+              </button>
+            )}
+          </div>
+        )}
         <div className="collection-secondary-actions">
-          <button type="button" onClick={() => inputRef.current?.click()}>Upload files</button>
-          <button type="button" disabled={reconciling} onClick={() => void refreshIndex()}>
+          <button
+            type="button"
+            disabled={selectedCollection?.read_only}
+            title={selectedCollection?.read_only ? "Shared collections are read-only" : undefined}
+            onClick={() => inputRef.current?.click()}
+          >Upload files</button>
+          <button
+            type="button"
+            disabled={reconciling || !selectedCollection?.can_manage}
+            title={selectedCollection?.can_manage ? undefined : "Only the owner can refresh index status"}
+            onClick={() => void refreshIndex()}
+          >
             {reconciling ? "Refreshing…" : "Refresh index status"}
           </button>
         </div>
@@ -134,7 +179,14 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
         {workspace.collectionFilesLoading ? (
           <p className="compact-empty">Loading collection files…</p>
         ) : workspace.collectionFiles.length === 0 ? (
-          <div className="empty-state compact-empty"><h3>This collection is empty</h3><p>Upload a file to make it available for indexing and conversations.</p></div>
+          <div className="empty-state compact-empty">
+            <h3>This collection is empty</h3>
+            <p>
+              {selectedCollection?.read_only
+                ? "The collection owner has not shared any files yet."
+                : "Upload a file to make it available for indexing and conversations."}
+            </p>
+          </div>
         ) : (
           <div className="collection-file-list" aria-label="Files in the selected collection">
             {workspace.collectionFiles.map((file) => (
@@ -149,11 +201,27 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
                 <button
                   className={`include-toggle${file.included ? " included" : ""}`}
                   type="button"
-                  disabled={!workspace.activeThreadId || busyAssetId === file.asset_id}
-                  title={workspace.activeThreadId ? undefined : "Start or select a conversation first"}
+                  disabled={
+                    selectedCollection?.read_only ||
+                    !workspace.activeThreadId ||
+                    busyAssetId === file.asset_id
+                  }
+                  title={
+                    selectedCollection?.read_only
+                      ? "Shared collection files are available through chat search"
+                      : workspace.activeThreadId
+                        ? undefined
+                        : "Start or select a conversation first"
+                  }
                   onClick={() => void updateInclusion(file)}
                 >
-                  {busyAssetId === file.asset_id ? "…" : file.included ? "Included" : "Add"}
+                  {selectedCollection?.read_only
+                    ? "Shared"
+                    : busyAssetId === file.asset_id
+                      ? "…"
+                      : file.included
+                        ? "Included"
+                        : "Add"}
                 </button>
               </article>
             ))}
@@ -179,6 +247,15 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
       </div>
     </aside>
   );
+}
+
+function collectionLabel(collection: {
+  name: string;
+  is_public: boolean;
+  owned: boolean;
+}): string {
+  if (collection.is_public) return `${collection.name} · Public${collection.owned ? "" : " · Shared"}`;
+  return collection.owned ? collection.name : `${collection.name} · Private · Admin`;
 }
 
 function statusLabel(file: CollectionFileSummary): string {

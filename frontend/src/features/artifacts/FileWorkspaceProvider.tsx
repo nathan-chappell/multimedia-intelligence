@@ -402,6 +402,24 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     [loadSavedFiles],
   );
 
+  const setCollectionPublic = useCallback(async (collectionId: string, isPublic: boolean) => {
+    const response = await authenticatedFetch(
+      `/api/collections/${encodeURIComponent(collectionId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_public: isPublic }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await apiError(response, "Could not update collection visibility"));
+    }
+    const updated = (await response.json()) as FileCollection;
+    setCollections((current) =>
+      current.map((collection) => (collection.id === updated.id ? updated : collection)),
+    );
+  }, []);
+
   const refreshCollectionFiles = useCallback(async () => {
     if (!selectedCollectionId) return;
     await loadCollectionFiles(selectedCollectionId, activeThreadRef.current);
@@ -410,6 +428,8 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
   const setCollectionFileIncluded = useCallback(
     async (assetId: string, included: boolean) => {
       if (!selectedCollectionId) throw new Error("Select a collection first");
+      const selected = collections.find((collection) => collection.id === selectedCollectionId);
+      if (selected?.read_only) throw new Error("Public collection files are read-only");
       const threadId = activeThreadRef.current;
       if (!threadId) throw new Error("Start or select a conversation first");
       const response = await authenticatedFetch(
@@ -431,7 +451,7 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
       );
       await refreshThreadFiles();
     },
-    [selectedCollectionId, refreshThreadFiles],
+    [collections, selectedCollectionId, refreshThreadFiles],
   );
 
   const reconcileCollection = useCallback(async (): Promise<ReconciliationSummary> => {
@@ -508,6 +528,7 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
       refreshThreadFiles,
       createCollection,
       selectCollection,
+      setCollectionPublic,
       refreshCollectionFiles,
       setCollectionFileIncluded,
       reconcileCollection,
@@ -531,6 +552,7 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
       refreshThreadFiles,
       createCollection,
       selectCollection,
+      setCollectionPublic,
       refreshCollectionFiles,
       setCollectionFileIncluded,
       reconcileCollection,

@@ -6,6 +6,61 @@ const toolItemId = "fc_e2e_list_files";
 const toolCallId = "call_e2e_list_files";
 const assistantMessageId = "msg_e2e_assistant";
 
+test("shows a host toast when ChatKit emits an application effect", async ({ page }) => {
+  await authenticate(page);
+  await page.route("**/api/collections", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
+  );
+  await page.route("**/api/assets?**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
+  );
+  await page.route("**/api/assets/derived?**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
+  );
+  await page.route("**/api/threads/**", (route) =>
+    route.fulfill({ status: 404, contentType: "application/json", body: "{}" }),
+  );
+  await page.route("**/chatkit", async (route) => {
+    const request = route.request().postDataJSON() as ChatKitRequest;
+    if (request.type === "threads.list") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: [], has_more: false }),
+      });
+      return;
+    }
+    if (request.type === "threads.create") {
+      await fulfillEvents(route, [
+        ...initialToolCallEvents().slice(0, 2),
+        {
+          type: "client_effect",
+          name: "app.toast",
+          data: {
+            level: "danger",
+            title: "Credit required",
+            message: "Credit balance is exhausted.",
+          },
+        },
+      ]);
+      return;
+    }
+    throw new Error(`Unexpected ChatKit request: ${request.type}`);
+  });
+
+  await page.goto("/");
+  const chat = page.frameLocator("iframe");
+  const composer = chat.getByRole("textbox", {
+    name: "Ask about this conversation's files…",
+  });
+  await composer.fill("Try another request.");
+  await composer.press("Enter");
+
+  const toast = page.getByRole("alert");
+  await expect(toast).toContainText("Credit required");
+  await expect(toast).toContainText("Credit balance is exhausted.");
+});
+
 test("completes a browser tool call and renders the agent response", async ({ page }) => {
   await authenticate(page);
   await page.route("**/api/collections", (route) =>
@@ -13,7 +68,16 @@ test("completes a browser tool call and renders the agent response", async ({ pa
       status: 200,
       contentType: "application/json",
       body: JSON.stringify([
-        { id: "collection_general", name: "General", description: null, selected: true },
+        {
+          id: "collection_general",
+          name: "General",
+          description: null,
+          selected: true,
+          is_public: false,
+          owned: true,
+          can_manage: true,
+          read_only: false,
+        },
       ]),
     }),
   );
@@ -95,7 +159,16 @@ test("renders an inline chart and restores its saved collection artifact", async
       status: 200,
       contentType: "application/json",
       body: JSON.stringify([
-        { id: "collection_trends", name: "Language Trends", description: null, selected: true },
+        {
+          id: "collection_trends",
+          name: "Language Trends",
+          description: null,
+          selected: true,
+          is_public: false,
+          owned: true,
+          can_manage: true,
+          read_only: false,
+        },
       ]),
     }),
   );

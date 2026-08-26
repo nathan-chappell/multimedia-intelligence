@@ -24,7 +24,16 @@ test("stages a conversation file and offers save", async ({ page }) => {
       status: 200,
       contentType: "application/json",
       body: JSON.stringify([
-        { id: "collection_general", name: "General", description: null, selected: true },
+        {
+          id: "collection_general",
+          name: "General",
+          description: null,
+          selected: true,
+          is_public: false,
+          owned: true,
+          can_manage: true,
+          read_only: false,
+        },
       ]),
     }),
   );

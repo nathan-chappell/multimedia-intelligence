@@ -27,6 +27,10 @@ export interface FileCollection {
   name: string;
   description: string | null;
   selected: boolean;
+  is_public: boolean;
+  owned: boolean;
+  can_manage: boolean;
+  read_only: boolean;
 }
 
 export interface CollectionFileSummary {
@@ -84,6 +88,7 @@ export interface FileWorkspaceValue {
   refreshThreadFiles: () => Promise<void>;
   createCollection: (name: string, description?: string) => Promise<void>;
   selectCollection: (collectionId: string) => Promise<void>;
+  setCollectionPublic: (collectionId: string, isPublic: boolean) => Promise<void>;
   refreshCollectionFiles: () => Promise<void>;
   setCollectionFileIncluded: (assetId: string, included: boolean) => Promise<void>;
   reconcileCollection: () => Promise<ReconciliationSummary>;

@@ -27,7 +27,16 @@ test("mobile file library is separate, dense, and preserves conversation inclusi
       status: 200,
       contentType: "application/json",
       body: JSON.stringify([
-        { id: "collection_general", name: "General", description: null, selected: true },
+        {
+          id: "collection_general",
+          name: "General",
+          description: null,
+          selected: true,
+          is_public: false,
+          owned: true,
+          can_manage: true,
+          read_only: false,
+        },
       ]),
     }),
   );
@@ -81,7 +90,10 @@ test("mobile file library is separate, dense, and preserves conversation inclusi
 
   await page.goto("/");
   await expect(page.locator(".workspace > .artifact-panel")).toBeHidden();
-  await page.getByRole("link", { name: "Files" }).click();
+  await page.getByRole("link", { name: "Files" }).evaluate((link) => {
+    window.sessionStorage.setItem("mi_active_thread_id", "thread_mobile");
+    (link as HTMLAnchorElement).click();
+  });
   await expect(page).toHaveURL(/\/files$/);
   await expect(page.getByText("interview-demo-notes.md")).toBeVisible();
   await expect(page.getByText("2 indexed")).toBeVisible();
