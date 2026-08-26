@@ -20,6 +20,7 @@ export default defineConfig(({ mode }) => {
     envDir,
     plugins: [react()],
     server: {
+      allowedHosts: [".trycloudflare.com"],
       proxy: {
         "/api": { target: "https://localhost:8000", secure: false },
         "/chatkit": { target: "https://localhost:8000", secure: false },
