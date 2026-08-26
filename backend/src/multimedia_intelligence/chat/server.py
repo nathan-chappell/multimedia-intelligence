@@ -349,7 +349,9 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
                 ):
                     yield event
         await self.chat_store.complete_conversation_turn(thread.id, conversation_id, context)
-        yield ProgressUpdateEvent(text="Finished processing the request.")
+        # Progress updates belong only to the active stream. Ending the stream clears
+        # the current update; a terminal progress event would leave stale "finished"
+        # text visible after ChatKit has already completed the response.
 
     async def _stream_agent_turn(
         self,
