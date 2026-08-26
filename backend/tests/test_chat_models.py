@@ -6,13 +6,14 @@ import pytest
 from chatkit.actions import Action
 from chatkit.agents import AgentContext
 from chatkit.types import (
+    ClientEffectEvent,
     ClientToolCallItem,
     InferenceOptions,
-    NoticeEvent,
     ThreadMetadata,
     UserMessageItem,
     UserMessageTextContent,
 )
+from fastapi import HTTPException
 
 from multimedia_intelligence.agents import AssistantGraph
 from multimedia_intelligence.chat.conversations import ConversationRepair
@@ -185,7 +186,7 @@ async def test_conversation_turn_sends_only_the_current_user_message() -> None:
     assert result[0]["content"][0]["text"] == "hello"
 
 
-async def test_application_feedback_uses_native_chatkit_notices() -> None:
+async def test_application_feedback_uses_host_toasts() -> None:
     server = MultimediaChatServer(
         store=cast(Any, SimpleNamespace()),
         transcription_gateway=cast(Any, SimpleNamespace()),
@@ -201,7 +202,44 @@ async def test_application_feedback_uses_native_chatkit_notices() -> None:
         )
     ]
 
-    assert events == [NoticeEvent(level="info", message="Saved")]
+    assert events == [
+        ClientEffectEvent(
+            name="app.toast", data={"level": "info", "message": "Saved"}
+        )
+    ]
+
+
+async def test_credit_failure_uses_a_visible_host_toast() -> None:
+    class RejectBilling:
+        async def require_credit(self, user: object) -> None:
+            del user
+            raise HTTPException(status_code=402, detail="Credit balance is exhausted")
+
+    server = MultimediaChatServer(
+        store=cast(Any, SimpleNamespace()),
+        transcription_gateway=cast(Any, SimpleNamespace()),
+        billing=cast(Any, RejectBilling()),
+    )
+    context = RequestContext(client=ClientInfo(user_id="user_1", username="demo"))
+    events = [
+        event
+        async for event in server.respond(
+            ThreadMetadata(id="thread_1", created_at=datetime.now(UTC)),
+            user_message("gpt-5.6-luna"),
+            context,
+        )
+    ]
+
+    assert events == [
+        ClientEffectEvent(
+            name="app.toast",
+            data={
+                "level": "danger",
+                "message": "Credit balance is exhausted",
+                "title": "Credit required",
+            },
+        )
+    ]
 
 
 async def test_conversation_continuation_sends_only_latest_client_tool_output() -> None:

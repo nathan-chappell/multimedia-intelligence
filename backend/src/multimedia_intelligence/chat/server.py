@@ -19,9 +19,9 @@ from chatkit.agents import (
 from chatkit.server import ChatKitServer
 from chatkit.types import (
     AudioInput,
+    ClientEffectEvent,
     ClientToolCallItem,
     FeedbackKind,
-    NoticeEvent,
     ProgressUpdateEvent,
     ThreadItem,
     ThreadItemDoneEvent,
@@ -135,6 +135,13 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
     ) -> None:
         await self.chat_store.save_feedback(thread_id, item_ids, feedback, context)
 
+    @staticmethod
+    def _toast(*, level: str, message: str, title: str | None = None) -> ClientEffectEvent:
+        data: dict[str, object] = {"level": level, "message": message}
+        if title is not None:
+            data["title"] = title
+        return ClientEffectEvent(name="app.toast", data=data)
+
     async def action(
         self,
         thread: ThreadMetadata,
@@ -142,21 +149,23 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
         sender: WidgetItem | None,
         context: RequestContext,
     ) -> AsyncIterator[ThreadStreamEvent]:
-        """Render application feedback through ChatKit's native notice surface."""
+        """Send transient application feedback to the host UI."""
 
         del thread, sender, context
         if action.type != "app.notice":
-            yield NoticeEvent(level="warning", message="Unsupported application action")
+            yield self._toast(
+                level="warning", message="Unsupported application action"
+            )
             return
         payload = action.payload if isinstance(action.payload, dict) else {}
         message = payload.get("message")
         level = payload.get("level", "info")
         if not isinstance(message, str) or not message.strip():
-            yield NoticeEvent(level="warning", message="The application notice was empty")
+            yield self._toast(level="warning", message="The application notice was empty")
             return
         if level not in {"info", "warning", "danger"}:
             level = "info"
-        yield NoticeEvent(level=level, message=message.strip()[:500])
+        yield self._toast(level=level, message=message.strip()[:500])
 
     async def respond(
         self,
@@ -174,7 +183,7 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
                     )
                 )
             except HTTPException as error:
-                yield NoticeEvent(
+                yield self._toast(
                     level="danger", title="Credit required", message=str(error.detail)
                 )
                 return
