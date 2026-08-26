@@ -247,16 +247,20 @@ class OpenAIVectorStoreGateway:
         attributes: Mapping[str, str | float | bool],
         chunking_strategy: Mapping[str, object] | None = None,
     ) -> str:
+        uploaded = await self.client.files.create(
+            file=(filename, content, media_type),
+            purpose="user_data",
+        )
         if chunking_strategy is None:
-            indexed = await self.client.vector_stores.files.upload_and_poll(
+            indexed = await self.client.vector_stores.files.create_and_poll(
                 vector_store_id=vector_store_id,
-                file=(filename, content, media_type),
+                file_id=uploaded.id,
                 attributes=dict(attributes),
             )
         else:
-            indexed = await self.client.vector_stores.files.upload_and_poll(
+            indexed = await self.client.vector_stores.files.create_and_poll(
                 vector_store_id=vector_store_id,
-                file=(filename, content, media_type),
+                file_id=uploaded.id,
                 attributes=dict(attributes),
                 chunking_strategy=cast(FileChunkingStrategyParam, chunking_strategy),
             )
