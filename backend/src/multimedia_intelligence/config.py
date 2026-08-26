@@ -46,6 +46,23 @@ class Settings(BaseSettings):
         default="multimedia-intelligence-dev",
         validation_alias=AliasChoices("OBJECT_STORE_BUCKET", "AWS_S3_BUCKET_NAME"),
     )
+    object_store_access_key_id: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices("OBJECT_STORE_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
+        repr=False,
+    )
+    object_store_secret_access_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices(
+            "OBJECT_STORE_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"
+        ),
+        repr=False,
+    )
+    object_store_session_token: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices("OBJECT_STORE_SESSION_TOKEN", "AWS_SESSION_TOKEN"),
+        repr=False,
+    )
     object_store_prefix: str = "assets/"
     object_store_endpoint_url: str | None = Field(
         default=None,

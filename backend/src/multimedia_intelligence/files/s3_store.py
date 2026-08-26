@@ -75,10 +75,16 @@ class S3BlobStore:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> S3BlobStore:
+        access_key = settings.object_store_access_key_id.get_secret_value() or None
+        secret_key = settings.object_store_secret_access_key.get_secret_value() or None
+        session_token = settings.object_store_session_token.get_secret_value() or None
         client = boto3.client(
             "s3",
             endpoint_url=settings.object_store_endpoint_url,
             region_name=settings.object_store_region,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            aws_session_token=session_token,
             config=Config(s3={"addressing_style": settings.object_store_url_style}),
         )
         return cls(settings.object_store_bucket, cast(S3Client, client))

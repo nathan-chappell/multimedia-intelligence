@@ -6,9 +6,12 @@ from io import BytesIO
 from typing import BinaryIO
 
 import pytest
+from pydantic import SecretStr
 
 from multimedia_intelligence.files.domain import ObjectLocation
 from multimedia_intelligence.files.s3_store import S3BlobStore
+
+from .settings import TEST_SETTINGS
 
 
 class FakeS3Client:
@@ -79,3 +82,32 @@ async def test_rejects_cross_bucket_locations() -> None:
     store = S3BlobStore("bucket", FakeS3Client())
     with pytest.raises(ValueError, match="different bucket"):
         await store.read_range(ObjectLocation("other", "asset"), 0, 1)
+
+
+def test_from_settings_passes_dotenv_credentials_to_boto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: dict[str, object] = {}
+
+    def fake_client(service: str, **kwargs: object) -> FakeS3Client:
+        received["service"] = service
+        received.update(kwargs)
+        return FakeS3Client()
+
+    monkeypatch.setattr("multimedia_intelligence.files.s3_store.boto3.client", fake_client)
+    settings = TEST_SETTINGS.model_copy(
+        update={
+            "object_store_bucket": "bucket",
+            "object_store_access_key_id": SecretStr("access"),
+            "object_store_secret_access_key": SecretStr("secret"),
+            "object_store_session_token": SecretStr("session"),
+        }
+    )
+
+    store = S3BlobStore.from_settings(settings)
+
+    assert store.bucket == "bucket"
+    assert received["service"] == "s3"
+    assert received["aws_access_key_id"] == "access"
+    assert received["aws_secret_access_key"] == "secret"
+    assert received["aws_session_token"] == "session"

@@ -199,7 +199,49 @@ reused when available. The rehearsal prompts are committed in `demo/prompts/`.
 Railway Bucket objects are durable and remain until an explicit asset-deletion operation removes
 them. Preview links are short-lived signed credentials, but their expiry does not affect the stored
 object. Disposable OpenAI resources may use provider-managed expiration. During this prototype phase
-schema changes use a hard reset of the development database; migrations are intentionally deferred.
+schema changes use a selective rebuild of the development database; migrations are intentionally
+deferred.
+
+### Development database recovery
+
+Bucket object keys contain stable asset and owner IDs, but they do not contain enough information to
+reconstruct collection names, visibility, original filenames, provider references, or billing
+attribution. Before a development reset, `multimedia-recovery` therefore creates a recovery bundle
+containing:
+
+- `source.sqlite3`, a consistent SQLite snapshot for rollback;
+- `catalog.json`, the identities, collections, canonical asset locations, ingestion state, provider
+  references, and coupon campaigns needed to reconnect durable objects; and
+- `ledger.jsonl`, the append-only cost/credit events, protected along with the catalog by SHA-256
+  digests and expected per-user balances in `bundle.json`.
+
+Chat threads, ChatKit items, feedback, thread-local file inclusions, and derived chat previews are
+deliberately not imported into the clean database. The complete snapshot remains available if that
+history is needed later. Stop the application before an in-place rebuild, then run:
+
+```bash
+source .venv/bin/activate
+multimedia-recovery rebuild-sqlite --yes --verify-buckets originals
+```
+
+The command first verifies every canonical original with a bucket `HEAD`, imports the bundle into a
+temporary clean schema, checks record counts, ledger balances, foreign keys, and SQLite integrity,
+and only then rotates the files. The prior database is retained beside the active database as
+`app.db.pre-rebuild-<timestamp>`; nothing is irreversibly deleted. Use
+`--verify-buckets all` to also check every bucket-backed ingestion artifact.
+
+The stages can also be exercised independently:
+
+```bash
+multimedia-recovery export data/recovery/manual --verify-buckets originals
+multimedia-recovery verify data/recovery/manual --verify-buckets all
+multimedia-recovery import data/recovery/manual \
+  --target-database-url sqlite+aiosqlite:////tmp/multimedia-recovered.db
+```
+
+Imports require an empty target database and preserve ledger event IDs and idempotency keys, so an
+event cannot silently be replayed twice into an existing ledger. Recovery bundles contain user IDs,
+object locations, and billing metadata and must be handled as private operational data.
 
 ## Tests
 
