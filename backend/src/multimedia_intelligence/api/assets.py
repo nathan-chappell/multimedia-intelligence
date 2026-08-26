@@ -9,7 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from multimedia_intelligence.auth import authenticate_request
@@ -29,6 +29,7 @@ from multimedia_intelligence.files.ports import BlobStore
 from multimedia_intelligence.files.records import (
     AssetRow,
     DerivedArtifactRow,
+    FileCollectionRow,
     ThreadAssetIncludeRow,
 )
 from multimedia_intelligence.files.repository import SqlAlchemyAssetRepository
@@ -84,7 +85,7 @@ def build_asset_router(
         """List saved files attached to one of the caller's conversations."""
 
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id)
+        collection = await selected_collection(sessions, user.id, is_admin=user.is_admin)
         await _require_owned_thread(sessions, thread_id, user.id)
         async with sessions() as session:
             rows = (
@@ -121,7 +122,12 @@ def build_asset_router(
         thread_id: str | None = Query(default=None, min_length=1, max_length=128),
     ) -> SavedAsset:
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id)
+        collection = await selected_collection(sessions, user.id, is_admin=user.is_admin)
+        if collection.owner_id != user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Public collection files are read-only",
+            )
         safe_filename = Path(filename).name
         if safe_filename != filename:
             raise HTTPException(
@@ -206,7 +212,12 @@ def build_asset_router(
         request: Request,
     ) -> SavedAsset:
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id)
+        collection = await selected_collection(sessions, user.id, is_admin=user.is_admin)
+        if collection.owner_id != user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Public collection files are read-only",
+            )
         await _require_owned_thread(sessions, payload.thread_id, user.id)
         async with sessions() as session:
             row = await session.get(AssetRow, asset_id)
@@ -234,7 +245,7 @@ def build_asset_router(
         thread_id: str = Query(min_length=1, max_length=128),
     ) -> list[SavedDerivedArtifact]:
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id)
+        collection = await selected_collection(sessions, user.id, is_admin=user.is_admin)
         await _require_owned_thread(sessions, thread_id, user.id)
         async with sessions() as session:
             rows = (
@@ -281,7 +292,7 @@ def build_asset_router(
         thread_id: str = Query(min_length=1, max_length=128),
     ) -> StreamingResponse:
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id)
+        collection = await selected_collection(sessions, user.id, is_admin=user.is_admin)
         await _require_owned_thread(sessions, thread_id, user.id)
         async with sessions() as session:
             row = (
@@ -343,7 +354,7 @@ def build_asset_router(
         """Stream a saved file only through its owning conversation boundary."""
 
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id)
+        collection = await selected_collection(sessions, user.id, is_admin=user.is_admin)
         await _require_owned_thread(sessions, thread_id, user.id)
         async with sessions() as session:
             asset = await session.scalar(
@@ -386,15 +397,24 @@ def build_asset_router(
     @router.get("/{asset_id}/preview", response_class=RedirectResponse)
     async def preview_asset(asset_id: str, request: Request) -> RedirectResponse:
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id)
         async with sessions() as session:
-            row = await session.get(AssetRow, asset_id)
-        if (
-            row is None
-            or row.owner_id != user.id
-            or row.collection_id != collection.id
-            or row.state != AssetState.STORED
-        ):
+            statement = (
+                select(AssetRow)
+                .join(FileCollectionRow, FileCollectionRow.id == AssetRow.collection_id)
+                .where(
+                    AssetRow.id == asset_id,
+                    AssetRow.state == AssetState.STORED,
+                )
+            )
+            if not user.is_admin:
+                statement = statement.where(
+                    or_(
+                        AssetRow.owner_id == user.id,
+                        FileCollectionRow.is_public.is_(True),
+                    )
+                )
+            row = await session.scalar(statement)
+        if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
 
         location = ObjectLocation(

@@ -101,11 +101,17 @@ class FileCollectionRow(Base):
     """User-created logical partition inside the owner's single vector store."""
 
     __tablename__ = "file_collections"
-    __table_args__ = (UniqueConstraint("owner_id", "name"),)
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name"),
+        Index("ix_file_collections_public_cursor", "is_public", "created_at", "id"),
+    )
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(160))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_public: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 

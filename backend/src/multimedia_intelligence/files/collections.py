@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .records import FileCollectionRow, UserCollectionSelectionRow
@@ -12,22 +12,26 @@ DEFAULT_COLLECTION_NAME = "General"
 
 
 async def selected_collection(
-    sessions: async_sessionmaker[AsyncSession], owner_id: str
+    sessions: async_sessionmaker[AsyncSession], owner_id: str, *, is_admin: bool = False
 ) -> FileCollectionRow:
-    """Return the global selection, lazily creating the user's General collection."""
+    """Return an accessible selection, lazily creating the user's General collection."""
 
     async with sessions() as session:
-        selected = await session.scalar(
+        access = or_(
+            FileCollectionRow.owner_id == owner_id,
+            FileCollectionRow.is_public.is_(True),
+        )
+        statement = (
             select(FileCollectionRow)
             .join(
                 UserCollectionSelectionRow,
                 UserCollectionSelectionRow.collection_id == FileCollectionRow.id,
             )
-            .where(
-                UserCollectionSelectionRow.owner_id == owner_id,
-                FileCollectionRow.owner_id == owner_id,
-            )
+            .where(UserCollectionSelectionRow.owner_id == owner_id)
         )
+        if not is_admin:
+            statement = statement.where(access)
+        selected = await session.scalar(statement)
         if selected is not None:
             return selected
         general = await session.scalar(
@@ -44,6 +48,7 @@ async def selected_collection(
             owner_id=owner_id,
             name=DEFAULT_COLLECTION_NAME,
             description="Default file collection",
+            is_public=False,
             created_at=now,
         )
         async with sessions.begin() as session:
@@ -66,6 +71,7 @@ async def create_collection(
     description: str | None,
     *,
     select_created: bool,
+    is_public: bool = False,
 ) -> FileCollectionRow:
     normalized_name = " ".join(name.split())
     if not normalized_name:
@@ -84,6 +90,7 @@ async def create_collection(
         owner_id=owner_id,
         name=normalized_name,
         description=description.strip() if description and description.strip() else None,
+        is_public=is_public,
         created_at=datetime.now(UTC),
     )
     async with sessions.begin() as session:
@@ -94,15 +101,21 @@ async def create_collection(
 
 
 async def select_collection(
-    sessions: async_sessionmaker[AsyncSession], owner_id: str, collection_id: str
+    sessions: async_sessionmaker[AsyncSession],
+    owner_id: str,
+    collection_id: str,
+    *,
+    is_admin: bool = False,
 ) -> FileCollectionRow:
     async with sessions() as session:
-        collection = await session.scalar(
-            select(FileCollectionRow).where(
-                FileCollectionRow.id == collection_id,
-                FileCollectionRow.owner_id == owner_id,
-            )
+        access = or_(
+            FileCollectionRow.owner_id == owner_id,
+            FileCollectionRow.is_public.is_(True),
         )
+        statement = select(FileCollectionRow).where(FileCollectionRow.id == collection_id)
+        if not is_admin:
+            statement = statement.where(access)
+        collection = await session.scalar(statement)
     if collection is None:
         raise ValueError("Collection is unavailable")
     async with sessions.begin() as session:
@@ -117,14 +130,24 @@ async def select_collection(
 
 
 async def list_collections(
-    sessions: async_sessionmaker[AsyncSession], owner_id: str
+    sessions: async_sessionmaker[AsyncSession], owner_id: str, *, include_private: bool = False
 ) -> tuple[FileCollectionRow, ...]:
     await selected_collection(sessions, owner_id)
     async with sessions() as session:
+        statement = select(FileCollectionRow)
+        if not include_private:
+            statement = statement.where(
+                or_(
+                    FileCollectionRow.owner_id == owner_id,
+                    FileCollectionRow.is_public.is_(True),
+                )
+            )
         return tuple(
             await session.scalars(
-                select(FileCollectionRow)
-                .where(FileCollectionRow.owner_id == owner_id)
-                .order_by(FileCollectionRow.created_at, FileCollectionRow.name)
+                statement.order_by(
+                    FileCollectionRow.owner_id != owner_id,
+                    FileCollectionRow.created_at,
+                    FileCollectionRow.name,
+                )
             )
         )

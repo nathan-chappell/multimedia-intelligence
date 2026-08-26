@@ -361,8 +361,21 @@ async def _ensure_collection(
             )
         )
     if row is not None:
+        if not row.is_public:
+            async with sessions.begin() as session:
+                managed = await session.get(FileCollectionRow, row.id)
+                assert managed is not None
+                managed.is_public = True
+            row.is_public = True
         return row
-    return await create_collection(sessions, owner_id, name, description, select_created=False)
+    return await create_collection(
+        sessions,
+        owner_id,
+        name,
+        description,
+        select_created=False,
+        is_public=True,
+    )
 
 
 async def _ensure_asset(

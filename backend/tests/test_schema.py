@@ -26,6 +26,7 @@ def test_asset_domain_uses_separate_tables() -> None:
     assert "conversation_id" in Base.metadata.tables["chat_threads"].columns
     assert "conversation_dirty" in Base.metadata.tables["chat_threads"].columns
     assert "conversation_checkpoint_id" in Base.metadata.tables["chat_threads"].columns
+    assert "is_public" in Base.metadata.tables["file_collections"].columns
     assert "password_hash" in Base.metadata.tables["users"].columns
     assert "token_hash" not in Base.metadata.tables["users"].columns
     assert Base.metadata.tables["user_vector_stores"].primary_key.columns.keys() == ["owner_id"]
@@ -34,6 +35,7 @@ def test_asset_domain_uses_separate_tables() -> None:
 def test_high_volume_queries_have_composite_indexes() -> None:
     expected = {
         "assets": {"ix_assets_owner_collection_state_cursor"},
+        "file_collections": {"ix_file_collections_public_cursor"},
         "thread_asset_includes": {"ix_thread_includes_owner_thread_state_cursor"},
         "asset_ingestions": {"ix_ingestions_owner_asset_active_status_version"},
         "asset_index_artifacts": {
@@ -69,4 +71,35 @@ async def test_schema_upgrade_adds_conversation_checkpoint_to_existing_database(
         )
 
     assert "conversation_checkpoint_id" in columns
+    await engine.dispose()
+
+
+async def test_schema_upgrade_adds_public_collection_visibility() -> None:
+    engine, _sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "CREATE TABLE file_collections ("
+                "id VARCHAR(128) PRIMARY KEY, owner_id VARCHAR(128), "
+                "name VARCHAR(160), description TEXT, created_at DATETIME)"
+            )
+        )
+
+    await initialize_schema(engine)
+    async with engine.connect() as connection:
+        columns, indexes = await connection.run_sync(
+            lambda sync_connection: (
+                {
+                    column["name"]
+                    for column in inspect(sync_connection).get_columns("file_collections")
+                },
+                {
+                    index["name"]
+                    for index in inspect(sync_connection).get_indexes("file_collections")
+                },
+            )
+        )
+
+    assert "is_public" in columns
+    assert "ix_file_collections_public_cursor" in indexes
     await engine.dispose()

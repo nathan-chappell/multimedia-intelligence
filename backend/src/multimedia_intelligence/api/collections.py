@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from multimedia_intelligence.auth import authenticate_request
@@ -26,6 +26,7 @@ from multimedia_intelligence.files.records import (
     AssetRow,
     FileCollectionRow,
     ThreadAssetIncludeRow,
+    UserCollectionSelectionRow,
 )
 
 
@@ -34,6 +35,10 @@ class CollectionView(BaseModel):
     name: str
     description: str | None
     selected: bool
+    is_public: bool
+    owned: bool
+    can_manage: bool
+    read_only: bool
 
 
 class CreateCollectionRequest(BaseModel):
@@ -42,6 +47,13 @@ class CreateCollectionRequest(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     description: str | None = Field(default=None, max_length=2_000)
     select: bool = True
+    is_public: bool = False
+
+
+class UpdateCollectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_public: bool
 
 
 class SelectCollectionRequest(BaseModel):
@@ -108,15 +120,10 @@ def build_collection_router(
     @router.get("", response_model=list[CollectionView])
     async def get_collections(request: Request) -> list[CollectionView]:
         user = await authenticate_request(request, sessions, settings)
-        selected = await selected_collection(sessions, user.id)
-        rows = await list_collections(sessions, user.id)
+        selected = await selected_collection(sessions, user.id, is_admin=user.is_admin)
+        rows = await list_collections(sessions, user.id, include_private=user.is_admin)
         return [
-            CollectionView(
-                id=row.id,
-                name=row.name,
-                description=row.description,
-                selected=row.id == selected.id,
-            )
+            _collection_view(row, user.id, user.is_admin, selected.id)
             for row in rows
         ]
 
@@ -130,29 +137,52 @@ def build_collection_router(
                 payload.name,
                 payload.description,
                 select_created=payload.select,
+                is_public=payload.is_public,
             )
         except ValueError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from None
-        return CollectionView(
-            id=row.id,
-            name=row.name,
-            description=row.description,
-            selected=payload.select,
-        )
+        return _collection_view(row, user.id, user.is_admin, row.id if payload.select else None)
 
     @router.put("/selection", response_model=CollectionView)
     async def put_selection(payload: SelectCollectionRequest, request: Request) -> CollectionView:
         user = await authenticate_request(request, sessions, settings)
         try:
-            row = await select_collection(sessions, user.id, payload.collection_id)
+            row = await select_collection(
+                sessions,
+                user.id,
+                payload.collection_id,
+                is_admin=user.is_admin,
+            )
         except ValueError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from None
-        return CollectionView(
-            id=row.id,
-            name=row.name,
-            description=row.description,
-            selected=True,
-        )
+        return _collection_view(row, user.id, user.is_admin, row.id)
+
+    @router.patch("/{collection_id}", response_model=CollectionView)
+    async def patch_collection(
+        collection_id: str,
+        payload: UpdateCollectionRequest,
+        request: Request,
+    ) -> CollectionView:
+        user = await authenticate_request(request, sessions, settings)
+        async with sessions.begin() as session:
+            row = await session.get(FileCollectionRow, collection_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="Collection not found")
+            if row.owner_id != user.id and not user.is_admin:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only the collection owner or an administrator can change visibility",
+                )
+            row.is_public = payload.is_public
+            if not payload.is_public:
+                await session.execute(
+                    delete(UserCollectionSelectionRow).where(
+                        UserCollectionSelectionRow.collection_id == row.id,
+                        UserCollectionSelectionRow.owner_id != row.owner_id,
+                    )
+                )
+        selected = await selected_collection(sessions, user.id, is_admin=user.is_admin)
+        return _collection_view(row, user.id, user.is_admin, selected.id)
 
     @router.get("/{collection_id}/files", response_model=CollectionFilePage)
     async def get_collection_files(
@@ -163,7 +193,10 @@ def build_collection_router(
         offset: int = Query(default=0, ge=0),
     ) -> CollectionFilePage:
         user = await authenticate_request(request, sessions, settings)
-        await _require_collection(sessions, collection_id, user.id)
+        collection = await _require_collection(
+            sessions, collection_id, user.id, is_admin=user.is_admin
+        )
+        collection_owner_id = collection.owner_id
         if thread_id is not None:
             await _require_thread(sessions, thread_id, user.id)
         async with sessions() as session:
@@ -172,7 +205,7 @@ def build_collection_router(
                     select(func.count())
                     .select_from(AssetRow)
                     .where(
-                        AssetRow.owner_id == user.id,
+                        AssetRow.owner_id == collection_owner_id,
                         AssetRow.collection_id == collection_id,
                         AssetRow.state == AssetState.STORED,
                     )
@@ -183,7 +216,7 @@ def build_collection_router(
                 await session.scalars(
                     select(AssetRow)
                     .where(
-                        AssetRow.owner_id == user.id,
+                        AssetRow.owner_id == collection_owner_id,
                         AssetRow.collection_id == collection_id,
                         AssetRow.state == AssetState.STORED,
                     )
@@ -198,7 +231,7 @@ def build_collection_router(
                     await session.scalars(
                         select(AssetIngestionRow).where(
                             AssetIngestionRow.asset_id.in_(asset_ids),
-                            AssetIngestionRow.owner_id == user.id,
+                            AssetIngestionRow.owner_id == collection_owner_id,
                             AssetIngestionRow.is_active.is_(True),
                         )
                     )
@@ -280,7 +313,14 @@ def build_collection_router(
         request: Request,
     ) -> FileInclusionResponse:
         user = await authenticate_request(request, sessions, settings)
-        await _require_collection(sessions, collection_id, user.id)
+        collection = await _require_collection(
+            sessions, collection_id, user.id, is_admin=user.is_admin
+        )
+        if collection.owner_id != user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Public collection files are read-only",
+            )
         await _require_thread(sessions, payload.thread_id, user.id)
         async with sessions.begin() as session:
             asset = await session.get(AssetRow, asset_id)
@@ -324,27 +364,42 @@ def build_collection_router(
     @router.post("/{collection_id}/reconcile", response_model=ReconciliationView)
     async def reconcile_collection(collection_id: str, request: Request) -> ReconciliationView:
         user = await authenticate_request(request, sessions, settings)
-        await _require_collection(sessions, collection_id, user.id)
+        collection = await _require_collection(
+            sessions, collection_id, user.id, is_admin=user.is_admin
+        )
+        if collection.owner_id != user.id and not user.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the collection owner or an administrator can reconcile it",
+            )
         if file_index is None:
             raise HTTPException(status_code=503, detail="OpenAI file indexing is unavailable")
-        result = await file_index.reconcile_collection(user.id, collection_id)
+        result = await file_index.reconcile_collection(collection.owner_id, collection_id)
         return _reconciliation_view(result)
 
     return router
 
 
 async def _require_collection(
-    sessions: async_sessionmaker[AsyncSession], collection_id: str, owner_id: str
-) -> None:
+    sessions: async_sessionmaker[AsyncSession],
+    collection_id: str,
+    owner_id: str,
+    *,
+    is_admin: bool = False,
+) -> FileCollectionRow:
     async with sessions() as session:
-        row = await session.scalar(
-            select(FileCollectionRow.id).where(
-                FileCollectionRow.id == collection_id,
-                FileCollectionRow.owner_id == owner_id,
+        statement = select(FileCollectionRow).where(FileCollectionRow.id == collection_id)
+        if not is_admin:
+            statement = statement.where(
+                or_(
+                    FileCollectionRow.owner_id == owner_id,
+                    FileCollectionRow.is_public.is_(True),
+                )
             )
-        )
+        row = await session.scalar(statement)
     if row is None:
         raise HTTPException(status_code=404, detail="Collection not found")
+    return row
 
 
 async def _require_thread(
@@ -380,4 +435,23 @@ def _reconciliation_view(result: ReconciliationSummary) -> ReconciliationView:
         orphaned=result.orphaned,
         checked_at=result.checked_at,
         provider_error=result.provider_error,
+    )
+
+
+def _collection_view(
+    row: FileCollectionRow,
+    user_id: str,
+    is_admin: bool,
+    selected_id: str | None,
+) -> CollectionView:
+    owned = row.owner_id == user_id
+    return CollectionView(
+        id=row.id,
+        name=row.name,
+        description=row.description,
+        selected=row.id == selected_id,
+        is_public=row.is_public,
+        owned=owned,
+        can_manage=owned or is_admin,
+        read_only=not owned,
     )

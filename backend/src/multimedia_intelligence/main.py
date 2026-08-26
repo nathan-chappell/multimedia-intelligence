@@ -126,7 +126,13 @@ async def chatkit_endpoint(request: Request) -> Response:
     user = await authenticate_request(request, sessions, settings)
     context = RequestContext(
         client=ClientInfo(user_id=user.id, username=user.username, is_admin=user.is_admin),
-        data_access=ScopedAgentDataAccess(sessions, user.id, blob_store, file_index),
+        data_access=ScopedAgentDataAccess(
+            sessions,
+            user.id,
+            blob_store,
+            file_index,
+            is_admin=user.is_admin,
+        ),
         request=request,
     )
     result = await chatkit_server.process(await request.body(), context=context)

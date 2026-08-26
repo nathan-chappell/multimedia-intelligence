@@ -7,16 +7,23 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from multimedia_intelligence.api.assets import build_asset_router
 from multimedia_intelligence.api.collections import build_collection_router
-from multimedia_intelligence.auth import AuthenticatedUser, ensure_builtin_admin, mint_access_token
+from multimedia_intelligence.auth import (
+    AuthenticatedUser,
+    ensure_builtin_admin,
+    ensure_identity_row,
+    mint_access_token,
+)
 from multimedia_intelligence.chat.store import ThreadRow
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
+from multimedia_intelligence.files.access import ScopedAgentDataAccess
 from multimedia_intelligence.files.collections import (
     create_collection,
     select_collection,
     selected_collection,
 )
-from multimedia_intelligence.files.indexing import VectorSearchHit
+from multimedia_intelligence.files.indexing import FileIndexReader, VectorSearchHit
 from multimedia_intelligence.files.records import AssetIngestionRow
 
 from .settings import TEST_SETTINGS
@@ -57,6 +64,8 @@ async def test_collection_api_creates_and_persists_global_selection() -> None:
     assert initial.status_code == 200
     assert initial.json()[0]["name"] == "General"
     assert initial.json()[0]["selected"] is True
+    assert initial.json()[0]["is_public"] is False
+    assert initial.json()[0]["owned"] is True
     assert created.status_code == 201
     assert created.json()["selected"] is True
     assert {item["name"] for item in listed.json()} == {"General", "ML Papers"}
@@ -66,6 +75,98 @@ async def test_collection_api_creates_and_persists_global_selection() -> None:
     assert (await selected_collection(sessions, TEST_SETTINGS.admin_user_id)).id == restored.json()[
         "id"
     ]
+    await engine.dispose()
+
+
+async def test_public_collection_is_selectable_and_read_only_for_another_user() -> None:
+    engine, sessions, blobs, vectors, _, service = await setup_service(
+        [("shared-notes", "shared.md", "text/markdown", b"# Shared\nDemo evidence")]
+    )
+    prepared = await service.prepare(TEST_SETTINGS.admin_user_id, "shared-notes")
+    await service.commit(
+        TEST_SETTINGS.admin_user_id,
+        str(prepared["ingestionId"]),
+        "Shared interview evidence.",
+    )
+    collection_id = str(prepared["collectionId"])
+    viewer = AuthenticatedUser(id="user_viewer", username="Viewer", is_admin=False)
+    await ensure_identity_row(sessions, viewer)
+    viewer_token, _ = mint_access_token(viewer, TEST_SETTINGS)
+    admin_token, _ = mint_access_token(
+        AuthenticatedUser(
+            id=TEST_SETTINGS.admin_user_id,
+            username=TEST_SETTINGS.admin_username,
+            is_admin=True,
+        ),
+        TEST_SETTINGS,
+    )
+    app = FastAPI()
+    app.include_router(build_collection_router(sessions, TEST_SETTINGS, service), prefix="/api")
+    app.include_router(build_asset_router(sessions, TEST_SETTINGS, blobs), prefix="/api")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        private_listing = await client.get(
+            "/api/collections",
+            headers={"Authorization": f"Bearer {viewer_token}"},
+        )
+        published = await client.patch(
+            f"/api/collections/{collection_id}",
+            json={"is_public": True},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        public_listing = await client.get(
+            "/api/collections",
+            headers={"Authorization": f"Bearer {viewer_token}"},
+        )
+        selected = await client.put(
+            "/api/collections/selection",
+            json={"collection_id": collection_id},
+            headers={"Authorization": f"Bearer {viewer_token}"},
+        )
+        files = await client.get(
+            f"/api/collections/{collection_id}/files",
+            headers={"Authorization": f"Bearer {viewer_token}"},
+        )
+        preview = await client.get(
+            "/api/assets/shared-notes/preview",
+            headers={"Authorization": f"Bearer {viewer_token}"},
+            follow_redirects=False,
+        )
+        inclusion = await client.put(
+            f"/api/collections/{collection_id}/files/shared-notes/inclusion",
+            json={"thread_id": "thread_missing", "included": True},
+            headers={"Authorization": f"Bearer {viewer_token}"},
+        )
+        visibility = await client.patch(
+            f"/api/collections/{collection_id}",
+            json={"is_public": False},
+            headers={"Authorization": f"Bearer {viewer_token}"},
+        )
+
+    assert all(item["id"] != collection_id for item in private_listing.json())
+    assert published.status_code == 200
+    assert published.json()["is_public"] is True
+    shared = next(item for item in public_listing.json() if item["id"] == collection_id)
+    assert shared["read_only"] is True
+    assert shared["can_manage"] is False
+    assert selected.status_code == 200
+    assert selected.json()["selected"] is True
+    assert files.status_code == 200
+    assert files.json()["items"][0]["filename"] == "shared.md"
+    assert preview.status_code == 307
+    assert inclusion.status_code == 403
+    assert visibility.status_code == 403
+
+    upload = vectors.uploads[0]
+    attributes = upload["attributes"]
+    assert isinstance(attributes, dict)
+    vectors.search_hits = (
+        VectorSearchHit(str(upload["id"]), 0.9, "Shared demo evidence", attributes),
+    )
+    reader = FileIndexReader(sessions, blobs, vectors)
+    access = ScopedAgentDataAccess(sessions, viewer.id, blobs, reader)
+    search_results = await access.file_search("Shared", 5)
+    assert search_results[0]["assetId"] == "shared-notes"
     await engine.dispose()
 
 

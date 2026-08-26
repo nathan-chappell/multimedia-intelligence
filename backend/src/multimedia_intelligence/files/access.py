@@ -16,7 +16,7 @@ from .domain import AssetState, IncludeState, ObjectLocation
 from .indexing import FileIndexReader
 from .policy import FileRoute, classify_file
 from .ports import BlobStore
-from .records import AssetRow, ThreadAssetIncludeRow
+from .records import AssetRow, FileCollectionRow, ThreadAssetIncludeRow
 
 
 class ScopedAgentDataAccess:
@@ -28,14 +28,17 @@ class ScopedAgentDataAccess:
         owner_id: str,
         blob_store: BlobStore,
         file_index: FileIndexReader | None = None,
+        *,
+        is_admin: bool = False,
     ) -> None:
         self.sessions = sessions
         self.owner_id = owner_id
         self.blob_store = blob_store
         self.file_index = file_index
+        self.is_admin = is_admin
 
     async def collection_context(self) -> CollectionContext:
-        collection = await selected_collection(self.sessions, self.owner_id)
+        collection = await self._selected_collection()
         return {
             "collectionId": collection.id,
             "name": collection.name,
@@ -45,7 +48,7 @@ class ScopedAgentDataAccess:
     async def list_ready_file_references(
         self, thread_id: str
     ) -> tuple[ReadyFileReference, ...]:
-        collection_id = await self._selected_collection_id()
+        collection_id = (await self._selected_collection()).id
         async with self.sessions() as session:
             rows = (
                 await session.execute(
@@ -84,7 +87,7 @@ class ScopedAgentDataAccess:
         start: int,
         count: int,
     ) -> TextRangeResult:
-        collection_id = await self._selected_collection_id()
+        collection_id = (await self._selected_collection()).id
         async with self.sessions() as session:
             asset = await session.scalar(
                 select(AssetRow)
@@ -129,7 +132,7 @@ class ScopedAgentDataAccess:
         }
 
     async def ready_file_download_url(self, thread_id: str, asset_id: str) -> str:
-        collection_id = await self._selected_collection_id()
+        collection_id = (await self._selected_collection()).id
         async with self.sessions() as session:
             asset = await session.scalar(
                 select(AssetRow)
@@ -165,12 +168,13 @@ class ScopedAgentDataAccess:
     ) -> tuple[FileSearchResult, ...]:
         if self.file_index is None:
             raise RuntimeError("User file search is unavailable")
+        collection = await self._selected_collection()
         results = await self.file_index.search(
-            self.owner_id,
+            collection.owner_id,
             query,
             max_results,
             file_types,
-            await self._selected_collection_id(),
+            collection.id,
         )
         return tuple(
             {
@@ -196,9 +200,10 @@ class ScopedAgentDataAccess:
     ) -> dict[str, object]:
         if self.file_index is None:
             raise RuntimeError("User file indexing is unavailable")
-        await self._require_selected_asset(asset_id)
+        collection = await self._selected_collection()
+        await self._require_selected_asset(asset_id, collection)
         return await self.file_index.resolve_file(
-            self.owner_id, asset_id, artifact_id, original=original
+            collection.owner_id, asset_id, artifact_id, original=original
         )
 
     async def get_transcript(
@@ -210,13 +215,15 @@ class ScopedAgentDataAccess:
     ) -> TranscriptPageResult:
         if self.file_index is None:
             raise RuntimeError("User file indexing is unavailable")
-        await self._require_selected_asset(asset_id)
+        collection = await self._selected_collection()
+        await self._require_selected_asset(asset_id, collection)
         return await self.file_index.transcript_page(
-            self.owner_id, asset_id, start_seconds, end_seconds, cursor
+            collection.owner_id, asset_id, start_seconds, end_seconds, cursor
         )
 
     async def owned_file_download_url(self, asset_id: str) -> str:
-        asset = await self._require_selected_asset(asset_id)
+        collection = await self._selected_collection()
+        asset = await self._require_selected_asset(asset_id, collection)
         location = ObjectLocation(
             bucket=asset.bucket,
             key=asset.object_key,
@@ -225,19 +232,24 @@ class ScopedAgentDataAccess:
         )
         return await self.blob_store.signed_download_url(location, 300)
 
-    async def _owned_asset(self, asset_id: str) -> AssetRow:
+    async def _selected_collection(self) -> FileCollectionRow:
+        return await selected_collection(
+            self.sessions,
+            self.owner_id,
+            is_admin=self.is_admin,
+        )
+
+    async def _require_selected_asset(
+        self, asset_id: str, collection: FileCollectionRow
+    ) -> AssetRow:
         async with self.sessions() as session:
             asset = await session.get(AssetRow, asset_id)
-        if asset is None or asset.owner_id != self.owner_id or asset.state != AssetState.STORED:
-            raise ValueError("Asset is unavailable")
-        return asset
-
-    async def _selected_collection_id(self) -> str:
-        return (await selected_collection(self.sessions, self.owner_id)).id
-
-    async def _require_selected_asset(self, asset_id: str) -> AssetRow:
-        asset = await self._owned_asset(asset_id)
-        if asset.collection_id != await self._selected_collection_id():
+        if (
+            asset is None
+            or asset.owner_id != collection.owner_id
+            or asset.collection_id != collection.id
+            or asset.state != AssetState.STORED
+        ):
             raise ValueError("Asset is unavailable in the selected collection")
         return asset
 
