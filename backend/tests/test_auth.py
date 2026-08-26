@@ -1,10 +1,16 @@
+import threading
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
 
 import jwt
 import pytest
+from clerk_backend_api.security.types import AuthStatus, RequestState
 from fastapi import FastAPI, HTTPException, Request
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 
+import multimedia_intelligence.auth as auth_module
 from multimedia_intelligence.api.users import build_user_router
 from multimedia_intelligence.auth import (
     AuthenticatedUser,
@@ -98,4 +104,59 @@ async def test_expired_token_is_rejected() -> None:
             TEST_SETTINGS,
         )
     assert raised.value.status_code == 401
+    await engine.dispose()
+
+
+async def test_clerk_authentication_uses_supported_sync_verifier_off_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
+    await initialize_schema(engine)
+    event_loop_thread_id = threading.get_ident()
+    verifier_thread_ids: list[int] = []
+
+    class FakeUsers:
+        async def get_async(self, *, user_id: str) -> SimpleNamespace:
+            assert user_id == "user_clerk"
+            return SimpleNamespace(
+                primary_email_address_id=None,
+                email_addresses=[],
+                first_name="Demo",
+                last_name="User",
+                public_metadata={"role": "user"},
+            )
+
+    class FakeClerk:
+        def __init__(self, *, bearer_auth: str) -> None:
+            assert bearer_auth == "sk_test_demo"
+            self.users = FakeUsers()
+
+        def authenticate_request(self, request: Any, options: Any) -> RequestState:
+            verifier_thread_ids.append(threading.get_ident())
+            assert request.headers["Authorization"] == "Bearer session_token"
+            assert options.secret_key == "sk_test_demo"
+            return RequestState(
+                status=AuthStatus.SIGNED_IN,
+                token="session_token",
+                payload={"sub": "user_clerk"},
+            )
+
+    monkeypatch.setattr(auth_module, "Clerk", FakeClerk)
+    settings = TEST_SETTINGS.model_copy(
+        update={
+            "app_env": "development",
+            "clerk_secret_key": SecretStr("sk_test_demo"),
+        }
+    )
+
+    user = await auth_module.authenticate_token("session_token", sessions, settings)
+
+    assert user == AuthenticatedUser(
+        id="user_clerk",
+        username="Demo User",
+        is_admin=False,
+        full_name="Demo User",
+    )
+    assert verifier_thread_ids
+    assert verifier_thread_ids[0] != event_loop_thread_id
     await engine.dispose()

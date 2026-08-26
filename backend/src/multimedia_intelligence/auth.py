@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -113,7 +114,8 @@ async def authenticate_token(
             detail="Clerk authentication is not configured",
         )
     client = Clerk(bearer_auth=secret)
-    state = await client.authenticate_request_async(
+    state = await asyncio.to_thread(
+        client.authenticate_request,
         ClerkRequest(headers={"Authorization": f"Bearer {token}"}),
         AuthenticateRequestOptions(
             secret_key=secret,
