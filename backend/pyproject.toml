@@ -27,7 +27,7 @@ dependencies = [
 
 [project.scripts]
 multimedia-demo = "multimedia_intelligence.demo.cli:main"
-multimedia-recovery = "multimedia_intelligence.maintenance.cli:main"
+multimedia-costs = "multimedia_intelligence.maintenance.costs_cli:main"
 
 [project.optional-dependencies]
 dev = [

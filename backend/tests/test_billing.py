@@ -114,3 +114,4 @@ def test_pricing_uses_integer_microusd_and_configurable_markup() -> None:
 def test_schema_has_no_mutable_balance_projection() -> None:
     assert "user_credit_balances" not in Base.metadata.tables
     assert LedgerEventRow.__tablename__ == "ledger_events"
+    assert not LedgerEventRow.__table__.foreign_keys

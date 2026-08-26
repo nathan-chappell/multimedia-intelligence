@@ -61,16 +61,15 @@ class LedgerEventRow(Base):
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    # Ledger attribution must survive deletion or reconstruction of mutable identity
+    # and coupon records. These values are immutable opaque references, not ownership
+    # relationships, so the event log intentionally has no foreign keys.
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
     amount_microusd: Mapped[int] = mapped_column(BigInteger)
     event_type: Mapped[str] = mapped_column(String(64), index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    actor_user_id: Mapped[str | None] = mapped_column(
-        ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True
-    )
-    coupon_id: Mapped[str | None] = mapped_column(
-        ForeignKey("coupons.id", ondelete="RESTRICT"), nullable=True, index=True
-    )
+    actor_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    coupon_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     thread_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     provider_request_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     provider_response_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)

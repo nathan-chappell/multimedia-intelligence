@@ -202,46 +202,33 @@ object. Disposable OpenAI resources may use provider-managed expiration. During 
 schema changes use a selective rebuild of the development database; migrations are intentionally
 deferred.
 
-### Development database recovery
+### Cost ledger dump and recovery
 
-Bucket object keys contain stable asset and owner IDs, but they do not contain enough information to
-reconstruct collection names, visibility, original filenames, provider references, or billing
-attribution. Before a development reset, `multimedia-recovery` therefore creates a recovery bundle
-containing:
+Collections, assets, bucket objects, vector stores, conversations, coupons, and user records are not
+database-migrated or reconstructed. The one deliberately recoverable subsystem is the append-only
+cost ledger: each credit or debit is a standalone immutable fact, and balances are derived by summing
+those events.
 
-- `source.sqlite3`, a consistent SQLite snapshot for rollback;
-- `catalog.json`, the identities, collections, canonical asset locations, ingestion state, provider
-  references, and coupon campaigns needed to reconnect durable objects; and
-- `ledger.jsonl`, the append-only cost/credit events, protected along with the catalog by SHA-256
-  digests and expected per-user balances in `bundle.json`.
-
-Chat threads, ChatKit items, feedback, thread-local file inclusions, and derived chat previews are
-deliberately not imported into the clean database. The complete snapshot remains available if that
-history is needed later. Stop the application before an in-place rebuild, then run:
+Dump the current cost stream before resetting the database:
 
 ```bash
 source .venv/bin/activate
-multimedia-recovery rebuild-sqlite --yes --verify-buckets originals
+multimedia-costs dump data/cost-ledger.jsonl
+multimedia-costs verify data/cost-ledger.jsonl
 ```
 
-The command first verifies every canonical original with a bucket `HEAD`, imports the bundle into a
-temporary clean schema, checks record counts, ledger balances, foreign keys, and SQLite integrity,
-and only then rotates the files. The prior database is retained beside the active database as
-`app.db.pre-rebuild-<timestamp>`; nothing is irreversibly deleted. Use
-`--verify-buckets all` to also check every bucket-backed ingestion artifact.
-
-The stages can also be exercised independently:
+After starting with a fresh schema, replay it with:
 
 ```bash
-multimedia-recovery export data/recovery/manual --verify-buckets originals
-multimedia-recovery verify data/recovery/manual --verify-buckets all
-multimedia-recovery import data/recovery/manual \
-  --target-database-url sqlite+aiosqlite:////tmp/multimedia-recovered.db
+multimedia-costs recover data/cost-ledger.jsonl
 ```
 
-Imports require an empty target database and preserve ledger event IDs and idempotency keys, so an
-event cannot silently be replayed twice into an existing ledger. Recovery bundles contain user IDs,
-object locations, and billing metadata and must be handled as private operational data.
+Both `dump` and `recover` accept `--database-url`; otherwise they use `DATABASE_URL` from the normal
+application settings. Dumps contain a checksum, event count, and expected per-user balances.
+Recovery preserves event IDs and idempotency keys, is safe to rerun, skips identical existing events,
+and refuses conflicting ones. It also accepts the raw `ledger.jsonl` file from the earlier recovery
+bundle format so an existing pre-reset event log can be replayed directly. Cost dumps contain user
+IDs and provider attribution metadata and must be handled as private operational data.
 
 ## Tests
 
