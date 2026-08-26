@@ -284,7 +284,7 @@ async def test_every_modality_ingests_and_supports_a_follow_up_query() -> None:
     assert "multi-head attention" in str(video_transcript["text"])
     assert "only the audio track" in str(video_transcript["warning"]).casefold()
 
-    pdf_hits = await access.file_search("transformer encoder decoder", 5, ["pdf"])
+    pdf_hits = await access.file_search("transformer encoder decoder", 5, ["application/pdf"])
     assert pdf_hits
     pdf_file = await access.get_file("pdf", str(pdf_hits[0]["artifactId"]))
     assert pdf_file["inputKind"] == "file"

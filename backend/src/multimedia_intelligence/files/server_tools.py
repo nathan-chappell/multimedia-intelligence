@@ -40,7 +40,16 @@ def build_file_index_tools() -> list[Tool]:
         ctx: ToolContext[AgentContext[RequestContext]],
         query: Annotated[str, Field(min_length=1, max_length=2_000)],
         max_results: Annotated[int, Field(ge=1, le=20)] = 8,
-        optional_types: list[str] | None = None,
+        optional_types: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "Optional file-type filters. Prefer: markup, json, tabular, pdf, image, "
+                    "audio, or video. Supported MIME types such as application/pdf are also "
+                    "accepted."
+                )
+            ),
+        ] = None,
     ) -> ToolOutputText:
         """Search the user's vector index; return discovery metadata without attachments."""
 

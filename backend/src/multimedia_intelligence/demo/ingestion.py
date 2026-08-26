@@ -32,7 +32,7 @@ from multimedia_intelligence.config import Settings
 from multimedia_intelligence.context import TranscriptPageResult
 from multimedia_intelligence.files.collections import selected_collection
 from multimedia_intelligence.files.domain import AssetState, ObjectLocation
-from multimedia_intelligence.files.policy import FileRoute, classify_file
+from multimedia_intelligence.files.policy import FileRoute, classify_file, normalize_file_route
 from multimedia_intelligence.files.ports import BlobStore
 from multimedia_intelligence.files.records import (
     AssetIndexArtifactRow,
@@ -558,7 +558,7 @@ class FileIngestionService:
             raise ValueError("A non-empty file search query is required")
         if not 1 <= max_results <= 20:
             raise ValueError("max_results must be between 1 and 20")
-        allowed = {_normalize_route(route) for route in routes} if routes else None
+        allowed = {normalize_file_route(route) for route in routes} if routes else None
         if collection_id is None:
             collection_id = (await selected_collection(self.sessions, owner_id)).id
         async with self.sessions() as session:
@@ -2035,13 +2035,3 @@ def _required_int(values: Mapping[str, object], key: str) -> int:
     if not isinstance(value, (int, float)):
         raise ValueError(f"Expected integer provenance field: {key}")
     return int(value)
-
-
-def _normalize_route(value: str) -> FileRoute:
-    aliases = {
-        "csv": FileRoute.TABULAR,
-        "text": FileRoute.MARKUP,
-        "markdown": FileRoute.MARKUP,
-    }
-    normalized = value.casefold()
-    return aliases[normalized] if normalized in aliases else FileRoute(normalized)

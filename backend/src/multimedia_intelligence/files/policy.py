@@ -31,6 +31,47 @@ class UnsupportedFileType(ValueError):
     pass
 
 
+def normalize_file_route(value: str) -> FileRoute:
+    """Normalize a route label, file extension, or supported MIME type."""
+
+    normalized = value.strip().casefold()
+    media_type = normalized.partition(";")[0].strip()
+    aliases = {
+        "csv": FileRoute.TABULAR,
+        ".csv": FileRoute.TABULAR,
+        "text/csv": FileRoute.TABULAR,
+        "application/csv": FileRoute.TABULAR,
+        "text": FileRoute.MARKUP,
+        "markdown": FileRoute.MARKUP,
+        ".txt": FileRoute.MARKUP,
+        ".md": FileRoute.MARKUP,
+        "text/plain": FileRoute.MARKUP,
+        "text/markdown": FileRoute.MARKUP,
+        ".json": FileRoute.JSON,
+        "application/json": FileRoute.JSON,
+        ".pdf": FileRoute.PDF,
+        "application/pdf": FileRoute.PDF,
+        "application/x-pdf": FileRoute.PDF,
+    }
+    if media_type in aliases:
+        return aliases[media_type]
+    for prefix, route in (
+        ("image/", FileRoute.IMAGE),
+        ("audio/", FileRoute.AUDIO),
+        ("video/", FileRoute.VIDEO),
+    ):
+        if media_type.startswith(prefix):
+            return route
+    try:
+        return FileRoute(media_type)
+    except ValueError as error:
+        supported = ", ".join(route.value for route in FileRoute)
+        raise ValueError(
+            f"Unsupported file type filter {value!r}; expected one of {supported} "
+            "or a compatible MIME type"
+        ) from error
+
+
 def classify_file(filename: str) -> FilePolicyDecision:
     extension = Path(filename).suffix.lower()
     if extension in MARKUP_EXTENSIONS:
