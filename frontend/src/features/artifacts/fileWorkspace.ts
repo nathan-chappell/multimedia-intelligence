@@ -12,7 +12,10 @@ export type FileRoute =
 
 export interface IncludedLocalFile {
   id: string;
-  file: File;
+  file?: File;
+  filename: string;
+  mediaType: string;
+  sizeBytes: number;
   route: FileRoute;
   addedAt: number;
   durability: "local" | "uploading" | "stored" | "included" | "error";
@@ -20,6 +23,10 @@ export interface IncludedLocalFile {
   includeId?: string;
   saveError?: string;
   collectionId?: string;
+}
+
+export interface HydratedLocalFile extends IncludedLocalFile {
+  file: File;
 }
 
 export interface FileCollection {
@@ -81,7 +88,9 @@ export interface FileWorkspaceValue {
   addFiles: (files: FileList | readonly File[]) => void;
   removeFile: (assetId: string) => void;
   saveFile: (assetId: string) => Promise<void>;
-  getFile: (assetId: string) => IncludedLocalFile | undefined;
+  getFiles: () => readonly IncludedLocalFile[];
+  resolveFile: (assetId: string) => Promise<HydratedLocalFile | undefined>;
+  waitUntilReady: () => Promise<void>;
   activeThreadId: string | null;
   setActiveThreadId: (threadId: string | null) => void;
   restoreThread: (threadId: string) => void;

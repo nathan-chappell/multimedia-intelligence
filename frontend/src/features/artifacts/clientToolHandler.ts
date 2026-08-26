@@ -25,20 +25,22 @@ async function execute(
   workspace: FileWorkspaceValue,
   { name, params }: ChatKitClientToolCall,
 ): Promise<Record<string, unknown>> {
+  await workspace.waitUntilReady();
+
   if (name === "list_files") {
     const page = integer(params, "page", 1, 1);
     const durableFiles = recordArray(params, "durableFiles");
     const localDurableIds = new Set(
-      workspace.files.flatMap((entry) =>
+      workspace.getFiles().flatMap((entry) =>
         entry.durableAssetId ? [entry.durableAssetId] : [],
       ),
     );
     const files = [
-      ...workspace.files.map((entry) => ({
+      ...workspace.getFiles().map((entry) => ({
         assetId: entry.id,
-        name: entry.file.name,
-        mediaType: entry.file.type || "application/octet-stream",
-        sizeBytes: entry.file.size,
+        name: entry.filename,
+        mediaType: entry.mediaType,
+        sizeBytes: entry.sizeBytes,
         route: entry.route,
         durability: entry.durability,
         durableAssetId: entry.durableAssetId,
@@ -72,8 +74,8 @@ async function execute(
   }
 
   const assetId = requiredString(params, "assetId");
-  const entry = workspace.getFile(assetId);
-  if (!entry) throw new Error(`No staged file is registered for asset ID ${assetId}`);
+  const entry = await workspace.resolveFile(assetId);
+  if (!entry) throw new Error(`No conversation file is registered for asset ID ${assetId}`);
 
   switch (name) {
     case "read_text_chars":

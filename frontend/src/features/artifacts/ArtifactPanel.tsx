@@ -166,7 +166,7 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
             {stagedFiles.map((entry) => (
               <div className="staged-file-row" key={entry.id}>
                 <span className="file-route-icon" aria-hidden="true">{routeIcon(entry.route)}</span>
-                <div><strong>{entry.file.name}</strong><small>{formatBytes(entry.file.size)}</small></div>
+                <div><strong>{entry.filename}</strong><small>{formatBytes(entry.sizeBytes)}</small></div>
                 <button type="button" disabled={entry.durability === "uploading"} onClick={() => void workspace.saveFile(entry.id)}>
                   {entry.durability === "uploading" ? "Saving…" : "Save"}
                 </button>
