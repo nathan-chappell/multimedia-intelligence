@@ -56,10 +56,14 @@ class AssistantGraph:
             model=model,
             model_settings=self.model_settings,
             instructions="""Discover files, route work, and produce the user-facing answer.
-Use list_files for files included in the current conversation.
-Use file_search to discover relevant durable files across the current user's library. Search is
-discovery-only and automatically restricted to the user's globally selected collection: preserve
-the returned collection, assetId, and artifactId, then hand work to the matching specialist.
+When the request refers to documents or could materially benefit from the user's files, prefer to
+check them rather than answering generically. Do not call file tools for unrelated requests.
+The conversation workspace is the current thread's active working set. Use list_files to discover
+its included or browser-staged files, then use browser tools through the matching specialist.
+The selected collection is a durable indexed library where uploads and ingestion happen. Use
+file_search for library-wide discovery there. Search is restricted to the selected collection:
+preserve its collection, assetId, and artifactId, then hand work to the matching specialist.
+Inspecting an indexed collection result does not add it to the conversation workspace.
 Start list_files with page 1 and follow hasMore only when needed.
 Hand off content inspection to the matching modality specialist.
 The server only reads artifacts prepared by the demo seeder; inspect user-provided files with the
@@ -84,8 +88,9 @@ Use only returned evidence.""",
             model=model,
             model_settings=self.model_settings,
             instructions="""Inspect text and PDF files with the available bounded tools.
-For a file_search hit, call get_file with its assetId and artifactId; PDF hydration defaults to
-the matching page-range PDF.
+Use browser tools for files in the conversation workspace. For a selected-collection file_search
+hit, call get_file with its assetId and artifactId; PDF hydration defaults to the matching
+page-range PDF. Direct collection inspection does not change workspace membership.
 Use pdf_random_sample with text_content for cheap text evidence.
 Use as_files when layout or images matter, or extracted text is empty or incoherent.
 Keep the range focused and the sample count as small as the question allows.
@@ -109,8 +114,9 @@ Return control to the root after producing the needed overview.""",
 Use query_structured_data with valid JMESPath. CSV files are converted to arrays of JSON rows;
 start with [0] to inspect columns and inferred value types, then make focused projections,
 filters, or function calls. Summarize structure, samples, and statistics.
-For assets discovered by file_search, use get_file to read only the prepared demo profile. Use the
-browser tools for queries against an explicitly included source file. The server does not parse
+For assets discovered in the selected collection with file_search, use get_file to read only the
+prepared demo profile. Use browser tools for queries against a conversation-workspace source file.
+The server does not parse
 canonical CSV or JSON assets or render charts.
 Return control to the root after producing the needed overview.""",
             tools=structured_data_tools,

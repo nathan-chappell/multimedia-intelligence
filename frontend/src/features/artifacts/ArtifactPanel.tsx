@@ -1,7 +1,7 @@
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
-import { useFileWorkspace } from "./useFileWorkspace";
-import type { CollectionFileSummary } from "./fileWorkspace";
+import { useCollectionLibrary, useConversationWorkspace } from "./useFileData";
+import type { CollectionFileSummary } from "./fileData";
 
 const acceptedExtensions = [
   ".md", ".txt", ".json", ".csv", ".pdf", ".png", ".jpeg", ".jpg", ".webp",
@@ -14,19 +14,20 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
   const [message, setMessage] = useState<string | null>(null);
   const [busyAssetId, setBusyAssetId] = useState<string | null>(null);
   const [reconciling, setReconciling] = useState(false);
-  const workspace = useFileWorkspace();
-  const selectedCollection = workspace.collections.find((collection) => collection.selected);
-  const stagedFiles = useMemo(
-    () => workspace.files.filter((file) => !file.durableAssetId || file.durability === "error"),
-    [workspace.files],
-  );
+  const library = useCollectionLibrary();
+  const workspace = useConversationWorkspace();
+  const selectedCollection = library.collections.find((collection) => collection.selected);
 
   async function updateInclusion(file: CollectionFileSummary) {
     setBusyAssetId(file.asset_id);
     setMessage(null);
     try {
-      await workspace.setCollectionFileIncluded(file.asset_id, !file.included);
-      setMessage(file.included ? "Removed from this conversation" : "Added to this conversation");
+      await library.setCollectionFileIncluded(file.asset_id, !file.included);
+      setMessage(
+        file.included
+          ? "Removed from the conversation workspace"
+          : "Added to the conversation workspace",
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not update the conversation");
     } finally {
@@ -38,7 +39,7 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
     setReconciling(true);
     setMessage("Checking OpenAI index status…");
     try {
-      const result = await workspace.reconcileCollection();
+      const result = await library.reconcileCollection();
       setMessage(
         result.provider_error
           ? `Provider check failed: ${result.provider_error}`
@@ -55,7 +56,7 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
     if (!selectedCollection?.can_manage) return;
     setMessage(null);
     try {
-      await workspace.setCollectionPublic(selectedCollection.id, !selectedCollection.is_public);
+      await library.setCollectionPublic(selectedCollection.id, !selectedCollection.is_public);
       setMessage(
         selectedCollection.is_public
           ? "Collection is now private"
@@ -69,24 +70,32 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
   return (
     <aside className={`panel artifact-panel${fullPage ? " artifact-panel-page" : ""}`} aria-labelledby="artifact-title">
       <div className="panel-heading artifact-heading">
-        <div><span className="eyebrow">Artifacts</span><h2 id="artifact-title">Collection files</h2></div>
-        <span className="counter">{workspace.collectionFiles.length}</span>
+        <div><span className="eyebrow">Files</span><h2 id="artifact-title">Library & workspace</h2></div>
+        <span className="counter">{workspace.files.length}</span>
       </div>
 
+      <section className="file-section collection-section" aria-labelledby="collection-title">
+        <div className="file-section-heading">
+          <div>
+            <span className="eyebrow" id="collection-title">Collection</span>
+            <small>Durable library for uploads, ingestion, and search</small>
+          </div>
+          <span className="counter">{library.collectionFiles.length}</span>
+        </div>
       <div className="collection-control">
         <label htmlFor={fullPage ? "active-collection-page" : "active-collection"}>Active collection</label>
         <div>
           <select
             id={fullPage ? "active-collection-page" : "active-collection"}
-            value={workspace.selectedCollectionId ?? ""}
-            disabled={workspace.collections.length === 0}
+            value={library.selectedCollectionId ?? ""}
+            disabled={library.collections.length === 0}
             onChange={(event) => {
-              void workspace.selectCollection(event.currentTarget.value).catch((error: unknown) =>
+              void library.selectCollection(event.currentTarget.value).catch((error: unknown) =>
                 setMessage(error instanceof Error ? error.message : "Could not select collection"),
               );
             }}
           >
-            {workspace.collections.map((collection) => (
+            {library.collections.map((collection) => (
               <option key={collection.id} value={collection.id}>
                 {collectionLabel(collection)}
               </option>
@@ -97,7 +106,7 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
             onClick={() => {
               const name = window.prompt("Name the new collection");
               if (!name?.trim()) return;
-              void workspace.createCollection(name).catch((error: unknown) =>
+              void library.createCollection(name).catch((error: unknown) =>
                 setMessage(error instanceof Error ? error.message : "Could not create collection"),
               );
             }}
@@ -155,30 +164,14 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
       />
 
       {message && <p className="collection-message" role="status">{message}</p>}
-      {workspace.collectionFilesError && (
-        <p className="collection-message collection-message-error" role="alert">{workspace.collectionFilesError}</p>
+      {library.collectionFilesError && (
+        <p className="collection-message collection-message-error" role="alert">{library.collectionFilesError}</p>
       )}
 
       <div className="artifact-content">
-        {stagedFiles.length > 0 && (
-          <section className="staged-files" aria-labelledby="staged-title">
-            <span className="eyebrow" id="staged-title">Ready to upload</span>
-            {stagedFiles.map((entry) => (
-              <div className="staged-file-row" key={entry.id}>
-                <span className="file-route-icon" aria-hidden="true">{routeIcon(entry.route)}</span>
-                <div><strong>{entry.filename}</strong><small>{formatBytes(entry.sizeBytes)}</small></div>
-                <button type="button" disabled={entry.durability === "uploading"} onClick={() => void workspace.saveFile(entry.id)}>
-                  {entry.durability === "uploading" ? "Saving…" : "Save"}
-                </button>
-                <button type="button" onClick={() => workspace.removeFile(entry.id)}>Remove</button>
-              </div>
-            ))}
-          </section>
-        )}
-
-        {workspace.collectionFilesLoading ? (
+        {library.collectionFilesLoading ? (
           <p className="compact-empty">Loading collection files…</p>
-        ) : workspace.collectionFiles.length === 0 ? (
+        ) : library.collectionFiles.length === 0 ? (
           <div className="empty-state compact-empty">
             <h3>This collection is empty</h3>
             <p>
@@ -189,7 +182,7 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
           </div>
         ) : (
           <div className="collection-file-list" aria-label="Files in the selected collection">
-            {workspace.collectionFiles.map((file) => (
+            {library.collectionFiles.map((file) => (
               <article className="collection-file-row" key={file.asset_id}>
                 <span className="file-route-icon" aria-hidden="true">{routeIcon(file.route)}</span>
                 <div className="collection-file-copy">
@@ -220,9 +213,70 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
                     : busyAssetId === file.asset_id
                       ? "…"
                       : file.included
-                        ? "Included"
-                        : "Add"}
+                        ? "In workspace"
+                        : "Add to workspace"}
                 </button>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+      </section>
+
+      <section className="file-section workspace-section" aria-labelledby="workspace-title">
+        <div className="file-section-heading">
+          <div>
+            <span className="eyebrow" id="workspace-title">Conversation workspace</span>
+            <small>Files and previews available to browser tools in this conversation</small>
+          </div>
+          <span className="counter">{workspace.files.length}</span>
+        </div>
+        <div className="artifact-content">
+        {workspace.files.length === 0 ? (
+          <div className="empty-state compact-empty">
+            <h3>No workspace files</h3>
+            <p>Add a collection file or stage an upload for this conversation.</p>
+          </div>
+        ) : (
+          <div className="workspace-file-list" aria-label="Files in the conversation workspace">
+            {workspace.files.map((entry) => (
+              <article className="collection-file-row" key={entry.id}>
+                <span className="file-route-icon" aria-hidden="true">{routeIcon(entry.route)}</span>
+                <div className="collection-file-copy">
+                  <strong title={entry.filename}>{entry.filename}</strong>
+                  <small>{entry.route} · {formatBytes(entry.sizeBytes)}</small>
+                  <span className="index-badge">
+                    {entry.durability === "local" || entry.durability === "error"
+                      ? "Browser staged"
+                      : "Available to tools"}
+                  </span>
+                  {entry.saveError && <small className="save-error">{entry.saveError}</small>}
+                </div>
+                {!entry.durableAssetId && (
+                  <button
+                    className="include-toggle"
+                    type="button"
+                    disabled={entry.durability === "uploading" || selectedCollection?.read_only}
+                    onClick={() => void workspace.saveFile(entry.id)}
+                  >
+                    {entry.durability === "uploading" ? "Uploading…" : "Upload"}
+                  </button>
+                )}
+                <button
+                  className="include-toggle"
+                  type="button"
+                  onClick={() => {
+                    if (entry.durableAssetId) {
+                      void workspace.setFileIncluded(entry.durableAssetId, false).catch(
+                        (error: unknown) => setMessage(
+                          error instanceof Error ? error.message : "Could not remove workspace file",
+                        ),
+                      );
+                    } else {
+                      workspace.removeFile(entry.id);
+                    }
+                  }}
+                >Remove</button>
               </article>
             ))}
           </div>
@@ -245,6 +299,7 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
           </details>
         )}
       </div>
+      </section>
     </aside>
   );
 }

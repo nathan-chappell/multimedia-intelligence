@@ -50,6 +50,20 @@ class IncludeAssetRequest(BaseModel):
     thread_id: str
 
 
+class UpdateAssetInclusionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    thread_id: str = Field(min_length=1, max_length=128)
+    included: bool
+
+
+class AssetInclusionResponse(BaseModel):
+    asset_id: str
+    thread_id: str
+    included: bool
+    include_id: str | None
+
+
 class SavedDerivedArtifact(BaseModel):
     artifact_id: str
     source_asset_id: str
@@ -85,7 +99,6 @@ def build_asset_router(
         """List saved files attached to one of the caller's conversations."""
 
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id, is_admin=user.is_admin)
         await _require_owned_thread(sessions, thread_id, user.id)
         async with sessions() as session:
             rows = (
@@ -97,7 +110,6 @@ def build_asset_router(
                         ThreadAssetIncludeRow.owner_id == user.id,
                         ThreadAssetIncludeRow.state == IncludeState.READY,
                         AssetRow.owner_id == user.id,
-                        AssetRow.collection_id == collection.id,
                         AssetRow.state == AssetState.STORED,
                     )
                     .order_by(ThreadAssetIncludeRow.created_at.asc(), AssetRow.id.asc())
@@ -239,13 +251,61 @@ def build_asset_router(
             collection_id=asset.collection_id,
         )
 
+    @router.put("/{asset_id}/inclusion", response_model=AssetInclusionResponse)
+    async def update_asset_inclusion(
+        asset_id: str,
+        payload: UpdateAssetInclusionRequest,
+        request: Request,
+    ) -> AssetInclusionResponse:
+        """Add or remove an owned asset from a conversation workspace."""
+
+        user = await authenticate_request(request, sessions, settings)
+        await _require_owned_thread(sessions, payload.thread_id, user.id)
+        async with sessions.begin() as session:
+            asset = await session.get(AssetRow, asset_id)
+            if (
+                asset is None
+                or asset.owner_id != user.id
+                or asset.state != AssetState.STORED
+            ):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+            include = await session.scalar(
+                select(ThreadAssetIncludeRow).where(
+                    ThreadAssetIncludeRow.thread_id == payload.thread_id,
+                    ThreadAssetIncludeRow.asset_id == asset_id,
+                    ThreadAssetIncludeRow.owner_id == user.id,
+                )
+            )
+            if payload.included:
+                if include is None:
+                    include = ThreadAssetIncludeRow(
+                        id=f"include_{uuid4().hex}",
+                        thread_id=payload.thread_id,
+                        asset_id=asset_id,
+                        owner_id=user.id,
+                        user_intent=None,
+                        intent_kind=IntentKind.AUTO,
+                        state=IncludeState.READY,
+                        created_at=datetime.now(UTC),
+                    )
+                    session.add(include)
+                else:
+                    include.state = IncludeState.READY
+            elif include is not None:
+                include.state = IncludeState.EXCLUDED
+        return AssetInclusionResponse(
+            asset_id=asset_id,
+            thread_id=payload.thread_id,
+            included=payload.included,
+            include_id=include.id if payload.included and include is not None else None,
+        )
+
     @router.get("/derived", response_model=list[SavedDerivedArtifact])
     async def list_derived_artifacts(
         request: Request,
         thread_id: str = Query(min_length=1, max_length=128),
     ) -> list[SavedDerivedArtifact]:
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id, is_admin=user.is_admin)
         await _require_owned_thread(sessions, thread_id, user.id)
         async with sessions() as session:
             rows = (
@@ -261,7 +321,6 @@ def build_asset_router(
                         ThreadAssetIncludeRow.owner_id == user.id,
                         ThreadAssetIncludeRow.state == IncludeState.READY,
                         AssetRow.owner_id == user.id,
-                        AssetRow.collection_id == collection.id,
                         DerivedArtifactRow.state == "ready",
                         DerivedArtifactRow.bucket.is_not(None),
                         DerivedArtifactRow.object_key.is_not(None),
@@ -292,7 +351,6 @@ def build_asset_router(
         thread_id: str = Query(min_length=1, max_length=128),
     ) -> StreamingResponse:
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id, is_admin=user.is_admin)
         await _require_owned_thread(sessions, thread_id, user.id)
         async with sessions() as session:
             row = (
@@ -310,7 +368,6 @@ def build_asset_router(
                         ThreadAssetIncludeRow.owner_id == user.id,
                         ThreadAssetIncludeRow.state == IncludeState.READY,
                         AssetRow.owner_id == user.id,
-                        AssetRow.collection_id == collection.id,
                     )
                 )
             ).one_or_none()
@@ -354,7 +411,6 @@ def build_asset_router(
         """Stream a saved file only through its owning conversation boundary."""
 
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id, is_admin=user.is_admin)
         await _require_owned_thread(sessions, thread_id, user.id)
         async with sessions() as session:
             asset = await session.scalar(
@@ -366,7 +422,6 @@ def build_asset_router(
                     ThreadAssetIncludeRow.state == IncludeState.READY,
                     AssetRow.id == asset_id,
                     AssetRow.owner_id == user.id,
-                    AssetRow.collection_id == collection.id,
                     AssetRow.state == AssetState.STORED,
                 )
             )

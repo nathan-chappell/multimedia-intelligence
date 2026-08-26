@@ -88,7 +88,7 @@ def build_file_client_tools(
     *,
     names: Collection[str] | None = None,
 ) -> list[Tool]:
-    """Build tools backed by files held in the user's browser.
+    """Build tools backed by files in the conversation workspace and user's browser.
 
     These tools never receive bucket credentials and never turn a browser result into a
     durable artifact. A later upload/finalization endpoint must verify and persist any
@@ -100,7 +100,7 @@ def build_file_client_tools(
         ctx: ChatKitToolContext,
         page: Annotated[int, Field(ge=1)] = 1,
     ) -> dict[str, object]:
-        """List one page of up to 10 conversation files, including transient browser files."""
+        """List one page of up to 10 conversation-workspace files, including browser files."""
 
         app_context = ctx.context.request_context
         durable_files: tuple[ReadyFileReference, ...] = ()
@@ -121,7 +121,7 @@ def build_file_client_tools(
         start: int = 0,
         count: int = 16_384,
     ) -> dict[str, object]:
-        """Read a bounded character range from a staged Markdown or text file."""
+        """Read a bounded character range from a conversation-workspace text file."""
 
         return await invoker(
             ctx,
@@ -136,7 +136,7 @@ def build_file_client_tools(
         start: int = 0,
         count: int = 16_384,
     ) -> dict[str, object]:
-        """Read a bounded character range from staged JSON without parsing the whole file."""
+        """Read bounded workspace JSON characters without parsing the whole file."""
 
         return await invoker(
             ctx,
@@ -150,7 +150,7 @@ def build_file_client_tools(
         asset_id: str,
         expression: Annotated[str, Field(min_length=1, max_length=4096)],
     ) -> dict[str, object]:
-        """Evaluate one JMESPath expression against staged JSON or CSV converted to JSON rows."""
+        """Evaluate JMESPath against workspace JSON or CSV converted to JSON rows."""
 
         return await invoker(
             ctx,

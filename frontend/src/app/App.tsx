@@ -1,6 +1,6 @@
 import { UserButton } from "@clerk/react";
 import { ArtifactPanel } from "../features/artifacts/ArtifactPanel";
-import { FileWorkspaceProvider } from "../features/artifacts/FileWorkspaceProvider";
+import { FileDataProvider } from "../features/artifacts/FileDataProvider";
 import { ChatPanel } from "../features/chat/ChatPanel";
 import { AuthGate, LoginPage, SignUpPage, useSessionUser } from "../features/auth/AuthPages";
 import { AccountPage, AdminPage } from "../features/billing/BillingPages";
@@ -37,7 +37,7 @@ function AuthenticatedRoute() {
 function Workspace() {
   const { user } = useSessionUser();
   return (
-    <FileWorkspaceProvider>
+    <FileDataProvider>
       <main className="app-shell">
         <WorkspaceHeader user={user} eyebrow="Conversation workspace" />
         <section className="workspace" aria-label="Conversation workspace">
@@ -45,19 +45,19 @@ function Workspace() {
           <ArtifactPanel />
         </section>
       </main>
-    </FileWorkspaceProvider>
+    </FileDataProvider>
   );
 }
 
 function FilesPage() {
   const { user } = useSessionUser();
   return (
-    <FileWorkspaceProvider>
+    <FileDataProvider>
       <main className="app-shell files-page-shell">
         <WorkspaceHeader user={user} eyebrow="Collection library" />
         <ArtifactPanel fullPage />
       </main>
-    </FileWorkspaceProvider>
+    </FileDataProvider>
   );
 }
 

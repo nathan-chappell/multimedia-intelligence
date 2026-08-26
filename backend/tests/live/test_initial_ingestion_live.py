@@ -21,7 +21,7 @@ from multimedia_intelligence.config import get_settings
 from multimedia_intelligence.context import ClientInfo, RequestContext
 from multimedia_intelligence.files.policy import FileRoute
 from multimedia_intelligence.observability import (
-    AgentRunLoggingHooks,
+    AgentRunHooks,
     RunCorrelation,
     build_run_config,
     configure_logging,
@@ -205,7 +205,7 @@ async def _run_live_agent(
     configure_logging(settings)
     group_id = f"pytest-{scenario}-{uuid4().hex[:8]}"
     correlation = RunCorrelation.create(group_id=group_id, turn_id=scenario)
-    hooks = AgentRunLoggingHooks(correlation)
+    hooks = AgentRunHooks(correlation)
     agent = AssistantGraph(model=LIVE_MODEL, hooks=hooks).root
     request_context = RequestContext(
         client=ClientInfo(user_id="test_user", username="behavioral-test")

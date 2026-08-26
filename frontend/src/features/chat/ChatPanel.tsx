@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { ChatKit, useChatKit } from "@openai/chatkit-react";
 
 import { executeFileClientTool } from "../artifacts/clientToolHandler";
-import { useFileWorkspace } from "../artifacts/useFileWorkspace";
+import { useConversationWorkspace } from "../artifacts/useFileData";
 import { authenticatedFetch, config } from "../../lib/config";
 
 export function ChatPanel() {
-  const fileWorkspace = useFileWorkspace();
+  const conversationWorkspace = useConversationWorkspace();
   const activeThreadRef = useRef<string | null>(null);
   const titleLoadGeneration = useRef(0);
   const toastTimer = useRef<number | undefined>(undefined);
@@ -59,7 +59,7 @@ export function ChatPanel() {
       fetch: authenticatedFetch,
     },
     onClientTool: async (toolCall) => {
-      return executeFileClientTool(fileWorkspace, toolCall);
+      return executeFileClientTool(conversationWorkspace, toolCall);
     },
     onEffect: ({ name, data }) => {
       if (name !== "app.toast") return;
@@ -79,13 +79,13 @@ export function ChatPanel() {
       setDraftTitle("");
       const generation = ++titleLoadGeneration.current;
       if (threadId) void loadTitle(threadId, generation);
-      fileWorkspace.setActiveThreadId(threadId);
+      conversationWorkspace.setActiveThreadId(threadId);
     },
     onThreadLoadStart: ({ threadId }) => {
-      fileWorkspace.restoreThread(threadId);
+      conversationWorkspace.restoreThread(threadId);
     },
     onResponseEnd: () => {
-      void fileWorkspace.refreshThreadFiles();
+      void conversationWorkspace.refreshThreadFiles();
     },
     history: {
       enabled: true,

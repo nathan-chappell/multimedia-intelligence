@@ -120,9 +120,12 @@ Then open <http://localhost:8000>.
 - **Root plus specialists:** the root discovers files and hands content work to modality specialists.
   Specialists return control after gathering evidence. ChatKit's model picker applies to the entire
   graph.
-- **Client tools:** the root can list staged files. Document and structured-data specialists own the
-  relevant text, PDF, CSV, and JSON browser tools. Results are typed evidence, not proof of durable
-  storage.
+- **Conversation workspace tools:** the root can list the current thread's included and browser-
+  staged files. Document and structured-data specialists own the relevant text, PDF, CSV, and JSON
+  browser tools. Collection selection never hides an existing thread include.
+- **Visible tool activity:** file tools stream native ChatKit workflow tasks while running and add
+  bounded, sanitized result cards when useful; signed URLs, binary content, and raw provider
+  payloads are never rendered.
 - **Separate dictation and file inspection:** ChatKit attachments stay disabled. Composer dictation
   forwards an ephemeral browser recording through the authenticated backend to
   `gpt-4o-mini-transcribe` without locally decoding or transforming it. Uploaded files are stored
@@ -144,6 +147,9 @@ Then open <http://localhost:8000>.
 - **Collections:** users create and globally select a collection in the file panel. New uploads and
   ingestion attempts inherit that selection. One lazily created OpenAI vector store still serves
   the user; `collection_id` attributes partition its files without multiplying stores.
+- **Conversation workspace:** each thread has an independent, reversible working set that may
+  include owned files from multiple collections plus browser-staged files and derived previews.
+  Browser tools operate only on this working set.
 - **Per-user retrieval:** each modality contributes tailored profiles, transcript shards,
   descriptions, source text, or page-aware PDF artifacts with provenance.
 - **Search routing:** `file_search` returns ranked metadata only. `get_file` and `get_transcript`

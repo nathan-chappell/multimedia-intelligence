@@ -16,7 +16,7 @@ from multimedia_intelligence.auth import (
 )
 from multimedia_intelligence.chat.store import ThreadRow
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
-from multimedia_intelligence.files.collections import selected_collection
+from multimedia_intelligence.files.collections import create_collection, selected_collection
 from multimedia_intelligence.files.domain import AssetState, IncludeState, ObjectLocation
 from multimedia_intelligence.files.records import (
     AssetRow,
@@ -194,7 +194,81 @@ async def test_saved_asset_history_is_scoped_to_the_thread_owner() -> None:
     await engine.dispose()
 
 
-async def test_derived_chart_list_and_content_are_owner_thread_and_collection_scoped() -> None:
+async def test_conversation_workspace_survives_collection_selection_changes() -> None:
+    engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
+    await initialize_schema(engine)
+    await ensure_builtin_admin(sessions, TEST_SETTINGS)
+    now = datetime.now(UTC)
+    thread = ThreadMetadata(id="thread_cross_collection", created_at=now)
+    async with sessions.begin() as session:
+        session.add(
+            ThreadRow(
+                id=thread.id,
+                conversation_id="conv_cross_collection",
+                owner_id=TEST_SETTINGS.admin_user_id,
+                created_at=now,
+                payload=thread.model_dump_json(),
+            )
+        )
+
+    blobs = RecordingBlobStore()
+    app = FastAPI()
+    app.include_router(
+        build_asset_router(sessions, TEST_SETTINGS, blobs),  # type: ignore[arg-type]
+        prefix="/api",
+    )
+    token, _ = mint_access_token(
+        AuthenticatedUser(
+            id=TEST_SETTINGS.admin_user_id,
+            username=TEST_SETTINGS.admin_username,
+            is_admin=True,
+        ),
+        TEST_SETTINGS,
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as client:
+        saved = await client.post(
+            "/api/assets",
+            params={"filename": "first-collection.txt", "thread_id": thread.id},
+            content=b"still in the workspace",
+            headers={"Content-Type": "text/plain"},
+        )
+        await create_collection(
+            sessions,
+            TEST_SETTINGS.admin_user_id,
+            "Second collection",
+            None,
+            select_created=True,
+        )
+
+        history = await client.get("/api/assets", params={"thread_id": thread.id})
+        content = await client.get(
+            f"/api/assets/{saved.json()['asset_id']}/content",
+            params={"thread_id": thread.id},
+        )
+        removed = await client.put(
+            f"/api/assets/{saved.json()['asset_id']}/inclusion",
+            json={"thread_id": thread.id, "included": False},
+        )
+        empty = await client.get("/api/assets", params={"thread_id": thread.id})
+        restored = await client.put(
+            f"/api/assets/{saved.json()['asset_id']}/inclusion",
+            json={"thread_id": thread.id, "included": True},
+        )
+
+    assert history.status_code == 200
+    assert [item["asset_id"] for item in history.json()] == [saved.json()["asset_id"]]
+    assert content.status_code == 200 and content.content == b"still in the workspace"
+    assert removed.status_code == 200 and removed.json()["included"] is False
+    assert empty.status_code == 200 and empty.json() == []
+    assert restored.status_code == 200 and restored.json()["included"] is True
+    await engine.dispose()
+
+
+async def test_derived_chart_list_and_content_are_owner_and_thread_scoped() -> None:
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     await initialize_schema(engine)
     await ensure_builtin_admin(sessions, TEST_SETTINGS)
@@ -272,6 +346,13 @@ async def test_derived_chart_list_and_content_are_owner_thread_and_collection_sc
         )
     blobs = RecordingBlobStore()
     blobs.objects["charts/chart.png"] = png
+    await create_collection(
+        sessions,
+        TEST_SETTINGS.admin_user_id,
+        "Different chart collection",
+        None,
+        select_created=True,
+    )
     app = FastAPI()
     app.include_router(
         build_asset_router(sessions, TEST_SETTINGS, blobs),  # type: ignore[arg-type]

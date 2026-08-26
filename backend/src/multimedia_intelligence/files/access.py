@@ -48,7 +48,6 @@ class ScopedAgentDataAccess:
     async def list_ready_file_references(
         self, thread_id: str
     ) -> tuple[ReadyFileReference, ...]:
-        collection_id = (await self._selected_collection()).id
         async with self.sessions() as session:
             rows = (
                 await session.execute(
@@ -59,7 +58,6 @@ class ScopedAgentDataAccess:
                         ThreadAssetIncludeRow.owner_id == self.owner_id,
                         ThreadAssetIncludeRow.state == IncludeState.READY,
                         AssetRow.owner_id == self.owner_id,
-                        AssetRow.collection_id == collection_id,
                         AssetRow.state == AssetState.STORED,
                     )
                     .order_by(AssetRow.filename.asc(), AssetRow.id.asc())
@@ -87,7 +85,6 @@ class ScopedAgentDataAccess:
         start: int,
         count: int,
     ) -> TextRangeResult:
-        collection_id = (await self._selected_collection()).id
         async with self.sessions() as session:
             asset = await session.scalar(
                 select(AssetRow)
@@ -98,7 +95,6 @@ class ScopedAgentDataAccess:
                     ThreadAssetIncludeRow.state == IncludeState.READY,
                     AssetRow.id == asset_id,
                     AssetRow.owner_id == self.owner_id,
-                    AssetRow.collection_id == collection_id,
                     AssetRow.state == AssetState.STORED,
                 )
             )
@@ -132,7 +128,6 @@ class ScopedAgentDataAccess:
         }
 
     async def ready_file_download_url(self, thread_id: str, asset_id: str) -> str:
-        collection_id = (await self._selected_collection()).id
         async with self.sessions() as session:
             asset = await session.scalar(
                 select(AssetRow)
@@ -143,7 +138,6 @@ class ScopedAgentDataAccess:
                     ThreadAssetIncludeRow.state == IncludeState.READY,
                     AssetRow.id == asset_id,
                     AssetRow.owner_id == self.owner_id,
-                    AssetRow.collection_id == collection_id,
                     AssetRow.state == AssetState.STORED,
                 )
             )
@@ -220,17 +214,6 @@ class ScopedAgentDataAccess:
         return await self.file_index.transcript_page(
             collection.owner_id, asset_id, start_seconds, end_seconds, cursor
         )
-
-    async def owned_file_download_url(self, asset_id: str) -> str:
-        collection = await self._selected_collection()
-        asset = await self._require_selected_asset(asset_id, collection)
-        location = ObjectLocation(
-            bucket=asset.bucket,
-            key=asset.object_key,
-            etag=asset.etag,
-            version_id=asset.version_id,
-        )
-        return await self.blob_store.signed_download_url(location, 300)
 
     async def _selected_collection(self) -> FileCollectionRow:
         return await selected_collection(

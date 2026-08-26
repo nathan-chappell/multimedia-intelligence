@@ -4,16 +4,18 @@ import { authenticatedFetch } from "../../lib/config";
 import { browserId } from "../../lib/browserId";
 import {
   classifyLocalFile,
-  FileWorkspaceContext,
+  CollectionLibraryContext,
+  ConversationWorkspaceContext,
   type FileCollection,
   type CollectionFileSummary,
   type HydratedLocalFile,
   type IncludedLocalFile,
   type ReconciliationSummary,
   type TransientArtifact,
-} from "./fileWorkspace";
+} from "./fileData";
 
-export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
+/** Coordinate collection-library and conversation-workspace state without conflating them. */
+export function FileDataProvider({ children }: { children: ReactNode }) {
   const [files, setFiles] = useState<IncludedLocalFile[]>([]);
   const [artifacts, setArtifacts] = useState<TransientArtifact[]>([]);
   const [collections, setCollections] = useState<FileCollection[]>([]);
@@ -299,6 +301,11 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     [loadSavedFiles],
   );
 
+  useEffect(() => {
+    const threadId = activeThreadRef.current;
+    if (threadId) void startHydration(threadId, false);
+  }, [startHydration]);
+
   const waitUntilReady = useCallback(async () => {
     while (true) {
       const threadId = activeThreadRef.current;
@@ -500,14 +507,8 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
           selected: collection.id === collectionId,
         })),
       );
-      if (activeThreadRef.current) {
-        updateFiles(() => []);
-        await startHydration(activeThreadRef.current, false, true);
-      } else {
-        updateFiles(() => []);
-      }
     },
-    [startHydration, updateFiles],
+    [],
   );
 
   const setCollectionPublic = useCallback(async (collectionId: string, isPublic: boolean) => {
@@ -533,22 +534,21 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     await loadCollectionFiles(selectedCollectionId, activeThreadRef.current);
   }, [selectedCollectionId, loadCollectionFiles]);
 
-  const setCollectionFileIncluded = useCallback(
+  const setFileIncluded = useCallback(
     async (assetId: string, included: boolean) => {
-      if (!selectedCollectionId) throw new Error("Select a collection first");
-      const selected = collections.find((collection) => collection.id === selectedCollectionId);
-      if (selected?.read_only) throw new Error("Public collection files are read-only");
       const threadId = activeThreadRef.current;
       if (!threadId) throw new Error("Start or select a conversation first");
       const response = await authenticatedFetch(
-        `/api/collections/${encodeURIComponent(selectedCollectionId)}/files/${encodeURIComponent(assetId)}/inclusion`,
+        `/api/assets/${encodeURIComponent(assetId)}/inclusion`,
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ thread_id: threadId, included }),
         },
       );
-      if (!response.ok) throw new Error(await apiError(response, "Could not update conversation files"));
+      if (!response.ok) {
+        throw new Error(await apiError(response, "Could not update the conversation workspace"));
+      }
       const result = (await response.json()) as { include_id: string | null };
       setCollectionFiles((current) =>
         current.map((file) =>
@@ -559,7 +559,17 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
       );
       await refreshThreadFiles();
     },
-    [collections, selectedCollectionId, refreshThreadFiles],
+    [refreshThreadFiles],
+  );
+
+  const setCollectionFileIncluded = useCallback(
+    async (assetId: string, included: boolean) => {
+      if (!selectedCollectionId) throw new Error("Select a collection first");
+      const selected = collections.find((collection) => collection.id === selectedCollectionId);
+      if (selected?.read_only) throw new Error("Public collection files are read-only");
+      await setFileIncluded(assetId, included);
+    },
+    [collections, selectedCollectionId, setFileIncluded],
   );
 
   const reconcileCollection = useCallback(async (): Promise<ReconciliationSummary> => {
@@ -583,14 +593,8 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
       });
       if (!response.ok) throw new Error(await apiError(response, "Could not create collection"));
       await loadCollections();
-      if (activeThreadRef.current) {
-        updateFiles(() => []);
-        await startHydration(activeThreadRef.current, false, true);
-      } else {
-        updateFiles(() => []);
-      }
     },
-    [loadCollections, startHydration, updateFiles],
+    [loadCollections],
   );
 
   const registerArtifact = useCallback(
@@ -615,15 +619,10 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const value = useMemo(
+  const workspaceValue = useMemo(
     () => ({
       files,
       artifacts,
-      collections,
-      collectionFiles,
-      collectionFilesLoading,
-      collectionFilesError,
-      selectedCollectionId,
       addFiles,
       removeFile,
       saveFile,
@@ -635,21 +634,11 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
       setActiveThreadId: changeActiveThread,
       restoreThread,
       refreshThreadFiles,
-      createCollection,
-      selectCollection,
-      setCollectionPublic,
-      refreshCollectionFiles,
-      setCollectionFileIncluded,
-      reconcileCollection,
+      setFileIncluded,
     }),
     [
       files,
       artifacts,
-      collections,
-      collectionFiles,
-      collectionFilesLoading,
-      collectionFilesError,
-      selectedCollectionId,
       addFiles,
       removeFile,
       saveFile,
@@ -661,6 +650,30 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
       changeActiveThread,
       restoreThread,
       refreshThreadFiles,
+      setFileIncluded,
+    ],
+  );
+
+  const libraryValue = useMemo(
+    () => ({
+      collections,
+      collectionFiles,
+      collectionFilesLoading,
+      collectionFilesError,
+      selectedCollectionId,
+      createCollection,
+      selectCollection,
+      setCollectionPublic,
+      refreshCollectionFiles,
+      setCollectionFileIncluded,
+      reconcileCollection,
+    }),
+    [
+      collections,
+      collectionFiles,
+      collectionFilesLoading,
+      collectionFilesError,
+      selectedCollectionId,
       createCollection,
       selectCollection,
       setCollectionPublic,
@@ -670,7 +683,13 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  return <FileWorkspaceContext.Provider value={value}>{children}</FileWorkspaceContext.Provider>;
+  return (
+    <CollectionLibraryContext.Provider value={libraryValue}>
+      <ConversationWorkspaceContext.Provider value={workspaceValue}>
+        {children}
+      </ConversationWorkspaceContext.Provider>
+    </CollectionLibraryContext.Provider>
+  );
 }
 
 interface SaveResponse {

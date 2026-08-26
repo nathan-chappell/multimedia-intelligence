@@ -5,6 +5,7 @@ const userMessageId = "msg_e2e_user";
 const toolItemId = "fc_e2e_list_files";
 const toolCallId = "call_e2e_list_files";
 const assistantMessageId = "msg_e2e_assistant";
+const workflowId = "workflow_e2e_tools";
 
 test("shows a host toast when ChatKit emits an application effect", async ({ page }) => {
   await authenticate(page);
@@ -120,7 +121,9 @@ test("completes a browser tool call and renders the agent response", async ({ pa
         name: "notes.md",
         route: "text",
       });
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
       await fulfillEvents(route, [
+        ...completedToolWorkflowEvents(),
         toolResultWidgetEvent(),
         ...assistantEvents("I found notes.md and can inspect it."),
       ]);
@@ -143,14 +146,15 @@ test("completes a browser tool call and renders the agent response", async ({ pa
   await composer.fill("Inspect my staged files.");
   await composer.press("Enter");
 
+  await expect(chat.getByText("Checking conversation workspace files")).toBeVisible();
   await expect(chat.getByText("I found notes.md and can inspect it.")).toBeVisible({
     timeout: 15_000,
   });
-  const resultSummary = chat.getByText("Found 1 conversation file");
+  const resultSummary = chat.getByText("Found 1 conversation file").last();
   await expect(resultSummary).toBeVisible();
-  await expect(chat.getByText("Browser tool result · List files")).toBeHidden();
+  await expect(chat.getByText("Workspace tool result · List files")).toBeHidden();
   await resultSummary.locator("..").getByRole("button").click();
-  await expect(chat.getByText("Browser tool result · List files")).toBeVisible();
+  await expect(chat.getByText("Workspace tool result · List files")).toBeVisible();
   await expect(chat.getByText('"route": "text"')).toBeVisible();
   expect(continuationSeen).toBe(true);
 });
@@ -485,6 +489,10 @@ function initialToolCallEvents(): object[] {
     },
     { type: "stream_options", stream_options: { allow_cancel: true } },
     {
+      type: "thread.item.added",
+      item: toolWorkflow("Waiting for the browser workspace result…", "loading"),
+    },
+    {
       type: "thread.item.done",
       item: {
         id: toolItemId,
@@ -498,6 +506,52 @@ function initialToolCallEvents(): object[] {
       },
     },
   ];
+}
+
+function completedToolWorkflowEvents(): object[] {
+  const completedTask = {
+    type: "custom",
+    title: "Checking conversation workspace files",
+    content: "Found 1 conversation file",
+    status_indicator: "complete",
+  };
+  return [
+    { type: "stream_options", stream_options: { allow_cancel: true } },
+    {
+      type: "thread.item.updated",
+      item_id: workflowId,
+      update: {
+        type: "workflow.task.updated",
+        task_index: 0,
+        task: completedTask,
+      },
+    },
+    {
+      type: "thread.item.done",
+      item: toolWorkflow("Found 1 conversation file", "complete"),
+    },
+  ];
+}
+
+function toolWorkflow(content: string, status: "loading" | "complete"): object {
+  return {
+    id: workflowId,
+    thread_id: threadId,
+    created_at: "2026-08-24T10:00:00Z",
+    type: "workflow",
+    workflow: {
+      type: "custom",
+      expanded: false,
+      tasks: [
+        {
+          type: "custom",
+          title: "Checking conversation workspace files",
+          content,
+          status_indicator: status,
+        },
+      ],
+    },
+  };
 }
 
 function assistantEvents(text: string): object[] {
@@ -581,7 +635,7 @@ function toolResultWidgetEvent(): object {
         children: [
           {
             type: "Caption",
-            value: "Browser tool result · List files",
+            value: "Workspace tool result · List files",
             color: "secondary",
             size: "sm",
           },

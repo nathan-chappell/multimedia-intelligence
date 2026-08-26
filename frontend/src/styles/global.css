@@ -375,6 +375,18 @@ h1 {
 .chatkit { display: block; flex: 1; width: 100%; }
 
 .artifact-panel { padding-bottom: 18px; }
+.file-section + .file-section { border-top: 1px solid rgba(191, 218, 207, 0.1); }
+.file-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+}
+.file-section-heading > div { min-width: 0; display: grid; gap: 3px; }
+.file-section-heading small { color: #81938c; font-size: 0.68rem; line-height: 1.35; }
+.workspace-section .artifact-content { padding-top: 0; }
+.workspace-file-list { display: grid; gap: 7px; }
 .collection-control { display: grid; gap: 6px; padding: 0 14px 12px; }
 .collection-control label { color: #8fa09a; font-size: 0.7rem; text-transform: uppercase; }
 .collection-control > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
@@ -537,6 +549,9 @@ h1 {
   background: rgba(11, 16, 21, 0.38);
 }
 .staged-file-row { grid-template-columns: 34px minmax(0, 1fr) auto auto; }
+.workspace-file-list .collection-file-row {
+  grid-template-columns: 34px minmax(0, 1fr) auto auto;
+}
 .staged-file-row > div, .collection-file-copy { min-width: 0; display: grid; gap: 2px; }
 .collection-file-copy strong, .staged-file-row strong {
   overflow: hidden;
@@ -598,6 +613,8 @@ h1 {
   .balance-chip, .nav-link { min-height: 44px; display: inline-flex; align-items: center; padding: 8px 11px; }
   .artifact-panel-page { border-radius: 14px; }
   .artifact-panel-page .panel-heading { min-height: 68px; }
+  .file-section-heading { align-items: flex-start; }
+  .file-section-heading small { max-width: 30ch; }
   .collection-control select, .collection-control button, .include-toggle, .staged-file-row button { min-height: 44px; }
   .collection-file-row { min-height: 66px; }
   .collection-secondary-actions { grid-template-columns: 1fr; }

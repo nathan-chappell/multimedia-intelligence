@@ -1,7 +1,7 @@
 import jmespath from "jmespath";
 import Papa from "papaparse";
 
-import type { FileRoute } from "./fileWorkspace";
+import type { FileRoute } from "./fileData";
 
 const MAX_INPUT_BYTES = 64 * 1024 * 1024;
 const MAX_ARRAY_RESULTS = 100;

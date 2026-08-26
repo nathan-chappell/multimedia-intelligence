@@ -12,7 +12,7 @@ from agents.usage import Usage
 
 from multimedia_intelligence.billing.service import BillingService
 from multimedia_intelligence.observability import (
-    AgentRunLoggingHooks,
+    AgentRunHooks,
     RunCorrelation,
     build_run_config,
     configure_logging,
@@ -67,7 +67,7 @@ def test_turn_correlation_and_resumed_trace_keep_the_same_trace_id() -> None:
 async def test_model_hook_logs_ids_and_usage_without_content(capsys: object) -> None:
     configure_logging(TEST_SETTINGS)
     correlation = RunCorrelation.create(group_id="thread-123", turn_id="message-456")
-    hook = AgentRunLoggingHooks(correlation)
+    hook = AgentRunHooks(correlation)
     agent: Agent[None] = Agent(name="Test specialist", model="gpt-5.6")
     context = RunContextWrapper(context=None)
     response = ModelResponse(
@@ -104,7 +104,7 @@ async def test_model_hook_appends_request_and_agent_span_correlated_cost() -> No
 
     billing = CapturingBilling()
     correlation = RunCorrelation.create(group_id="thread-123", turn_id="message-456")
-    hook = AgentRunLoggingHooks(
+    hook = AgentRunHooks(
         correlation,
         billing=cast(BillingService, billing),
         user_id="user_test",
@@ -132,7 +132,7 @@ async def test_model_hook_appends_request_and_agent_span_correlated_cost() -> No
 
 async def test_handoff_hook_logs_only_agent_names(capsys: object) -> None:
     configure_logging(TEST_SETTINGS)
-    hook = AgentRunLoggingHooks(RunCorrelation.create(group_id="thread-123", turn_id="message-456"))
+    hook = AgentRunHooks(RunCorrelation.create(group_id="thread-123", turn_id="message-456"))
     context = RunContextWrapper(context=None)
     source: Agent[None] = Agent(name="Root conversation agent")
     target: Agent[None] = Agent(name="Structured data specialist")

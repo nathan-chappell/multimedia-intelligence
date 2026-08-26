@@ -21,15 +21,19 @@ from chatkit.types import (
     AudioInput,
     ClientEffectEvent,
     ClientToolCallItem,
+    CustomTask,
     FeedbackKind,
     ProgressUpdateEvent,
     ThreadItem,
     ThreadItemDoneEvent,
+    ThreadItemUpdatedEvent,
     ThreadMetadata,
     ThreadStreamEvent,
     TranscriptionResult,
     UserMessageItem,
     WidgetItem,
+    WorkflowItem,
+    WorkflowTaskUpdated,
 )
 from fastapi import HTTPException
 from openai import BadRequestError
@@ -52,7 +56,7 @@ from multimedia_intelligence.files.client_results import (
 )
 from multimedia_intelligence.files.client_tools import PDF_RANDOM_SAMPLE
 from multimedia_intelligence.observability import (
-    AgentRunLoggingHooks,
+    AgentRunHooks,
     RunCorrelation,
     build_run_config,
     log_event,
@@ -64,7 +68,11 @@ from multimedia_intelligence.openai_metadata import response_metadata, safety_id
 from .conversations import ConversationRepair
 from .models import resolve_chat_model
 from .store import SqlAlchemyChatKitStore
-from .tool_results import build_tool_result_widget, tool_result_widget_id
+from .tool_results import (
+    build_tool_result_widget,
+    tool_result_summary,
+    tool_result_widget_id,
+)
 from .transcription import TranscriptionGateway
 
 MAX_RECENT_ITEMS = 40
@@ -136,6 +144,19 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
     ) -> None:
         await self.chat_store.save_feedback(thread_id, item_ids, feedback, context)
 
+    async def handle_stream_cancelled(
+        self,
+        thread: ThreadMetadata,
+        pending_items: list[ThreadItem],
+        context: RequestContext,
+    ) -> None:
+        for item in pending_items:
+            if isinstance(item, WorkflowItem) and self._finish_loading_tasks(
+                item, "Cancelled before the tool completed"
+            ):
+                await self.store.save_item(thread.id, item, context)
+        await super().handle_stream_cancelled(thread, pending_items, context)
+
     @staticmethod
     def _toast(*, level: str, message: str, title: str | None = None) -> ClientEffectEvent:
         data: dict[str, object] = {"level": level, "message": message}
@@ -188,13 +209,6 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
                     level="danger", title="Credit required", message=str(error.detail)
                 )
                 return
-        yield ProgressUpdateEvent(
-            text=(
-                "Reviewing the conversation and selected collection."
-                if input_user_message is not None
-                else "Continuing with the browser file result."
-            )
-        )
         items_page = await self.store.load_thread_items(
             thread.id,
             after=None,
@@ -256,12 +270,17 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
             context=selected_context,
         )
         if continuation_tool is not None:
+            activity_update = self._complete_client_tool_activity(items, continuation_tool)
+            if activity_update is not None:
+                workflow, activity_event = activity_update
+                yield activity_event
+                yield ThreadItemDoneEvent(item=workflow)
             result_widget_id = tool_result_widget_id(continuation_tool)
             if all(item.id != result_widget_id for item in items):
                 result_widget = build_tool_result_widget(continuation_tool)
                 await self.store.save_item(thread.id, result_widget, context)
                 yield ThreadItemDoneEvent(item=result_widget)
-        hooks = AgentRunLoggingHooks(
+        hooks = AgentRunHooks(
             correlation,
             billing=self.billing,
             user_id=context.user_id,
@@ -377,7 +396,7 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
         agent_input: list[TResponseInputItem],
         thread: ThreadMetadata,
         context: RequestContext,
-        hooks: AgentRunLoggingHooks,
+        hooks: AgentRunHooks,
         conversation_id: str,
         run_config: Any,
         correlation: RunCorrelation,
@@ -396,15 +415,22 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
             run_config=run_config,
         )
         emitted_client_tool = False
-        async for event in stream_agent_response(agent_context, result):
-            if isinstance(event, ThreadItemDoneEvent) and isinstance(
-                event.item, ClientToolCallItem
+        try:
+            async for event in stream_agent_response(agent_context, result):
+                if isinstance(event, ThreadItemDoneEvent) and isinstance(
+                    event.item, ClientToolCallItem
+                ):
+                    emitted_client_tool = True
+                    # The adapter has emitted the pending browser call; clear its marker
+                    # so downstream recovery cannot interpret it as a second call.
+                    agent_context.client_tool_call = None
+                yield event
+        except Exception:
+            if agent_context.workflow_item is not None and self._finish_loading_tasks(
+                agent_context.workflow_item, "Tool stopped before completion"
             ):
-                emitted_client_tool = True
-                # The adapter has emitted the pending browser call; clear its marker
-                # so downstream recovery cannot interpret it as a second call.
-                agent_context.client_tool_call = None
-            yield event
+                yield ThreadItemDoneEvent(item=agent_context.workflow_item)
+            raise
         if not emitted_client_tool:
             recovered = self._recover_client_tool_event(result, agent_context, thread, context)
             if recovered is not None:
@@ -657,3 +683,73 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
                 return item
             return None
         return None
+
+    @staticmethod
+    def _complete_client_tool_activity(
+        items: Sequence[ThreadItem],
+        tool_call: ClientToolCallItem,
+    ) -> tuple[WorkflowItem, ThreadItemUpdatedEvent] | None:
+        """Complete the pending browser task that precedes a client-tool result."""
+
+        tool_index = next(
+            (index for index, item in enumerate(items) if item.id == tool_call.id),
+            None,
+        )
+        if tool_index is None:
+            return None
+        workflow = next(
+            (
+                item
+                for item in reversed(items[:tool_index])
+                if isinstance(item, WorkflowItem)
+            ),
+            None,
+        )
+        if workflow is None:
+            return None
+        task_index = next(
+            (
+                index
+                for index in range(len(workflow.workflow.tasks) - 1, -1, -1)
+                if isinstance(workflow.workflow.tasks[index], CustomTask)
+                and workflow.workflow.tasks[index].status_indicator == "loading"
+            ),
+            None,
+        )
+        if task_index is None:
+            return None
+        current = workflow.workflow.tasks[task_index]
+        assert isinstance(current, CustomTask)
+        output = tool_call.output if isinstance(tool_call.output, dict) else {}
+        if output.get("ok") is False:
+            error = output.get("error")
+            content = error.strip()[:300] if isinstance(error, str) else "Workspace tool failed"
+        else:
+            content = tool_result_summary(tool_call.name, output)
+        completed = CustomTask(
+            title=current.title,
+            content=content,
+            status_indicator="complete",
+        )
+        workflow.workflow.tasks[task_index] = completed
+        return (
+            workflow,
+            ThreadItemUpdatedEvent(
+                item_id=workflow.id,
+                update=WorkflowTaskUpdated(task=completed, task_index=task_index),
+            ),
+        )
+
+    @staticmethod
+    def _finish_loading_tasks(workflow: WorkflowItem, content: str) -> bool:
+        changed = False
+        for index, task in enumerate(workflow.workflow.tasks):
+            if not isinstance(task, CustomTask) or task.status_indicator != "loading":
+                continue
+            workflow.workflow.tasks[index] = CustomTask(
+                title=task.title,
+                content=content,
+                status_indicator="complete",
+            )
+            changed = True
+        return changed

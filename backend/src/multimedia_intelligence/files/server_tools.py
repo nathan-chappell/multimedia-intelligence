@@ -25,7 +25,7 @@ def build_durable_text_tools() -> list[Tool]:
         start: Annotated[int, Field(ge=0)] = 0,
         count: Annotated[int, Field(ge=1, le=65_536)] = 16_384,
     ) -> TextRangeResult:
-        """Read a bounded UTF-8 byte range from a ready text, JSON, or CSV file."""
+        """Read a bounded UTF-8 byte range from a ready conversation-workspace text file."""
 
         return await _access(ctx).read_ready_text_range(
             ctx.context.thread.id, asset_id, start, count
@@ -51,7 +51,7 @@ def build_file_index_tools() -> list[Tool]:
             ),
         ] = None,
     ) -> ToolOutputText:
-        """Search the user's vector index; return discovery metadata without attachments."""
+        """Search the selected collection's index; return discovery metadata, not attachments."""
 
         results = await _access(ctx).file_search(query, max_results, optional_types)
         collection = await _access(ctx).collection_context()
@@ -69,7 +69,7 @@ def build_file_index_tools() -> list[Tool]:
         artifact_id: str | None = None,
         original: bool = False,
     ) -> list[ToolOutputText | ToolOutputFileContent | ToolOutputImage]:
-        """Hydrate a discovered artifact as text, an image input, or a PDF file input."""
+        """Hydrate a selected-collection artifact as text, an image, or a PDF input."""
 
         result = await _access(ctx).get_file(asset_id, artifact_id, original)
         metadata = {key: value for key, value in result.items() if key != "url"}
@@ -97,7 +97,7 @@ def build_file_index_tools() -> list[Tool]:
         end_seconds: Annotated[float | None, Field(ge=0)] = None,
         cursor: str | None = None,
     ) -> TranscriptPageResult:
-        """Read a timestamp-continuous transcript range, paginating when needed."""
+        """Read a selected-collection transcript range, paginating when needed."""
 
         if start_seconds is not None and end_seconds is not None and end_seconds < start_seconds:
             raise ValueError("end_seconds must be greater than or equal to start_seconds")

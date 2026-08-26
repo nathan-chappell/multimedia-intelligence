@@ -1,5 +1,6 @@
 import { createContext } from "react";
 
+/** Browser and durable file routes shared by collection and workspace views. */
 export type FileRoute =
   | "text"
   | "json"
@@ -77,14 +78,9 @@ export interface TransientArtifact {
   durability?: "transient" | "saved";
 }
 
-export interface FileWorkspaceValue {
+export interface ConversationWorkspaceValue {
   files: IncludedLocalFile[];
   artifacts: TransientArtifact[];
-  collections: FileCollection[];
-  collectionFiles: CollectionFileSummary[];
-  collectionFilesLoading: boolean;
-  collectionFilesError: string | null;
-  selectedCollectionId: string | null;
   addFiles: (files: FileList | readonly File[]) => void;
   removeFile: (assetId: string) => void;
   saveFile: (assetId: string) => Promise<void>;
@@ -95,12 +91,7 @@ export interface FileWorkspaceValue {
   setActiveThreadId: (threadId: string | null) => void;
   restoreThread: (threadId: string) => void;
   refreshThreadFiles: () => Promise<void>;
-  createCollection: (name: string, description?: string) => Promise<void>;
-  selectCollection: (collectionId: string) => Promise<void>;
-  setCollectionPublic: (collectionId: string, isPublic: boolean) => Promise<void>;
-  refreshCollectionFiles: () => Promise<void>;
-  setCollectionFileIncluded: (assetId: string, included: boolean) => Promise<void>;
-  reconcileCollection: () => Promise<ReconciliationSummary>;
+  setFileIncluded: (assetId: string, included: boolean) => Promise<void>;
   registerArtifact: (
     sourceAssetId: string,
     kind: TransientArtifact["kind"],
@@ -109,7 +100,23 @@ export interface FileWorkspaceValue {
   ) => TransientArtifact;
 }
 
-export const FileWorkspaceContext = createContext<FileWorkspaceValue | null>(null);
+export interface CollectionLibraryValue {
+  collections: FileCollection[];
+  collectionFiles: CollectionFileSummary[];
+  collectionFilesLoading: boolean;
+  collectionFilesError: string | null;
+  selectedCollectionId: string | null;
+  createCollection: (name: string, description?: string) => Promise<void>;
+  selectCollection: (collectionId: string) => Promise<void>;
+  setCollectionPublic: (collectionId: string, isPublic: boolean) => Promise<void>;
+  refreshCollectionFiles: () => Promise<void>;
+  setCollectionFileIncluded: (assetId: string, included: boolean) => Promise<void>;
+  reconcileCollection: () => Promise<ReconciliationSummary>;
+}
+
+export const ConversationWorkspaceContext =
+  createContext<ConversationWorkspaceValue | null>(null);
+export const CollectionLibraryContext = createContext<CollectionLibraryValue | null>(null);
 
 const textExtensions = new Set(["md", "txt"]);
 const imageExtensions = new Set(["png", "jpeg", "jpg", "webp", "gif"]);

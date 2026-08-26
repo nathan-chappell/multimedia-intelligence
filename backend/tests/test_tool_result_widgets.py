@@ -1,10 +1,12 @@
 from datetime import UTC, datetime
 
-from chatkit.types import ClientToolCallItem
+from chatkit.types import ClientToolCallItem, CustomTask, Workflow, WorkflowItem
 
 from multimedia_intelligence.chat.server import MultimediaChatServer
 from multimedia_intelligence.chat.tool_results import (
+    build_server_tool_result_widget,
     build_tool_result_widget,
+    server_tool_result_widget_id,
     tool_result_widget_id,
 )
 
@@ -80,6 +82,39 @@ def test_large_text_result_widget_has_a_bounded_preview() -> None:
     }
 
 
+def test_collection_search_widget_is_curated_and_drops_internal_identifiers() -> None:
+    item = build_server_tool_result_widget(
+        thread_id="thread_1",
+        tool_call_id="call_search",
+        tool_name="file_search",
+        result={
+            "query": "quarterly roadmap",
+            "collection": {"collectionId": "col_1", "name": "Research", "secret": "no"},
+            "results": [
+                {
+                    "assetId": "asset_secret",
+                    "artifactId": "artifact_secret",
+                    "filename": "roadmap.pdf",
+                    "mediaType": "application/pdf",
+                    "modality": "pdf",
+                    "artifactKind": "page_range_pdf",
+                    "score": 0.91,
+                    "snippets": ["Relevant roadmap evidence"],
+                    "provenance": {"provider_file_id": "file_secret"},
+                }
+            ],
+        },
+    )
+
+    assert item.id == server_tool_result_widget_id("call_search")
+    assert item.copy_text is not None
+    assert "roadmap.pdf" in item.copy_text
+    assert "Relevant roadmap evidence" in item.copy_text
+    assert "asset_secret" not in item.copy_text
+    assert "artifact_secret" not in item.copy_text
+    assert "file_secret" not in item.copy_text
+
+
 async def test_saved_result_widget_does_not_hide_continuation_tool_output() -> None:
     tool_call = _tool_call(
         name="list_files",
@@ -106,3 +141,37 @@ async def test_saved_result_widget_does_not_hide_continuation_tool_output() -> N
             ),
         }
     ]
+
+
+def test_client_tool_completion_updates_the_pending_workflow_task() -> None:
+    workflow = WorkflowItem(
+        id="workflow_1",
+        thread_id="thread_1",
+        created_at=datetime.now(UTC),
+        workflow=Workflow(
+            type="custom",
+            tasks=[
+                CustomTask(
+                    title="Checking conversation workspace files",
+                    content="Waiting for the browser workspace result…",
+                    status_indicator="loading",
+                )
+            ],
+        ),
+    )
+    tool_call = _tool_call(
+        name="list_files",
+        output={"ok": True, "total": 2, "files": []},
+    )
+
+    result = MultimediaChatServer._complete_client_tool_activity(
+        [workflow, tool_call], tool_call
+    )
+
+    assert result is not None
+    completed, event = result
+    task = completed.workflow.tasks[0]
+    assert isinstance(task, CustomTask)
+    assert task.status_indicator == "complete"
+    assert task.content == "Found 2 conversation files"
+    assert event.item_id == workflow.id

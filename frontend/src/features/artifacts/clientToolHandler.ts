@@ -1,4 +1,4 @@
-import type { FileWorkspaceValue } from "./fileWorkspace";
+import type { ConversationWorkspaceValue } from "./fileData";
 import { authenticatedFetch } from "../../lib/config";
 
 export interface ChatKitClientToolCall {
@@ -7,7 +7,7 @@ export interface ChatKitClientToolCall {
 }
 
 export async function executeFileClientTool(
-  workspace: FileWorkspaceValue,
+  workspace: ConversationWorkspaceValue,
   toolCall: ChatKitClientToolCall,
 ): Promise<Record<string, unknown>> {
   try {
@@ -22,7 +22,7 @@ export async function executeFileClientTool(
 }
 
 async function execute(
-  workspace: FileWorkspaceValue,
+  workspace: ConversationWorkspaceValue,
   { name, params }: ChatKitClientToolCall,
 ): Promise<Record<string, unknown>> {
   await workspace.waitUntilReady();
@@ -179,7 +179,7 @@ async function execute(
 }
 
 function transientArtifactResult(
-  artifact: ReturnType<FileWorkspaceValue["registerArtifact"]>,
+  artifact: ReturnType<ConversationWorkspaceValue["registerArtifact"]>,
   blob: Blob,
 ): Record<string, unknown> {
   return {

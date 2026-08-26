@@ -98,7 +98,7 @@ test("mobile file library is separate, dense, and preserves conversation inclusi
   await expect(page.getByText("interview-demo-notes.md")).toBeVisible();
   await expect(page.getByText("2 indexed")).toBeVisible();
   await page.getByRole("button", { name: "Add" }).click();
-  await expect(page.getByRole("button", { name: "Included" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "In workspace" })).toBeVisible();
   const hasHorizontalOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
   );

@@ -19,6 +19,7 @@ from agents.tracing.traces import TraceState, reattach_trace
 
 from multimedia_intelligence.billing.pricing import token_cost_microusd
 from multimedia_intelligence.billing.service import BillingService
+from multimedia_intelligence.chat.tool_activity import ToolActivityReporter
 from multimedia_intelligence.config import Settings
 
 LOGGER_NAME = "multimedia_intelligence.agent_runs"
@@ -76,7 +77,7 @@ def configure_logging(settings: Settings) -> None:
     """Configure content-safe application and agent lifecycle logging.
 
     The OpenAI and Agents SDK HTTP loggers stay at WARNING because their debug output can
-    contain request bodies. Model/tool lifecycle metadata is emitted by ``AgentRunLoggingHooks``.
+    contain request bodies. Safe lifecycle metadata is emitted by ``AgentRunHooks``.
     """
 
     logger = logging.getLogger(LOGGER_NAME)
@@ -194,8 +195,8 @@ def _tool_call_id(context: RunContextWrapper[Any]) -> str | None:
     return value if isinstance(value, str) else None
 
 
-class AgentRunLoggingHooks(RunHooks[Any]):
-    """Log agent/model/tool lifecycle metadata while deliberately excluding content."""
+class AgentRunHooks(RunHooks[Any]):
+    """Coordinate safe lifecycle logging, billing, and user-facing tool activity."""
 
     def __init__(
         self,
@@ -211,6 +212,7 @@ class AgentRunLoggingHooks(RunHooks[Any]):
         self.user_id = user_id
         self.thread_id = thread_id
         self.settings = settings
+        self.tool_activity = ToolActivityReporter(thread_id) if thread_id is not None else None
 
     def _log(self, event: str, **fields: object) -> None:
         log_event(event, **self.correlation.fields(), **fields)
@@ -319,6 +321,16 @@ class AgentRunLoggingHooks(RunHooks[Any]):
         agent: Agent[Any],
         tool: Tool,
     ) -> None:
+        if self.tool_activity is not None:
+            try:
+                await self.tool_activity.start(context, tool.name, _tool_call_id(context))
+            except Exception as error:
+                self._log(
+                    "agent.tool.activity.error",
+                    tool=tool.name,
+                    phase="start",
+                    reason=type(error).__name__,
+                )
         self._log(
             "agent.tool.start",
             agent=agent.name,
@@ -333,6 +345,16 @@ class AgentRunLoggingHooks(RunHooks[Any]):
         tool: Tool,
         result: object,
     ) -> None:
+        if self.tool_activity is not None:
+            try:
+                await self.tool_activity.end(context, tool.name, _tool_call_id(context), result)
+            except Exception as error:
+                self._log(
+                    "agent.tool.activity.error",
+                    tool=tool.name,
+                    phase="end",
+                    reason=type(error).__name__,
+                )
         self._log(
             "agent.tool.end",
             agent=agent.name,

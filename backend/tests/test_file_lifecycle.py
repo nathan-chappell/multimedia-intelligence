@@ -6,7 +6,7 @@ from multimedia_intelligence.auth import ensure_builtin_admin
 from multimedia_intelligence.chat.store import ThreadRow
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
 from multimedia_intelligence.files.access import ScopedAgentDataAccess
-from multimedia_intelligence.files.collections import selected_collection
+from multimedia_intelligence.files.collections import create_collection, selected_collection
 from multimedia_intelligence.files.domain import (
     AssetState,
     IncludeState,
@@ -80,6 +80,13 @@ async def test_ready_references_are_scoped_and_assets_remain_available() -> None
         )
 
     blob_store = ReadOnlyBlobStore(b"ready file contents")
+    await create_collection(
+        sessions,
+        TEST_SETTINGS.admin_user_id,
+        "Different selected collection",
+        None,
+        select_created=True,
+    )
     access = ScopedAgentDataAccess(
         sessions,
         TEST_SETTINGS.admin_user_id,

@@ -58,7 +58,99 @@ test("stages a conversation file and offers save", async ({ page }) => {
 
   await expect(page.getByText("exchange-rates.csv")).toBeVisible();
   await expect(page.getByRole("status")).toContainText("1 file(s) staged");
-  await expect(page.getByText("Ready to upload")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeVisible();
-  await expect(page.locator(".counter")).toHaveText("0");
+  await expect(page.getByText("Collection", { exact: true })).toBeVisible();
+  await expect(
+    page.getByLabel("Library & workspace").getByText("Conversation workspace", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Browser staged")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Upload", exact: true })).toBeVisible();
+});
+
+test("keeps conversation workspace files when the selected collection changes", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("e2e_clerk_token", "test-token");
+    window.sessionStorage.setItem("mi_active_thread_id", "thread_workspace");
+  });
+  await page.route("**/api/auth/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "test-user",
+        username: "tester",
+        email: "tester@example.com",
+        full_name: "Test User",
+        role: "user",
+        is_admin: false,
+        balance_microusd: 5_000_000,
+      }),
+    }),
+  );
+  const collections = [
+    {
+      id: "collection_one",
+      name: "Collection one",
+      description: null,
+      selected: true,
+      is_public: false,
+      owned: true,
+      can_manage: true,
+      read_only: false,
+    },
+    {
+      id: "collection_two",
+      name: "Collection two",
+      description: null,
+      selected: false,
+      is_public: false,
+      owned: true,
+      can_manage: true,
+      read_only: false,
+    },
+  ];
+  await page.route("**/api/collections/selection", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ...collections[1], selected: true }),
+    }),
+  );
+  await page.route("**/api/collections", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(collections) }),
+  );
+  await page.route("**/api/collections/*/files**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ items: [], total: 0, limit: 100, offset: 0 }),
+    }),
+  );
+  await page.route("**/api/assets/derived?**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
+  );
+  await page.route("**/api/assets?**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([
+        {
+          asset_id: "asset_workspace",
+          include_id: "include_workspace",
+          filename: "workspace-notes.md",
+          media_type: "text/markdown",
+          size_bytes: 128,
+          collection_id: "collection_one",
+        },
+      ]),
+    }),
+  );
+  await page.route("**/chatkit", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: "{}" }),
+  );
+
+  await page.goto("/files");
+  await expect(page.getByText("workspace-notes.md")).toBeVisible();
+  await page.getByLabel("Active collection").selectOption("collection_two");
+  await expect(page.getByLabel("Active collection")).toHaveValue("collection_two");
+  await expect(page.getByText("workspace-notes.md")).toBeVisible();
 });
