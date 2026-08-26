@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -12,6 +12,11 @@ from multimedia_intelligence.auth import (
     require_admin,
 )
 from multimedia_intelligence.billing import BillingService
+from multimedia_intelligence.billing.attribution import (
+    OpenAIResponseAttributionGateway,
+    ResponseAttributionGateway,
+    ResponseAttributionUnavailable,
+)
 from multimedia_intelligence.billing.models import CouponRow, LedgerEventRow
 from multimedia_intelligence.config import Settings
 
@@ -40,6 +45,11 @@ class LedgerPage(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class LedgerAttribution(BaseModel):
+    event: LedgerEventPublic
+    provider_response: dict[str, object] | None
 
 
 class RedeemCouponRequest(BaseModel):
@@ -126,11 +136,18 @@ def _coupon(row: CouponRow, clear_code: str | None = None) -> CouponPublic:
 
 
 def build_billing_router(
-    sessions: async_sessionmaker[AsyncSession], settings: Settings
+    sessions: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    response_attribution: ResponseAttributionGateway | None = None,
 ) -> APIRouter:
     router = APIRouter(tags=["billing"])
     current_user = build_current_user_dependency(sessions, settings)
     billing = BillingService(sessions, settings)
+    response_gateway = response_attribution or (
+        OpenAIResponseAttributionGateway(settings.openai_api_key)
+        if settings.openai_api_key
+        else None
+    )
 
     @router.get("/billing/ledger", response_model=LedgerPage)
     async def own_ledger(
@@ -157,6 +174,30 @@ def build_billing_router(
             user_id=user.id,
             balance_microusd=await billing.balance_microusd(user.id),
         )
+
+    @router.get(
+        "/billing/ledger/{event_id}/attribution",
+        response_model=LedgerAttribution,
+    )
+    async def ledger_attribution(
+        event_id: str,
+        user: Annotated[AuthenticatedUser, Depends(current_user)],
+    ) -> LedgerAttribution:
+        event = await billing.event(event_id)
+        if event is None or (not user.is_admin and event.user_id != user.id):
+            raise HTTPException(status_code=404, detail="Ledger event not found")
+        if event.provider_response_id is None:
+            return LedgerAttribution(event=_event(event), provider_response=None)
+        if response_gateway is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="OpenAI response retrieval is not configured.",
+            )
+        try:
+            provider_response = await response_gateway.retrieve(event.provider_response_id)
+        except ResponseAttributionUnavailable as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        return LedgerAttribution(event=_event(event), provider_response=provider_response)
 
     @router.get("/admin/billing/ledger", response_model=LedgerPage)
     async def admin_ledger(

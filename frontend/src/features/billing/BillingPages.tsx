@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { UserButton } from "@clerk/react";
 
 import { useSessionUser, type SessionUser } from "../auth/AuthPages";
@@ -25,6 +25,13 @@ interface LedgerPageResponse {
   balance_microusd: number | null;
   items: LedgerEvent[];
   total: number;
+  limit: number;
+  offset: number;
+}
+
+interface LedgerAttributionResponse {
+  event: LedgerEvent;
+  provider_response: Record<string, unknown> | null;
 }
 
 interface Coupon {
@@ -39,17 +46,22 @@ interface Coupon {
   expires_at: string | null;
 }
 
+const LEDGER_PAGE_SIZE = 10;
+
 export function AccountPage() {
   const { user, reload } = useSessionUser();
   const [ledger, setLedger] = useState<LedgerPageResponse>();
+  const [ledgerOffset, setLedgerOffset] = useState(0);
   const [code, setCode] = useState("");
   const [message, setMessage] = useState<string>();
 
-  const load = useCallback(async () => {
-    const response = await authenticatedFetch("/api/billing/ledger");
+  const load = useCallback(async (offset = ledgerOffset) => {
+    const response = await authenticatedFetch(
+      `/api/billing/ledger?limit=${LEDGER_PAGE_SIZE}&offset=${offset}`,
+    );
     if (!response.ok) throw new Error(await errorDetail(response));
     setLedger((await response.json()) as LedgerPageResponse);
-  }, []);
+  }, [ledgerOffset]);
 
   useEffect(() => {
     queueMicrotask(() => void load());
@@ -69,7 +81,8 @@ export function AccountPage() {
     }
     setCode("");
     setMessage("Coupon redeemed.");
-    await Promise.all([load(), reload()]);
+    setLedgerOffset(0);
+    await Promise.all([load(0), reload()]);
   }
 
   return (
@@ -101,40 +114,56 @@ export function AccountPage() {
           {message && <p className="redeem-message" role="status">{message}</p>}
         </section>
       </section>
-      <LedgerList items={ledger?.items ?? []} />
+      <LedgerList
+        page={ledger}
+        onOffsetChange={setLedgerOffset}
+      />
     </BillingShell>
   );
 }
 
 export function AdminPage() {
   const [users, setUsers] = useState<SessionUser[]>([]);
-  const [ledger, setLedger] = useState<LedgerEvent[]>([]);
+  const [ledger, setLedger] = useState<LedgerPageResponse>();
+  const [ledgerOffset, setLedgerOffset] = useState(0);
   const [coupons, setCoupons] = useState<Coupon[]>([]);
   const [selectedUser, setSelectedUser] = useState("");
   const [message, setMessage] = useState<string>();
   const [clearCode, setClearCode] = useState<string>();
 
-  const load = useCallback(async () => {
-    const [userResponse, ledgerResponse, couponResponse] = await Promise.all([
+  const loadAdminData = useCallback(async () => {
+    const [userResponse, couponResponse] = await Promise.all([
       authenticatedFetch("/api/admin/users?limit=50"),
-      authenticatedFetch("/api/admin/billing/ledger?limit=100"),
       authenticatedFetch("/api/admin/billing/coupons"),
     ]);
-    for (const response of [userResponse, ledgerResponse, couponResponse]) {
+    for (const response of [userResponse, couponResponse]) {
       if (!response.ok) throw new Error(await errorDetail(response));
     }
     const userPage = await userResponse.json() as { items: SessionUser[] };
     setUsers(userPage.items);
     setSelectedUser((current) => current || userPage.items[0]?.id || "");
-    setLedger(((await ledgerResponse.json()) as LedgerPageResponse).items);
     setCoupons((await couponResponse.json()) as Coupon[]);
   }, []);
 
+  const loadLedger = useCallback(async (offset = ledgerOffset) => {
+    const response = await authenticatedFetch(
+      `/api/admin/billing/ledger?limit=${LEDGER_PAGE_SIZE}&offset=${offset}`,
+    );
+    if (!response.ok) throw new Error(await errorDetail(response));
+    setLedger((await response.json()) as LedgerPageResponse);
+  }, [ledgerOffset]);
+
   useEffect(() => {
     queueMicrotask(() => {
-      void load().catch((error: unknown) => setMessage(String(error)));
+      void loadAdminData().catch((error: unknown) => setMessage(String(error)));
     });
-  }, [load]);
+  }, [loadAdminData]);
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      void loadLedger().catch((error: unknown) => setMessage(String(error)));
+    });
+  }, [loadLedger]);
 
   async function adjust(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -149,7 +178,10 @@ export function AdminPage() {
       }),
     });
     setMessage(response.ok ? "Adjustment appended." : await errorDetail(response));
-    if (response.ok) await load();
+    if (response.ok) {
+      setLedgerOffset(0);
+      await Promise.all([loadAdminData(), loadLedger(0)]);
+    }
   }
 
   async function createCoupon(event: FormEvent<HTMLFormElement>) {
@@ -173,13 +205,13 @@ export function AdminPage() {
     const coupon = await response.json() as Coupon;
     setClearCode(coupon.clear_code ?? undefined);
     setMessage("Coupon created. Copy the clear code now; it will not be shown again.");
-    await load();
+    await loadAdminData();
   }
 
   async function deactivate(couponId: string) {
     const response = await authenticatedFetch(`/api/admin/billing/coupons/${couponId}/deactivate`, { method: "POST" });
     setMessage(response.ok ? "Coupon deactivated." : await errorDetail(response));
-    if (response.ok) await load();
+    if (response.ok) await loadAdminData();
   }
 
   return (
@@ -223,7 +255,11 @@ export function AdminPage() {
           ))}
         </div>
       </section>
-      <LedgerList items={ledger} users={users} />
+      <LedgerList
+        page={ledger}
+        users={users}
+        onOffsetChange={setLedgerOffset}
+      />
     </BillingShell>
   );
 }
@@ -240,37 +276,79 @@ function BillingShell({ title, children, compact = false }: { title: string; chi
   );
 }
 
-function LedgerList({ items, users = [] }: { items: LedgerEvent[]; users?: SessionUser[] }) {
+function LedgerList({
+  page,
+  users = [],
+  onOffsetChange,
+}: {
+  page: LedgerPageResponse | undefined;
+  users?: SessionUser[];
+  onOffsetChange: (offset: number) => void;
+}) {
+  const items = page?.items ?? [];
+  const total = page?.total ?? 0;
+  const limit = page?.limit ?? LEDGER_PAGE_SIZE;
+  const offset = page?.offset ?? 0;
   const usernames = new Map(users.map((user) => [user.id, user.username]));
   return (
     <section className="billing-card">
-      <h2>Immutable ledger</h2>
+      <div className="ledger-heading">
+        <h2>Immutable ledger</h2>
+        {total > 0 && (
+          <span>{offset + 1}–{Math.min(offset + items.length, total)} of {total}</span>
+        )}
+      </div>
       {items.length === 0 ? (
         <p className="compact-empty">No ledger events yet.</p>
       ) : (
-        <ol className="ledger-list">
-          {items.map((item) => (
-            <li key={item.id} className="ledger-row">
-              <div className="ledger-event">
-                {users.length > 0 && (
-                  <span className="ledger-user">{usernames.get(item.user_id) ?? shortId(item.user_id)}</span>
-                )}
-                <strong>{item.description ?? humanizeEvent(item.event_type)}</strong>
-                <time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time>
-              </div>
-              <AttributionPreview item={item} />
-              <strong className={`ledger-amount ${item.amount_microusd > 0 ? "credit" : "debit"}`}>
-                {formatSignedUsd(item.amount_microusd)}
-              </strong>
-            </li>
-          ))}
-        </ol>
+        <>
+          <ol className="ledger-list">
+            {items.map((item) => (
+              <li key={item.id} className="ledger-row">
+                <div className="ledger-event">
+                  {users.length > 0 && (
+                    <span className="ledger-user">{usernames.get(item.user_id) ?? shortId(item.user_id)}</span>
+                  )}
+                  <strong>{item.description ?? humanizeEvent(item.event_type)}</strong>
+                  <time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time>
+                </div>
+                <AttributionPreview item={item} />
+                <strong className={`ledger-amount ${item.amount_microusd > 0 ? "credit" : "debit"}`}>
+                  {formatSignedUsd(item.amount_microusd)}
+                </strong>
+              </li>
+            ))}
+          </ol>
+          {total > limit && (
+            <nav className="ledger-pagination" aria-label="Ledger pagination">
+              <button
+                type="button"
+                disabled={offset === 0}
+                onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+              >
+                Previous
+              </button>
+              <span>Page {Math.floor(offset / limit) + 1} of {Math.ceil(total / limit)}</span>
+              <button
+                type="button"
+                disabled={offset + items.length >= total}
+                onClick={() => onOffsetChange(offset + limit)}
+              >
+                Next
+              </button>
+            </nav>
+          )}
+        </>
       )}
     </section>
   );
 }
 
 function AttributionPreview({ item }: { item: LedgerEvent }) {
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  const [providerResponse, setProviderResponse] = useState<Record<string, unknown> | null>();
+  const [retrievalError, setRetrievalError] = useState<string>();
+  const [retrieving, setRetrieving] = useState(false);
   const attribution = item.provider_response_id
     ?? item.provider_request_id
     ?? item.agent_span_id
@@ -283,8 +361,50 @@ function AttributionPreview({ item }: { item: LedgerEvent }) {
     ["Thread", item.thread_id],
   ].filter((field): field is [string, string] => typeof field[1] === "string");
 
+  useEffect(() => {
+    function dismiss(event: PointerEvent) {
+      const details = detailsRef.current;
+      if (details?.open && event.target instanceof Node && !details.contains(event.target)) {
+        details.open = false;
+      }
+    }
+    function dismissWithEscape(event: KeyboardEvent) {
+      if (event.key === "Escape" && detailsRef.current?.open) {
+        detailsRef.current.open = false;
+        detailsRef.current.querySelector("summary")?.focus();
+      }
+    }
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", dismissWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", dismissWithEscape);
+    };
+  }, []);
+
+  async function retrieveProviderResponse() {
+    if (!item.provider_response_id || retrieving || providerResponse !== undefined) return;
+    setRetrieving(true);
+    setRetrievalError(undefined);
+    const response = await authenticatedFetch(`/api/billing/ledger/${item.id}/attribution`);
+    if (!response.ok) {
+      setRetrievalError(await errorDetail(response));
+      setRetrieving(false);
+      return;
+    }
+    const payload = await response.json() as LedgerAttributionResponse;
+    setProviderResponse(payload.provider_response);
+    setRetrieving(false);
+  }
+
   return (
-    <details className="attribution-preview">
+    <details
+      ref={detailsRef}
+      className="attribution-preview"
+      onToggle={(event) => {
+        if (event.currentTarget.open) void retrieveProviderResponse();
+      }}
+    >
       <summary title={attribution}>{shortId(attribution)}</summary>
       <div className="attribution-card">
         <strong>Event attribution</strong>
@@ -297,13 +417,19 @@ function AttributionPreview({ item }: { item: LedgerEvent }) {
           <pre>{JSON.stringify(item.metadata, null, 2)}</pre>
         )}
         {item.provider_response_id && (
-          <a
-            href="https://developers.openai.com/api/reference/java/resources/responses/methods/retrieve"
-            target="_blank"
-            rel="noreferrer"
-          >
-            OpenAI response retrieval reference ↗
-          </a>
+          <section className="provider-response">
+            <strong>Retrieved OpenAI response</strong>
+            {retrieving && <p role="status">Retrieving response…</p>}
+            {retrievalError && <p className="retrieval-error" role="alert">{retrievalError}</p>}
+            {providerResponse && <pre>{JSON.stringify(providerResponse, null, 2)}</pre>}
+            <a
+              href="https://developers.openai.com/api/reference/cli/resources/responses/methods/retrieve"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Responses retrieve API reference ↗
+            </a>
+          </section>
         )}
       </div>
     </details>

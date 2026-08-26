@@ -78,6 +78,10 @@ class BillingService:
             )
         return rows, total
 
+    async def event(self, event_id: str) -> LedgerEventRow | None:
+        async with self.sessions() as session:
+            return await session.get(LedgerEventRow, event_id)
+
     async def adjust(
         self, *, user_id: str, amount_microusd: int, actor_user_id: str, description: str
     ) -> LedgerEventRow:

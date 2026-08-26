@@ -91,11 +91,11 @@ test("navigates between authenticated pages without reloading or rechecking auth
   await page.route("**/api/assets**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
   );
-  await page.route("**/api/billing/ledger", (route) =>
+  await page.route("**/api/billing/ledger?**", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ balance_microusd: 5_000_000, items: [], total: 0 }),
+      body: JSON.stringify({ balance_microusd: 5_000_000, items: [], total: 0, limit: 10, offset: 0 }),
     }),
   );
   await page.route("**/api/admin/users**", (route) =>
@@ -109,7 +109,7 @@ test("navigates between authenticated pages without reloading or rechecking auth
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ balance_microusd: null, items: [], total: 0 }),
+      body: JSON.stringify({ balance_microusd: null, items: [], total: 0, limit: 10, offset: 0 }),
     }),
   );
   await page.route("**/api/admin/billing/coupons", (route) =>

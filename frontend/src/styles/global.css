@@ -109,6 +109,14 @@
 .redeem-section .redeem-message { margin-top: 0.6rem; color: #e4eee8; }
 
 .ledger-list { margin: 0; padding: 0; list-style: none; }
+.ledger-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.ledger-heading h2 { margin-bottom: 0.75rem; }
+.ledger-heading span { color: #91a39a; font-size: 0.75rem; white-space: nowrap; }
 .ledger-row {
   display: grid;
   grid-template-columns: minmax(210px, 2fr) minmax(130px, 1fr) auto;
@@ -163,6 +171,25 @@
 .attribution-card dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 0.72rem; }
 .attribution-card pre { max-height: 180px; overflow: auto; padding: 0.6rem; border-radius: 8px; background: #0a1115; font-size: 0.68rem; }
 .attribution-card a { display: inline-block; margin-top: 0.6rem; color: #8ec8b0; font-size: 0.75rem; }
+.provider-response {
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid rgba(151, 192, 175, 0.16);
+}
+.provider-response > strong { font-size: 0.78rem; }
+.provider-response .retrieval-error { color: #ffaaa2; }
+
+.ledger-pagination {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.7rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid rgba(151, 192, 175, 0.14);
+}
+.ledger-pagination span { color: #91a39a; font-size: 0.75rem; text-align: center; }
+.ledger-pagination button { padding: 0.45rem 0.7rem; font-size: 0.78rem; }
+.ledger-pagination button:disabled { cursor: default; opacity: 0.42; }
 
 .coupon-list { display: grid; gap: 0.6rem; }
 .coupon-list > div { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
@@ -187,6 +214,7 @@
   .ledger-amount { grid-column: 2; grid-row: 1; }
   .attribution-preview { grid-column: 1 / -1; }
   .attribution-card { position: relative; top: 0; right: auto; width: 100%; margin-top: 0.5rem; }
+  .ledger-pagination { gap: 0.45rem; }
   .coupon-list > div span { width: 100%; margin-left: 0; }
   .masthead-actions { flex-wrap: wrap; justify-content: flex-end; }
 }
