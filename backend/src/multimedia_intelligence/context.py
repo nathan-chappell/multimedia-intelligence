@@ -56,6 +56,19 @@ class TranscriptPageResult(TypedDict):
     warning: object
 
 
+class IndexCollectionFileResult(TypedDict):
+    ingestionId: str
+    assetId: str
+    collectionId: str
+    filename: str
+    route: str
+    status: str
+    reused: bool
+    indexedRepresentations: list[str]
+    providerFileCount: int
+    serverMediaProcessing: bool
+
+
 class AgentDataAccess(Protocol):
     async def collection_context(self) -> CollectionContext: ...
 
@@ -91,6 +104,12 @@ class AgentDataAccess(Protocol):
         end_seconds: float | None,
         cursor: str | None,
     ) -> TranscriptPageResult: ...
+
+    async def index_collection_file(
+        self,
+        asset_id: str,
+        description: str,
+    ) -> IndexCollectionFileResult: ...
 
 
 @dataclass(frozen=True, slots=True)

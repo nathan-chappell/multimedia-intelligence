@@ -10,14 +10,14 @@ from sqlalchemy import select
 from multimedia_intelligence.auth import ensure_builtin_admin
 from multimedia_intelligence.config import get_settings
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
-from multimedia_intelligence.demo.ingestion import (
-    FileIngestionService,
-    OpenAIVectorStoreGateway,
-)
 from multimedia_intelligence.files.access import ScopedAgentDataAccess
 from multimedia_intelligence.files.collections import selected_collection
 from multimedia_intelligence.files.domain import AssetState
-from multimedia_intelligence.files.indexing import FileIndexReader
+from multimedia_intelligence.files.indexing import (
+    FileIndexReader,
+    FileIndexWriter,
+    OpenAIVectorStoreGateway,
+)
 from multimedia_intelligence.files.records import (
     AssetIndexArtifactRow,
     AssetRow,
@@ -25,11 +25,7 @@ from multimedia_intelligence.files.records import (
 )
 
 from ..settings import TEST_SETTINGS
-from ..test_ingestion_integration import (
-    FixtureCaptions,
-    FixtureDiarization,
-    IntegrationBlobStore,
-)
+from ..test_ingestion_integration import IntegrationBlobStore
 
 FIXTURE_ROOT = Path(__file__).parents[3] / "tmp" / "files"
 
@@ -63,9 +59,7 @@ async def test_real_openai_vector_store_ingests_and_searches_csv_and_pdf() -> No
         {f"assets/{asset_id}": content for asset_id, (_, _, content) in inputs.items()}
     )
     vectors = OpenAIVectorStoreGateway(settings.openai_api_key)
-    service = FileIngestionService(
-        sessions, blobs, vectors, FixtureDiarization(), FixtureCaptions()
-    )
+    writer = FileIndexWriter(sessions, blobs, vectors)
     async with sessions.begin() as session:
         session.add_all(
             [
@@ -89,25 +83,15 @@ async def test_real_openai_vector_store_ingests_and_searches_csv_and_pdf() -> No
         )
 
     try:
-        csv_prepared = await service.prepare(TEST_SETTINGS.admin_user_id, "csv_live")
-        await service.commit(
+        await writer.index(
             TEST_SETTINGS.admin_user_id,
-            str(csv_prepared["ingestionId"]),
+            "csv_live",
             "US Treasury exchange rates by country and currency, including Afghanistan-Afghani.",
         )
-        pdf_prepared = await service.prepare(TEST_SETTINGS.admin_user_id, "pdf_live")
-        evidence = pdf_prepared["preparedEvidence"]
-        assert isinstance(evidence, dict)
-        ranges = evidence.get("proposedRanges")
-        images = evidence.get("proposedImages")
-        await service.commit(
+        await writer.index(
             TEST_SETTINGS.admin_user_id,
-            str(pdf_prepared["ingestionId"]),
+            "pdf_live",
             "Attention Is All You Need, introducing Transformer multi-head attention.",
-            ranges if pdf_prepared["status"] == "awaiting_guidance" else None,
-            [str(item["imageId"]) for item in images]
-            if pdf_prepared["status"] == "awaiting_guidance" and isinstance(images, list)
-            else None,
         )
 
         access = ScopedAgentDataAccess(
@@ -120,8 +104,9 @@ async def test_real_openai_vector_store_ingests_and_searches_csv_and_pdf() -> No
         pdf_hits = await access.file_search("Transformer multi-head attention", 5, ["pdf"])
         assert csv_hits and csv_hits[0]["assetId"] == "csv_live"
         assert pdf_hits and pdf_hits[0]["assetId"] == "pdf_live"
-        csv_profile = await access.get_file("csv_live", str(csv_hits[0]["artifactId"]))
-        assert "csv profile" in str(csv_profile["profile"]).casefold()
+        csv_file = await access.get_file("csv_live", str(csv_hits[0]["artifactId"]))
+        assert csv_file["inputKind"] == "text"
+        assert "Afghanistan" in str(csv_file.get("text") or csv_file.get("profile"))
         hydrated = await access.get_file("pdf_live", str(pdf_hits[0]["artifactId"]))
         assert hydrated["inputKind"] == "file"
     finally:

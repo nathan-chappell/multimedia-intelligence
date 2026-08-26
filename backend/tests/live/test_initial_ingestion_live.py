@@ -293,8 +293,7 @@ async def test_root_inspects_browser_file_without_server_processing(
             f"Expected one of {alternatives} for {scenario.route}; got {client_calls}"
         )
     assert scenario.overview_tool in result.agent_tool_calls
-    assert "prepare_ingestion" not in result.agent_tool_calls
-    assert "commit_ingestion" not in result.agent_tool_calls
+    assert "index_collection_file" not in result.agent_tool_calls
 
     output = str(result.result.final_output).casefold()
     assert len(output) >= 100, f"Expected a substantive strategy for {scenario.route}"

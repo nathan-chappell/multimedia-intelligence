@@ -11,6 +11,7 @@ from pydantic import Field
 
 from multimedia_intelligence.context import (
     AgentDataAccess,
+    IndexCollectionFileResult,
     RequestContext,
     TextRangeResult,
     TranscriptPageResult,
@@ -35,6 +36,20 @@ def build_durable_text_tools() -> list[Tool]:
 
 
 def build_file_index_tools() -> list[Tool]:
+    @function_tool(name_override="index_collection_file")
+    async def index_collection_file(
+        ctx: ToolContext[AgentContext[RequestContext]],
+        asset_id: str,
+        description: Annotated[str, Field(min_length=1, max_length=4_000)],
+    ) -> IndexCollectionFileResult:
+        """Index an owned selected-collection file after the user explicitly requests it.
+
+        The description becomes a durable searchable artifact. Provider-supported documents are
+        also attached in canonical form; the server does not parse or transform source media.
+        """
+
+        return await _access(ctx).index_collection_file(asset_id, description)
+
     @function_tool(name_override="file_search")
     async def file_search(
         ctx: ToolContext[AgentContext[RequestContext]],
@@ -104,6 +119,7 @@ def build_file_index_tools() -> list[Tool]:
         return await _access(ctx).get_transcript(asset_id, start_seconds, end_seconds, cursor)
 
     return [
+        index_collection_file,
         file_search,
         get_file,
         get_transcript,

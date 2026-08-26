@@ -6,7 +6,7 @@ from typing import cast
 import pytest
 from openai import AsyncOpenAI
 
-from multimedia_intelligence.demo.ingestion import OpenAIVectorStoreGateway
+from multimedia_intelligence.files.indexing import OpenAIVectorStoreGateway
 
 
 class RecordingFiles:
@@ -24,7 +24,11 @@ class RecordingVectorFiles:
 
     async def create_and_poll(self, **kwargs: object) -> SimpleNamespace:
         self.attached.append(kwargs)
-        return SimpleNamespace(id="file_user_data")
+        return SimpleNamespace(
+            id="file_user_data",
+            status="completed",
+            last_error=None,
+        )
 
 
 @pytest.mark.parametrize(

@@ -17,6 +17,7 @@ _MAX_SERIALIZED_PREVIEW_CHARS = 8_000
 _MAX_FALLBACK_PREVIEW_CHARS = 1_000
 
 _TOOL_LABELS = {
+    "index_collection_file": "Index collection file",
     "file_search": "Search collection",
     "get_file": "Open collection file",
     "get_transcript": "Read transcript",
@@ -134,6 +135,12 @@ def _build_result_widget(
 def tool_result_summary(tool_name: str, output: dict[str, Any]) -> str:
     if output.get("ok") is False:
         return f"{_TOOL_LABELS.get(tool_name, 'Tool')} failed"
+    if tool_name == "index_collection_file":
+        filename = output.get("filename")
+        reused = output.get("reused") is True
+        if isinstance(filename, str):
+            return f"{'Already indexed' if reused else 'Indexed'} {filename}"
+        return "Collection file indexed"
     if tool_name == "file_search":
         results = output.get("results")
         if isinstance(results, list):
@@ -183,6 +190,20 @@ def _display_preview(tool_name: str, output: dict[str, Any]) -> dict[str, object
             "error": output.get("error", "Tool failed"),
         }
 
+    if tool_name == "index_collection_file":
+        return _selected_fields(
+            output,
+            (
+                "filename",
+                "route",
+                "status",
+                "reused",
+                "indexedRepresentations",
+                "providerFileCount",
+                "serverMediaProcessing",
+            ),
+        )
+
     if tool_name == "file_search":
         collection = output.get("collection")
         public_collection = (
@@ -207,7 +228,9 @@ def _display_preview(tool_name: str, output: dict[str, Any]) -> dict[str, object
                             _excerpt(snippet, _MAX_PAGE_TEXT_CHARS)[0]
                             for snippet in snippets[:3]
                             if isinstance(snippet, str)
-                        ] if isinstance(snippets, list) else [],
+                        ]
+                        if isinstance(snippets, list)
+                        else [],
                     }
                 )
         return {
@@ -277,9 +300,7 @@ def _display_preview(tool_name: str, output: dict[str, Any]) -> dict[str, object
     if tool_name == "query_structured_data":
         value = output.get("value")
         value_json = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
-        value_excerpt, display_truncated = _excerpt(
-            value_json, _MAX_STRUCTURED_VALUE_CHARS
-        )
+        value_excerpt, display_truncated = _excerpt(value_json, _MAX_STRUCTURED_VALUE_CHARS)
         return {
             **_selected_fields(output, ("ok", "assetId", "expression", "truncated")),
             "valuePreview": value_excerpt,

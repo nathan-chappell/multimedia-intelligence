@@ -2,18 +2,25 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol, cast
+from uuid import uuid4
 
 from openai import AsyncOpenAI
-from sqlalchemy import select
+from openai.types.file_chunking_strategy_param import FileChunkingStrategyParam
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from multimedia_intelligence.config import Settings
-from multimedia_intelligence.context import TranscriptPageResult
+from multimedia_intelligence.context import IndexCollectionFileResult, TranscriptPageResult
+from multimedia_intelligence.openai_metadata import (
+    safety_identifier,
+    vector_file_attributes,
+    vector_store_metadata,
+)
 
 from .collections import selected_collection
 from .domain import AssetState, ObjectLocation
@@ -53,6 +60,15 @@ class ArtifactKind(StrEnum):
     PDF_TEXT = "pdf_text"
     PDF_IMAGE = "pdf_image"
     PDF_IMAGE_CAPTION = "pdf_image_caption"
+    SOURCE_FILE = "source_file"
+
+
+INDEXING_STRATEGY_VERSION = "2026-08-26-provider-native-v1"
+_PROVIDER_NATIVE_ROUTES = {
+    FileRoute.MARKUP,
+    FileRoute.JSON,
+    FileRoute.PDF,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,12 +119,88 @@ class VectorStoreReader(Protocol):
     ) -> tuple[VectorSearchHit, ...]: ...
 
 
+class VectorStoreWriter(Protocol):
+    async def create_store(self, owner_id: str) -> str: ...
+
+    async def upload(
+        self,
+        vector_store_id: str,
+        *,
+        filename: str,
+        content: bytes,
+        media_type: str,
+        attributes: Mapping[str, str | float | bool],
+        chunking_strategy: Mapping[str, object] | None = None,
+    ) -> str: ...
+
+    async def delete_file(self, file_id: str) -> None: ...
+
+
 class OpenAIVectorStoreGateway:
-    """Read-only OpenAI vector-store access used by the application server."""
+    """OpenAI vector-store access without any source-media processing."""
 
     def __init__(self, api_key: str, settings: Settings | None = None) -> None:
-        del settings
         self.client = AsyncOpenAI(api_key=api_key)
+        self.settings = settings
+
+    async def create_store(self, owner_id: str) -> str:
+        metadata = (
+            vector_store_metadata(
+                user_id=owner_id,
+                app_name=self.settings.app_name,
+                environment=self.settings.app_env,
+            )
+            if self.settings is not None
+            else {"owner_id": safety_identifier(owner_id)[:24], "schema_version": "1"}
+        )
+        store = await self.client.vector_stores.create(
+            name=f"multimedia-intelligence-{safety_identifier(owner_id)[:24]}",
+            description="Per-user semantic index for durable multimedia assets.",
+            metadata=metadata,
+        )
+        return store.id
+
+    async def upload(
+        self,
+        vector_store_id: str,
+        *,
+        filename: str,
+        content: bytes,
+        media_type: str,
+        attributes: Mapping[str, str | float | bool],
+        chunking_strategy: Mapping[str, object] | None = None,
+    ) -> str:
+        uploaded = await self.client.files.create(
+            file=(filename, content, media_type),
+            purpose="user_data",
+        )
+        try:
+            if chunking_strategy is None:
+                indexed = await self.client.vector_stores.files.create_and_poll(
+                    vector_store_id=vector_store_id,
+                    file_id=uploaded.id,
+                    attributes=dict(attributes),
+                )
+            else:
+                indexed = await self.client.vector_stores.files.create_and_poll(
+                    vector_store_id=vector_store_id,
+                    file_id=uploaded.id,
+                    attributes=dict(attributes),
+                    chunking_strategy=cast(FileChunkingStrategyParam, chunking_strategy),
+                )
+            if indexed.status != "completed":
+                error = indexed.last_error.message if indexed.last_error is not None else None
+                raise RuntimeError(error or f"Provider indexing ended with {indexed.status}")
+        except Exception:
+            try:
+                await self.client.files.delete(uploaded.id)
+            except Exception:
+                pass
+            raise
+        return indexed.id
+
+    async def delete_file(self, file_id: str) -> None:
+        await self.client.files.delete(file_id)
 
     async def list_files(self, vector_store_id: str) -> tuple[ProviderFileState, ...]:
         page = await self.client.vector_stores.files.list(vector_store_id, limit=100)
@@ -147,6 +239,348 @@ class OpenAIVectorStoreGateway:
             )
             for result in page.data
         )
+
+
+class FileIndexWriter:
+    """Index canonical files and model-authored descriptions without parsing media."""
+
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        blob_store: BlobStore,
+        vectors: VectorStoreWriter,
+    ) -> None:
+        self.sessions = sessions
+        self.blob_store = blob_store
+        self.vectors = vectors
+
+    async def index(
+        self,
+        owner_id: str,
+        asset_id: str,
+        description: str,
+    ) -> IndexCollectionFileResult:
+        description = description.strip()
+        if not description:
+            raise ValueError("A non-empty retrieval description is required")
+        if len(description) > 4_000:
+            raise ValueError("The retrieval description must be at most 4,000 characters")
+
+        asset = await self._owned_asset(owner_id, asset_id)
+        active = await self._active_attempt(owner_id, asset_id)
+        if active is not None:
+            return await self._result(active, asset, reused=True)
+
+        route = classify_file(asset.filename).route
+        ingestion = await self._create_attempt(asset, route, description)
+        provider_ids: list[str] = []
+        try:
+            description_artifact = await self._create_description_artifact(
+                ingestion, asset, description
+            )
+            artifacts = [description_artifact]
+            if route in _PROVIDER_NATIVE_ROUTES:
+                artifacts.append(await self._create_source_artifact(ingestion, asset))
+
+            store_id = await self._ensure_store(owner_id)
+            for artifact in artifacts:
+                provider_id = await self.vectors.upload(
+                    store_id,
+                    filename=_index_provider_filename(asset, artifact),
+                    content=await self._artifact_content(artifact, asset),
+                    media_type=artifact.media_type,
+                    attributes=_index_provider_attributes(asset, artifact),
+                    chunking_strategy=_index_chunking_strategy(artifact),
+                )
+                provider_ids.append(provider_id)
+                await self._mark_artifact_ready(artifact.id, provider_id)
+            old_provider_ids = await self._activate(ingestion.id, asset.id)
+        except Exception as error:
+            await self._mark_failed(ingestion.id, error)
+            for provider_id in provider_ids:
+                try:
+                    await self.vectors.delete_file(provider_id)
+                except Exception:
+                    continue
+            raise
+
+        for provider_id in old_provider_ids:
+            try:
+                await self.vectors.delete_file(provider_id)
+            except Exception:
+                continue
+        ready = await self._get_attempt(ingestion.id)
+        return await self._result(ready, asset, reused=False)
+
+    async def _owned_asset(self, owner_id: str, asset_id: str) -> AssetRow:
+        async with self.sessions() as session:
+            asset = await session.get(AssetRow, asset_id)
+        if (
+            asset is None
+            or asset.owner_id != owner_id
+            or asset.collection_id is None
+            or asset.state != AssetState.STORED
+        ):
+            raise ValueError("Asset is unavailable for indexing")
+        return asset
+
+    async def _active_attempt(self, owner_id: str, asset_id: str) -> AssetIngestionRow | None:
+        async with self.sessions() as session:
+            return cast(
+                AssetIngestionRow | None,
+                await session.scalar(
+                    select(AssetIngestionRow).where(
+                        AssetIngestionRow.owner_id == owner_id,
+                        AssetIngestionRow.asset_id == asset_id,
+                        AssetIngestionRow.is_active.is_(True),
+                        AssetIngestionRow.status == IngestionStatus.READY,
+                    )
+                ),
+            )
+
+    async def _create_attempt(
+        self,
+        asset: AssetRow,
+        route: FileRoute,
+        description: str,
+    ) -> AssetIngestionRow:
+        now = datetime.now(UTC)
+        async with self.sessions.begin() as session:
+            version = (
+                await session.scalar(
+                    select(func.max(AssetIngestionRow.version)).where(
+                        AssetIngestionRow.asset_id == asset.id
+                    )
+                )
+                or 0
+            ) + 1
+            row = AssetIngestionRow(
+                id=f"ing_{uuid4().hex}",
+                asset_id=asset.id,
+                owner_id=asset.owner_id,
+                collection_id=_required_collection_id(asset),
+                version=version,
+                strategy_version=INDEXING_STRATEGY_VERSION,
+                status=IngestionStatus.INDEXING,
+                route=route,
+                prepared_json=json.dumps(
+                    {
+                        "providerNativeSource": route in _PROVIDER_NATIVE_ROUTES,
+                        "serverMediaProcessing": False,
+                    }
+                ),
+                description=description,
+                error=None,
+                is_active=False,
+                created_at=now,
+                updated_at=now,
+                activated_at=None,
+            )
+            session.add(row)
+        return row
+
+    async def _create_description_artifact(
+        self,
+        ingestion: AssetIngestionRow,
+        asset: AssetRow,
+        description: str,
+    ) -> AssetIndexArtifactRow:
+        content = (f"# {asset.filename}\n\nModality: {ingestion.route}\n\n{description}\n").encode()
+        key = f"ingestion/{asset.owner_id}/{asset.id}/{ingestion.id}/{uuid4().hex}-description.md"
+        location = await self.blob_store.put(
+            key,
+            _bytes_chunks(content),
+            media_type="text/markdown",
+        )
+        return await self._create_artifact(
+            ingestion,
+            asset,
+            ArtifactKind.DESCRIPTION,
+            "text/markdown",
+            location,
+            {"strategyVersion": INDEXING_STRATEGY_VERSION, "modelAuthored": True},
+        )
+
+    async def _create_source_artifact(
+        self,
+        ingestion: AssetIngestionRow,
+        asset: AssetRow,
+    ) -> AssetIndexArtifactRow:
+        return await self._create_artifact(
+            ingestion,
+            asset,
+            ArtifactKind.SOURCE_FILE,
+            asset.media_type,
+            _asset_location(asset),
+            {"original": True, "providerNative": True},
+        )
+
+    async def _create_artifact(
+        self,
+        ingestion: AssetIngestionRow,
+        asset: AssetRow,
+        kind: ArtifactKind,
+        media_type: str,
+        location: ObjectLocation,
+        metadata: Mapping[str, object],
+    ) -> AssetIndexArtifactRow:
+        row = AssetIndexArtifactRow(
+            id=f"art_{uuid4().hex}",
+            ingestion_id=ingestion.id,
+            asset_id=asset.id,
+            owner_id=asset.owner_id,
+            kind=kind,
+            state=ArtifactState.PREPARED,
+            bucket=location.bucket,
+            object_key=location.key,
+            media_type=media_type,
+            provider_file_id=None,
+            provider_status="pending",
+            provider_checked_at=None,
+            provider_error=None,
+            metadata_json=json.dumps(dict(metadata), ensure_ascii=False),
+            created_at=datetime.now(UTC),
+        )
+        async with self.sessions.begin() as session:
+            session.add(row)
+        return row
+
+    async def _ensure_store(self, owner_id: str) -> str:
+        async with self.sessions() as session:
+            existing = await session.get(UserVectorStoreRow, owner_id)
+        if existing is not None:
+            return existing.vector_store_id
+        store_id = await self.vectors.create_store(owner_id)
+        async with self.sessions.begin() as session:
+            session.add(
+                UserVectorStoreRow(
+                    owner_id=owner_id,
+                    provider="openai",
+                    vector_store_id=store_id,
+                    created_at=datetime.now(UTC),
+                )
+            )
+        return store_id
+
+    async def _artifact_content(self, artifact: AssetIndexArtifactRow, asset: AssetRow) -> bytes:
+        location = _artifact_location(artifact)
+        size = (
+            asset.size_bytes
+            if location.bucket == asset.bucket and location.key == asset.object_key
+            else (await self.blob_store.head(location)).size_bytes
+        )
+        return await self.blob_store.read_range(location, 0, size)
+
+    async def _mark_artifact_ready(self, artifact_id: str, provider_id: str) -> None:
+        now = datetime.now(UTC)
+        async with self.sessions.begin() as session:
+            await session.execute(
+                update(AssetIndexArtifactRow)
+                .where(AssetIndexArtifactRow.id == artifact_id)
+                .values(
+                    state=ArtifactState.READY,
+                    provider_file_id=provider_id,
+                    provider_status="ready",
+                    provider_checked_at=now,
+                    provider_error=None,
+                )
+            )
+
+    async def _activate(self, ingestion_id: str, asset_id: str) -> tuple[str, ...]:
+        now = datetime.now(UTC)
+        async with self.sessions.begin() as session:
+            previous_ids = tuple(
+                await session.scalars(
+                    select(AssetIngestionRow.id).where(
+                        AssetIngestionRow.asset_id == asset_id,
+                        AssetIngestionRow.is_active.is_(True),
+                        AssetIngestionRow.id != ingestion_id,
+                    )
+                )
+            )
+            old_provider_ids: tuple[str, ...] = ()
+            if previous_ids:
+                old_provider_ids = tuple(
+                    provider_id
+                    for provider_id in await session.scalars(
+                        select(AssetIndexArtifactRow.provider_file_id).where(
+                            AssetIndexArtifactRow.ingestion_id.in_(previous_ids),
+                            AssetIndexArtifactRow.provider_file_id.is_not(None),
+                        )
+                    )
+                    if provider_id is not None
+                )
+                await session.execute(
+                    update(AssetIngestionRow)
+                    .where(AssetIngestionRow.id.in_(previous_ids))
+                    .values(is_active=False)
+                )
+                await session.execute(
+                    update(AssetIndexArtifactRow)
+                    .where(AssetIndexArtifactRow.ingestion_id.in_(previous_ids))
+                    .values(state=ArtifactState.SUPERSEDED)
+                )
+            await session.execute(
+                update(AssetIngestionRow)
+                .where(AssetIngestionRow.id == ingestion_id)
+                .values(
+                    status=IngestionStatus.READY,
+                    is_active=True,
+                    error=None,
+                    updated_at=now,
+                    activated_at=now,
+                )
+            )
+        return old_provider_ids
+
+    async def _mark_failed(self, ingestion_id: str, error: Exception) -> None:
+        async with self.sessions.begin() as session:
+            await session.execute(
+                update(AssetIngestionRow)
+                .where(AssetIngestionRow.id == ingestion_id)
+                .values(
+                    status=IngestionStatus.FAILED,
+                    error=f"{type(error).__name__}: {error}"[:2_000],
+                    updated_at=datetime.now(UTC),
+                )
+            )
+
+    async def _get_attempt(self, ingestion_id: str) -> AssetIngestionRow:
+        async with self.sessions() as session:
+            row = await session.get(AssetIngestionRow, ingestion_id)
+        if row is None:
+            raise RuntimeError("Ingestion attempt disappeared")
+        return row
+
+    async def _result(
+        self,
+        ingestion: AssetIngestionRow,
+        asset: AssetRow,
+        *,
+        reused: bool,
+    ) -> IndexCollectionFileResult:
+        async with self.sessions() as session:
+            artifacts = tuple(
+                await session.scalars(
+                    select(AssetIndexArtifactRow)
+                    .where(AssetIndexArtifactRow.ingestion_id == ingestion.id)
+                    .order_by(AssetIndexArtifactRow.created_at, AssetIndexArtifactRow.id)
+                )
+            )
+        return {
+            "ingestionId": ingestion.id,
+            "assetId": asset.id,
+            "collectionId": ingestion.collection_id,
+            "filename": asset.filename,
+            "route": ingestion.route,
+            "status": ingestion.status,
+            "reused": reused,
+            "indexedRepresentations": [artifact.kind for artifact in artifacts],
+            "providerFileCount": sum(
+                artifact.provider_file_id is not None for artifact in artifacts
+            ),
+            "serverMediaProcessing": False,
+        }
 
 
 class FileIndexReader:
@@ -338,6 +772,32 @@ class FileIndexReader:
             if artifact_id is not None
             else None
         )
+        description_only = route in {FileRoute.AUDIO, FileRoute.VIDEO}
+        if route in {FileRoute.JSON, FileRoute.TABULAR}:
+            description_only = (
+                await self._first_active_artifact(
+                    owner_id, asset_id, ArtifactKind.STRUCTURED_PROFILE
+                )
+                is None
+            )
+        if (
+            not original
+            and description_only
+            and artifact is not None
+            and artifact.kind == ArtifactKind.DESCRIPTION
+        ):
+            content = await self._artifact_content(artifact, asset)
+            return {
+                "assetId": asset.id,
+                "artifactId": artifact.id,
+                "filename": asset.filename,
+                "route": route.value,
+                "inputKind": "text",
+                "text": content[:65_536].decode("utf-8", "replace"),
+                "hasMore": len(content) > 65_536,
+                "provenance": _metadata(artifact),
+                "nextAction": "Call get_file with original=true for the canonical file.",
+            }
         if route is FileRoute.IMAGE:
             return {
                 "assetId": asset.id,
@@ -367,6 +827,19 @@ class FileIndexReader:
                 "provenance": dict(provenance),
             }
         if route in {FileRoute.JSON, FileRoute.TABULAR}:
+            if artifact is not None and artifact.kind == ArtifactKind.SOURCE_FILE:
+                content = await self._artifact_content(artifact, asset)
+                return {
+                    "assetId": asset.id,
+                    "artifactId": artifact.id,
+                    "filename": asset.filename,
+                    "route": route.value,
+                    "inputKind": "text",
+                    "text": content[:65_536].decode("utf-8", "replace"),
+                    "hasMore": len(content) > 65_536,
+                    "provenance": _metadata(artifact),
+                    "nextAction": "Use browser tools for structured queries on a workspace file.",
+                }
             profile = await self._first_active_artifact(
                 owner_id, asset_id, ArtifactKind.STRUCTURED_PROFILE
             )
@@ -645,3 +1118,49 @@ def _required_int(values: Mapping[str, object], key: str) -> int:
     if not isinstance(value, (int, float)):
         raise ValueError(f"Expected integer provenance field: {key}")
     return int(value)
+
+
+def _required_collection_id(asset: AssetRow) -> str:
+    if asset.collection_id is None:
+        raise ValueError("Asset has no collection")
+    return asset.collection_id
+
+
+def _index_provider_attributes(
+    asset: AssetRow,
+    artifact: AssetIndexArtifactRow,
+) -> dict[str, str | float | bool]:
+    return vector_file_attributes(
+        asset_id=asset.id,
+        artifact_id=artifact.id,
+        artifact_kind=artifact.kind,
+        route=classify_file(asset.filename).route.value,
+        filename=asset.filename,
+        collection_id=_required_collection_id(asset),
+        artifact_metadata=_metadata(artifact),
+    )
+
+
+def _index_provider_filename(asset: AssetRow, artifact: AssetIndexArtifactRow) -> str:
+    if artifact.kind == ArtifactKind.SOURCE_FILE:
+        return asset.filename
+    stem = asset.filename.rsplit(".", 1)[0]
+    return f"{stem}-retrieval-description-{artifact.id[-8:]}.md"
+
+
+def _index_chunking_strategy(
+    artifact: AssetIndexArtifactRow,
+) -> Mapping[str, object] | None:
+    if artifact.kind in {ArtifactKind.DESCRIPTION, ArtifactKind.SOURCE_FILE} and (
+        artifact.media_type.startswith("text/")
+        or artifact.media_type in {"application/json", "text/csv"}
+    ):
+        return {
+            "type": "static",
+            "static": {"max_chunk_size_tokens": 800, "chunk_overlap_tokens": 160},
+        }
+    return None
+
+
+async def _bytes_chunks(content: bytes) -> AsyncIterator[bytes]:
+    yield content

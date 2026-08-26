@@ -49,7 +49,7 @@ class AssistantGraph:
 
         root_tools = [
             *self._tools("list_files"),
-            *self._tools("file_search"),
+            *self._tools("file_search", "index_collection_file"),
         ]
         self.root = Agent(
             name="Root conversation agent",
@@ -63,11 +63,18 @@ its included or browser-staged files, then use browser tools through the matchin
 The selected collection is a durable indexed library where uploads and ingestion happen. Use
 file_search for library-wide discovery there. Search is restricted to the selected collection:
 preserve its collection, assetId, and artifactId, then hand work to the matching specialist.
+Only call index_collection_file when the user explicitly asks to index, ingest, or add a file to
+collection search. First inspect enough evidence to write a truthful retrieval description; never
+invent file contents. The tool stores that description and attaches provider-supported canonical
+documents without server-side PDF, image, audio, or video processing.
+When selected PDF pages are the right retrieval unit, have the document specialist create a
+durable as_files sample in the browser, then index the returned asset instead of slicing it on the
+server.
 Inspecting an indexed collection result does not add it to the conversation workspace.
 Start list_files with page 1 and follow hasMore only when needed.
 Hand off content inspection to the matching modality specialist.
-The server only reads artifacts prepared by the demo seeder; inspect user-provided files with the
-browser tools and never claim that the server parsed or transformed them.
+The server reads indexed artifacts and provider-native documents; inspect workspace files with
+browser tools and never claim that the server parsed or transformed source media.
 Use only returned evidence.""",
             tools=root_tools,
             tool_use_behavior=self._stop_at_client_tools(root_tools),

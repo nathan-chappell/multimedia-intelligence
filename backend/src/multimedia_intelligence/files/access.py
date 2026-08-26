@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from multimedia_intelligence.context import (
     CollectionContext,
     FileSearchResult,
+    IndexCollectionFileResult,
     ReadyFileReference,
     TextRangeResult,
     TranscriptPageResult,
@@ -13,7 +14,7 @@ from multimedia_intelligence.context import (
 
 from .collections import selected_collection
 from .domain import AssetState, IncludeState, ObjectLocation
-from .indexing import FileIndexReader
+from .indexing import FileIndexReader, FileIndexWriter
 from .policy import FileRoute, classify_file
 from .ports import BlobStore
 from .records import AssetRow, FileCollectionRow, ThreadAssetIncludeRow
@@ -28,6 +29,7 @@ class ScopedAgentDataAccess:
         owner_id: str,
         blob_store: BlobStore,
         file_index: FileIndexReader | None = None,
+        file_index_writer: FileIndexWriter | None = None,
         *,
         is_admin: bool = False,
     ) -> None:
@@ -35,6 +37,7 @@ class ScopedAgentDataAccess:
         self.owner_id = owner_id
         self.blob_store = blob_store
         self.file_index = file_index
+        self.file_index_writer = file_index_writer
         self.is_admin = is_admin
 
     async def collection_context(self) -> CollectionContext:
@@ -45,9 +48,7 @@ class ScopedAgentDataAccess:
             "description": collection.description or "",
         }
 
-    async def list_ready_file_references(
-        self, thread_id: str
-    ) -> tuple[ReadyFileReference, ...]:
+    async def list_ready_file_references(self, thread_id: str) -> tuple[ReadyFileReference, ...]:
         async with self.sessions() as session:
             rows = (
                 await session.execute(
@@ -214,6 +215,19 @@ class ScopedAgentDataAccess:
         return await self.file_index.transcript_page(
             collection.owner_id, asset_id, start_seconds, end_seconds, cursor
         )
+
+    async def index_collection_file(
+        self,
+        asset_id: str,
+        description: str,
+    ) -> IndexCollectionFileResult:
+        if self.file_index_writer is None:
+            raise RuntimeError("User file indexing is unavailable")
+        collection = await self._selected_collection()
+        if collection.owner_id != self.owner_id:
+            raise ValueError("Public collection files are read-only")
+        await self._require_selected_asset(asset_id, collection)
+        return await self.file_index_writer.index(self.owner_id, asset_id, description)
 
     async def _selected_collection(self) -> FileCollectionRow:
         return await selected_collection(

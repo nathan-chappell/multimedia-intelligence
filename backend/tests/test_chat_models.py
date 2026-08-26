@@ -60,13 +60,14 @@ def test_selected_model_is_applied_to_manager_and_every_specialist() -> None:
     )
 
 
-def test_root_only_discovers_files_and_delegates_specialist_work() -> None:
+def test_root_discovers_and_indexes_files_then_delegates_specialist_work() -> None:
     graph = AssistantGraph(model="gpt-5.6")
     assistant = graph.root
     tool_names = {tool.name for tool in assistant.tools}
     assert tool_names == {
         "list_files",
         "file_search",
+        "index_collection_file",
     }
     assert {handoff.tool_name for handoff in assistant.handoffs} == {
         "consult_document_specialist",
@@ -82,7 +83,8 @@ def test_runtime_instructions_forbid_server_side_file_processing() -> None:
     instructions = assistant.instructions
 
     assert "Hand off content inspection" in instructions
-    assert "server only reads artifacts prepared by the demo seeder" in instructions
+    assert "Only call index_collection_file when the user explicitly asks" in instructions
+    assert "without server-side PDF, image, audio, or video processing" in instructions
     assert "never claim that the server parsed or transformed" in instructions
 
 
@@ -203,9 +205,7 @@ async def test_application_feedback_uses_host_toasts() -> None:
     ]
 
     assert events == [
-        ClientEffectEvent(
-            name="app.toast", data={"level": "info", "message": "Saved"}
-        )
+        ClientEffectEvent(name="app.toast", data={"level": "info", "message": "Saved"})
     ]
 
 

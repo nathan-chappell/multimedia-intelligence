@@ -25,6 +25,7 @@ _CLIENT_TOOLS = {
     "pdf_extract_range",
 }
 _SERVER_FILE_TOOLS = {
+    "index_collection_file",
     "file_search",
     "get_file",
     "get_transcript",
@@ -55,9 +56,7 @@ class ToolActivityReporter:
         arguments = _tool_arguments(context)
         title, content = _started_copy(tool_name, arguments)
         index = (
-            len(agent_context.workflow_item.workflow.tasks)
-            if agent_context.workflow_item
-            else 0
+            len(agent_context.workflow_item.workflow.tasks) if agent_context.workflow_item else 0
         )
         await agent_context.add_workflow_task(
             CustomTask(
@@ -134,10 +133,12 @@ def _tool_arguments(context: Any) -> dict[str, Any]:
 
 
 def _started_copy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str | None]:
+    if tool_name == "index_collection_file":
+        return "Adding a file to collection search", "Uploading verified representations"
     if tool_name == "file_search":
         query = arguments.get("query")
         excerpt = str(query).strip()[:160] if query is not None else ""
-        return "Searching the collection", f'Looking for “{excerpt}”' if excerpt else None
+        return "Searching the collection", f"Looking for “{excerpt}”" if excerpt else None
     if tool_name == "list_files":
         page = arguments.get("page", 1)
         return "Checking conversation workspace files", f"Listing workspace page {page}"

@@ -31,6 +31,7 @@ from multimedia_intelligence.db import create_engine_and_session
 from multimedia_intelligence.files.access import ScopedAgentDataAccess
 from multimedia_intelligence.files.indexing import (
     FileIndexReader,
+    FileIndexWriter,
     OpenAIVectorStoreGateway,
 )
 from multimedia_intelligence.files.s3_store import S3BlobStore
@@ -70,13 +71,17 @@ chatkit_server = MultimediaChatServer(
     billing=billing,
 )
 blob_store = S3BlobStore.from_settings(settings)
+vector_store_gateway = (
+    OpenAIVectorStoreGateway(settings.openai_api_key, settings) if settings.openai_api_key else None
+)
 file_index = (
-    FileIndexReader(
-        sessions,
-        blob_store,
-        OpenAIVectorStoreGateway(settings.openai_api_key, settings),
-    )
-    if settings.openai_api_key
+    FileIndexReader(sessions, blob_store, vector_store_gateway)
+    if vector_store_gateway is not None
+    else None
+)
+file_index_writer = (
+    FileIndexWriter(sessions, blob_store, vector_store_gateway)
+    if vector_store_gateway is not None
     else None
 )
 
@@ -131,6 +136,7 @@ async def chatkit_endpoint(request: Request) -> Response:
             user.id,
             blob_store,
             file_index,
+            file_index_writer,
             is_admin=user.is_admin,
         ),
         request=request,
