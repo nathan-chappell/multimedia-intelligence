@@ -47,7 +47,11 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-multimedia_intelligence = ["chat/widgets/*.widget", "files/grammars/*.lark"]
+multimedia_intelligence = [
+  "agents/instructions/*.md",
+  "chat/widgets/*.widget",
+  "files/grammars/*.lark",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

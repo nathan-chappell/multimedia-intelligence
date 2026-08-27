@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from importlib.resources import files
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -88,6 +89,21 @@ def test_runtime_instructions_forbid_server_side_file_processing() -> None:
     assert "adds it and loads it on demand" in instructions
     assert "Use index_file only when the user explicitly asks" in instructions
     assert "search index, not the workspace" in instructions
+
+
+def test_agent_instructions_are_loaded_from_packaged_markdown() -> None:
+    graph = AssistantGraph(model="gpt-5.6")
+    instruction_dir = files("multimedia_intelligence.agents").joinpath("instructions")
+
+    for agent, filename in (
+        (graph.root, "root.md"),
+        (graph.document, "document.md"),
+        (graph.structured_data, "structured_data.md"),
+        (graph.media, "media.md"),
+        (graph.image, "image.md"),
+    ):
+        expected = instruction_dir.joinpath(filename).read_text(encoding="utf-8").strip()
+        assert agent.instructions == expected
 
 
 def test_specialists_receive_modality_specific_tools() -> None:

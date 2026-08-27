@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib.resources import files
 from typing import Literal
 
 from agents import Agent, ModelSettings, RunHooks, StopAtTools, handoff
@@ -22,6 +23,24 @@ from multimedia_intelligence.files.server_tools import (
 )
 
 type ChatAgent = Agent[AgentContext[RequestContext]]
+
+
+def _load_instructions(filename: str) -> str:
+    """Load agent instructions from package data in source and installed builds."""
+    return (
+        files("multimedia_intelligence.agents")
+        .joinpath("instructions")
+        .joinpath(filename)
+        .read_text(encoding="utf-8")
+        .strip()
+    )
+
+
+ROOT_INSTRUCTIONS = _load_instructions("root.md")
+DOCUMENT_INSTRUCTIONS = _load_instructions("document.md")
+STRUCTURED_DATA_INSTRUCTIONS = _load_instructions("structured_data.md")
+MEDIA_INSTRUCTIONS = _load_instructions("media.md")
+IMAGE_INSTRUCTIONS = _load_instructions("image.md")
 
 
 class AssistantGraph:
@@ -56,16 +75,7 @@ class AssistantGraph:
             name="Root conversation agent",
             model=model,
             model_settings=self.model_settings,
-            instructions="""Answer the user and delegate file inspection by modality.
-The workspace is one durable file set per user. Use list_files for it. Every file tool accepts the
-returned fileId as file_id. If a collection file is not yet in the workspace, using its file_id
-adds it and loads it on demand.
-The selected collection is a search index, not the workspace. Use find_files for name/date lookup
-and search_files for semantic content search. Hand the returned fileId to the right specialist.
-The workspace already preserves files. Never index merely to preserve a file, inspect it, or make
-it available later. Use index_file only when the user explicitly asks to add or index a workspace
-file in the selected collection. Inspect it first and cite evidence_refs.
-Do not invent file evidence or use file tools for unrelated requests.""",
+            instructions=ROOT_INSTRUCTIONS,
             tools=root_tools,
             tool_use_behavior=self._stop_at_client_tools(root_tools),
         )
@@ -82,9 +92,7 @@ Do not invent file evidence or use file tools for unrelated requests.""",
             name="Document specialist",
             model=model,
             model_settings=self.model_settings,
-            instructions="""Inspect text and PDFs by file_id. Use read_text for text, sample_pdf
-for broad PDF evidence, view_pdf_page for layout or images, and extract_pdf_pages for a bounded
-derivative. Keep ranges small, distinguish evidence from inference, then return to root.""",
+            instructions=DOCUMENT_INSTRUCTIONS,
             tools=document_tools,
             handoffs=[return_to_root],
             tool_use_behavior=self._stop_at_client_tools(document_tools),
@@ -97,9 +105,7 @@ derivative. Keep ranges small, distinguish evidence from inference, then return 
             name="Structured data specialist",
             model=model,
             model_settings=self.model_settings,
-            instructions="""Inspect CSV or JSON by file_id with query_data and valid JMESPath.
-CSV is exposed as JSON rows. Start with [0], then use focused projections, filters, or functions.
-Summarize the evidence and return to root.""",
+            instructions=STRUCTURED_DATA_INSTRUCTIONS,
             tools=structured_data_tools,
             handoffs=[return_to_root],
             tool_use_behavior=self._stop_at_client_tools(structured_data_tools),
@@ -110,8 +116,7 @@ Summarize the evidence and return to root.""",
             name="Media specialist",
             model=model,
             model_settings=self.model_settings,
-            instructions="""Read indexed audio or video transcripts by file_id with bounded
-timestamp ranges and cursors. Video transcripts cover audio only. Return the evidence to root.""",
+            instructions=MEDIA_INSTRUCTIONS,
             tools=media_tools,
             handoffs=[return_to_root],
         )
@@ -120,8 +125,7 @@ timestamp ranges and cursors. Video transcripts cover audio only. Return the evi
             name="Image specialist",
             model=model,
             model_settings=self.model_settings,
-            instructions="""Call view_image with file_id before describing an image. Separate
-observation from inference, never infer content from a filename, then return to root.""",
+            instructions=IMAGE_INSTRUCTIONS,
             tools=image_tools,
             handoffs=[return_to_root],
             tool_use_behavior=self._stop_at_client_tools(image_tools),
