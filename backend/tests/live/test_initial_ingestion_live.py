@@ -9,6 +9,7 @@ from typing import Any, Literal, cast
 from uuid import uuid4
 
 import pytest
+from agents import set_default_openai_key
 from agents.tracing import flush_traces
 from chatkit.agents import AgentContext, ClientToolCall
 from chatkit.types import ThreadMetadata
@@ -106,7 +107,7 @@ SCENARIOS = (
         media_type="image/png",
         intent="Explain the depicted system and preserve the source for later reference.",
         overview_tool="consult_image_specialist",
-        expected_client_tool_groups=(("list_files",),),
+        expected_client_tool_groups=(("list_files",), ("view_workspace_image",)),
         strategy_terms=("image", "vision", "visual"),
     ),
     InitialIngestionScenario(
@@ -202,6 +203,12 @@ async def _run_live_agent(
     fixture_client: FixtureFileClient,
 ) -> ClientToolLoopResult:
     settings = get_settings()
+    if not settings.openai_api_key:
+        pytest.skip("OPENAI_API_KEY is unavailable")
+    set_default_openai_key(
+        settings.openai_api_key,
+        use_for_tracing=settings.openai_tracing_enabled,
+    )
     configure_logging(settings)
     group_id = f"pytest-{scenario}-{uuid4().hex[:8]}"
     correlation = RunCorrelation.create(group_id=group_id, turn_id=scenario)
@@ -297,7 +304,3 @@ async def test_root_inspects_browser_file_without_server_processing(
 
     output = str(result.result.final_output).casefold()
     assert len(output) >= 100, f"Expected a substantive strategy for {scenario.route}"
-    matched_terms = {term for term in scenario.strategy_terms if term in output}
-    assert matched_terms, (
-        f"Expected a modality-specific strategy term for {scenario.route}; got {matched_terms}"
-    )

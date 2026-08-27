@@ -30,6 +30,7 @@ _TOOL_LABELS = {
     "pdf_random_sample": "Sample PDF pages",
     "pdf_render_page": "Render PDF page",
     "pdf_extract_range": "Extract PDF pages",
+    "view_workspace_image": "View workspace image",
 }
 
 
@@ -208,6 +209,8 @@ def _display_preview(tool_name: str, output: dict[str, Any]) -> dict[str, object
                 "indexedRepresentations",
                 "providerFileCount",
                 "serverMediaProcessing",
+                "representationMode",
+                "warnings",
             ),
         )
 
@@ -315,7 +318,13 @@ def _display_preview(tool_name: str, output: dict[str, Any]) -> dict[str, object
                 public_files.append(
                     _selected_fields(
                         candidate,
-                        ("name", "mediaType", "sizeBytes", "route", "durability"),
+                        (
+                            "name",
+                            "mediaType",
+                            "sizeBytes",
+                            "route",
+                            "durability",
+                        ),
                     )
                 )
         return {
@@ -328,7 +337,7 @@ def _display_preview(tool_name: str, output: dict[str, Any]) -> dict[str, object
         raw_text = text if isinstance(text, str) else ""
         excerpt, display_truncated = _excerpt(raw_text, _MAX_TEXT_PREVIEW_CHARS)
         return {
-            **_selected_fields(output, ("ok", "assetId", "start")),
+            **_selected_fields(output, ("ok", "workspaceFileId", "start")),
             "text": excerpt,
             "displayTruncated": display_truncated,
         }
@@ -338,7 +347,7 @@ def _display_preview(tool_name: str, output: dict[str, Any]) -> dict[str, object
         value_json = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
         value_excerpt, display_truncated = _excerpt(value_json, _MAX_STRUCTURED_VALUE_CHARS)
         return {
-            **_selected_fields(output, ("ok", "assetId", "expression", "truncated")),
+            **_selected_fields(output, ("ok", "workspaceFileId", "expression", "truncated")),
             "valuePreview": value_excerpt,
             "valuePreviewFormat": "JSON",
             "displayTruncated": display_truncated,
@@ -347,7 +356,7 @@ def _display_preview(tool_name: str, output: dict[str, Any]) -> dict[str, object
     if tool_name == "pdf_random_sample":
         preview = _selected_fields(
             output,
-            ("ok", "assetId", "mode", "pageCount", "range", "sampledPages"),
+            ("ok", "workspaceFileId", "mode", "pageCount", "range", "sampledPages"),
         )
         pages = output.get("pages")
         if isinstance(pages, list):
@@ -384,14 +393,18 @@ def _display_preview(tool_name: str, output: dict[str, Any]) -> dict[str, object
             (
                 "ok",
                 "artifactId",
-                "sourceAssetId",
+                "sourceWorkspaceFileId",
                 "kind",
                 "mediaType",
                 "sizeBytes",
                 "durability",
                 "nextStep",
+                "file",
             ),
         )
+
+    if tool_name == "view_workspace_image":
+        return _selected_fields(output, ("ok", "workspaceFileId", "file"))
 
     return {"ok": output.get("ok", True), "tool": tool_name}
 

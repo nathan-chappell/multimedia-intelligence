@@ -37,13 +37,13 @@ async function execute(
     );
     const files = [
       ...workspace.getFiles().map((entry) => ({
-        assetId: entry.id,
+        workspaceFileId: entry.id,
+        assetId: entry.durableAssetId ?? null,
         name: entry.filename,
         mediaType: entry.mediaType,
         sizeBytes: entry.sizeBytes,
         route: entry.route,
         durability: entry.durability,
-        durableAssetId: entry.durableAssetId,
       })),
       ...durableFiles
         .filter(
@@ -51,13 +51,13 @@ async function execute(
             typeof entry.assetId === "string" && !localDurableIds.has(entry.assetId),
         )
         .map((entry) => ({
+          workspaceFileId: entry.assetId,
           assetId: entry.assetId,
           name: entry.filename,
           mediaType: entry.mediaType,
           sizeBytes: entry.sizeBytes,
           route: entry.route,
           durability: "included",
-          durableAssetId: entry.assetId,
           reference: entry.reference,
           previewPath: entry.previewPath,
         })),
@@ -73,17 +73,46 @@ async function execute(
     };
   }
 
-  const assetId = requiredString(params, "assetId");
-  const entry = await workspace.resolveFile(assetId);
-  if (!entry) throw new Error(`No conversation file is registered for asset ID ${assetId}`);
+  const workspaceFileId = requiredString(params, "workspaceFileId");
+  const entry = await workspace.resolveFile(workspaceFileId);
+  if (!entry) {
+    throw new Error(`No conversation file is registered for workspace ID ${workspaceFileId}`);
+  }
 
   switch (name) {
+    case "view_workspace_image": {
+      if (entry.route !== "image") throw new Error("Vision inspection requires an image file");
+      if (!workspace.activeThreadId) {
+        throw new Error("A conversation must be active before an image can be inspected");
+      }
+      if (entry.durableAssetId && !entry.includeId) {
+        await workspace.saveFile(workspaceFileId);
+      }
+      const saved = entry.durableAssetId
+        ? { asset_id: entry.durableAssetId, include_id: entry.includeId ?? null }
+        : await saveBrowserFile(
+            entry.file,
+            entry.file.name,
+            workspace.activeThreadId,
+            "Could not save workspace image",
+          );
+      return {
+        workspaceFileId,
+        file: {
+          assetId: saved.asset_id,
+          filename: entry.file.name,
+          mediaType: entry.file.type,
+          sizeBytes: entry.file.size,
+          durability: "included",
+        },
+      };
+    }
     case "read_text_chars":
     case "json_chars": {
       const start = integer(params, "start", 0, 0);
       const { readTextChars } = await import("./textTools");
       return {
-        assetId,
+        workspaceFileId,
         start,
         text: await readTextChars(
           entry.file,
@@ -99,7 +128,7 @@ async function execute(
       const expression = requiredString(params, "expression");
       const { queryStructuredData } = await import("./structuredDataTools");
       return {
-        assetId,
+        workspaceFileId,
         expression,
         ...(await queryStructuredData(entry.file, entry.route, expression)),
       };
@@ -113,7 +142,7 @@ async function execute(
       if (outputMode === "text_content") {
         const { samplePdfText } = await import("./pdfTools");
         const sample = await samplePdfText(entry.file, range, count);
-        return { assetId, mode: outputMode, ...sample };
+        return { workspaceFileId, mode: outputMode, ...sample };
       }
 
       if (!workspace.activeThreadId) {
@@ -123,15 +152,20 @@ async function execute(
       const sample = await samplePdfAsFile(entry.file, range, count);
       const stem = entry.file.name.replace(/\.pdf$/i, "").slice(0, 800);
       const filename = `${stem}-sample-${sample.sampledPages.join("-")}.pdf`;
-      const saved = await saveSampledPdf(sample.file, filename, workspace.activeThreadId);
+      const saved = await saveBrowserFile(
+        sample.file,
+        filename,
+        workspace.activeThreadId,
+        "Could not save PDF sample",
+      );
       workspace.registerArtifact(
-        assetId,
+        workspaceFileId,
         "pdf_part",
         `${entry.file.name} · sampled pages ${sample.sampledPages.join(", ")}`,
         sample.file,
       );
       return {
-        assetId,
+        workspaceFileId,
         mode: outputMode,
         pageCount: sample.pageCount,
         range: sample.range,
@@ -153,12 +187,33 @@ async function execute(
       const { renderPdfPage } = await import("./pdfTools");
       const image = await renderPdfPage(entry.file, page, number(params, "scale", 1.75));
       const artifact = workspace.registerArtifact(
-        assetId,
+        workspaceFileId,
         "pdf_page_image",
         `${entry.file.name} · page ${page}`,
         image,
       );
-      return transientArtifactResult(artifact, image);
+      if (!workspace.activeThreadId) {
+        throw new Error("A conversation must be active before a rendered page can be saved");
+      }
+      const stem = entry.file.name.replace(/\.pdf$/i, "").slice(0, 800);
+      const filename = `${stem}-page-${page}.png`;
+      const saved = await saveBrowserFile(
+        image,
+        filename,
+        workspace.activeThreadId,
+        "Could not save rendered PDF page",
+      );
+      return {
+        ...transientArtifactResult(artifact, image),
+        durability: "included",
+        file: {
+          assetId: saved.asset_id,
+          filename,
+          mediaType: "image/png",
+          sizeBytes: image.size,
+          durability: "included",
+        },
+      };
     }
     case "pdf_extract_range": {
       const startPage = integer(params, "startPage", undefined, 1);
@@ -166,7 +221,7 @@ async function execute(
       const { extractPdfPageRange } = await import("./pdfTools");
       const pdf = await extractPdfPageRange(entry.file, { startPage, endPage });
       const artifact = workspace.registerArtifact(
-        assetId,
+        workspaceFileId,
         "pdf_part",
         `${entry.file.name} · pages ${startPage}-${endPage}`,
         pdf,
@@ -184,7 +239,7 @@ function transientArtifactResult(
 ): Record<string, unknown> {
   return {
     artifactId: artifact.id,
-    sourceAssetId: artifact.sourceAssetId,
+    sourceWorkspaceFileId: artifact.sourceAssetId,
     kind: artifact.kind,
     mediaType: blob.type,
     sizeBytes: blob.size,
@@ -267,26 +322,27 @@ function oneOf<const T extends readonly string[]>(
   return value;
 }
 
-interface SavedSample {
+interface SavedAsset {
   asset_id: string;
   include_id: string | null;
 }
 
-async function saveSampledPdf(
-  pdf: Blob,
+async function saveBrowserFile(
+  blob: Blob,
   filename: string,
   threadId: string,
-): Promise<SavedSample> {
+  fallback: string,
+): Promise<SavedAsset> {
   const query = new URLSearchParams({ filename, thread_id: threadId });
   const response = await authenticatedFetch(`/api/assets?${query}`, {
     method: "POST",
-    headers: { "Content-Type": "application/pdf" },
-    body: pdf,
+    headers: { "Content-Type": blob.type || "application/octet-stream" },
+    body: blob,
   });
-  if (!response.ok) throw new Error(await responseError(response, "Could not save PDF sample"));
-  const saved = (await response.json()) as SavedSample;
+  if (!response.ok) throw new Error(await responseError(response, fallback));
+  const saved = (await response.json()) as SavedAsset;
   if (!saved.asset_id || !saved.include_id) {
-    throw new Error("Saved PDF sample was not attached to the conversation");
+    throw new Error("Saved browser file was not attached to the conversation");
   }
   return saved;
 }

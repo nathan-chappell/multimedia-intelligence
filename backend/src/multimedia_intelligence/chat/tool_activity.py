@@ -23,6 +23,7 @@ _CLIENT_TOOLS = {
     "pdf_random_sample",
     "pdf_render_page",
     "pdf_extract_range",
+    "view_workspace_image",
 }
 _SERVER_FILE_TOOLS = {
     "index_collection_file",
@@ -172,6 +173,8 @@ def _started_copy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str |
         return "Rendering a workspace PDF page in the browser", (
             f"Page {page}" if isinstance(page, int) else None
         )
+    if tool_name == "view_workspace_image":
+        return "Opening a workspace image for vision", None
     return "Extracting workspace PDF pages in the browser", None
 
 

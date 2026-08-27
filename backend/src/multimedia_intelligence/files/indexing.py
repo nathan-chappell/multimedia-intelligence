@@ -6,14 +6,17 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Protocol, cast
+from typing import Literal, Protocol, TypedDict, cast
 from uuid import uuid4
 
 from openai import AsyncOpenAI
+from openai.types.audio import TranscriptionDiarized
 from openai.types.file_chunking_strategy_param import FileChunkingStrategyParam
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from multimedia_intelligence.billing.pricing import transcription_cost_microusd
+from multimedia_intelligence.billing.service import BillingService
 from multimedia_intelligence.config import Settings
 from multimedia_intelligence.context import IndexCollectionFileResult, TranscriptPageResult
 from multimedia_intelligence.openai_metadata import (
@@ -63,12 +66,95 @@ class ArtifactKind(StrEnum):
     SOURCE_FILE = "source_file"
 
 
-INDEXING_STRATEGY_VERSION = "2026-08-26-provider-native-v1"
+INDEXING_STRATEGY_VERSION = "2026-08-27-agent-plan-v2"
 _PROVIDER_NATIVE_ROUTES = {
     FileRoute.MARKUP,
     FileRoute.JSON,
     FileRoute.PDF,
 }
+
+
+class RepresentationMode(StrEnum):
+    AUTO = "auto"
+    DESCRIPTION = "description"
+    SOURCE = "source"
+    BOTH = "both"
+
+
+class TranscriptSegmentPayload(TypedDict):
+    id: str
+    start: float
+    end: float
+    speaker: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class DiarizedTranscript:
+    duration: float
+    text: str
+    segments: tuple[TranscriptSegmentPayload, ...]
+    model: str
+    request_id: str | None
+
+
+class MediaTranscriptionGateway(Protocol):
+    model: str
+
+    async def transcribe(
+        self, filename: str, content: bytes, media_type: str
+    ) -> DiarizedTranscript: ...
+
+
+class OpenAIMediaTranscriptionGateway:
+    """Send canonical audio/video bytes to OpenAI without decoding them locally."""
+
+    def __init__(self, api_key: str, model: str) -> None:
+        self.client = AsyncOpenAI(api_key=api_key)
+        self.model = model
+
+    async def transcribe(
+        self, filename: str, content: bytes, media_type: str
+    ) -> DiarizedTranscript:
+        raw = await self.client.audio.transcriptions.with_raw_response.create(  # type: ignore[call-overload]
+            file=(filename, content, media_type),
+            model=self.model,
+            response_format="diarized_json",  # pyright: ignore[reportArgumentType]
+            chunking_strategy="auto",
+        )
+        result = cast(TranscriptionDiarized, raw.parse())
+        return DiarizedTranscript(
+            duration=result.duration,
+            text=result.text,
+            segments=tuple(
+                TranscriptSegmentPayload(
+                    id=item.id,
+                    start=item.start,
+                    end=item.end,
+                    speaker=item.speaker,
+                    text=item.text.strip(),
+                )
+                for item in result.segments
+            ),
+            model=self.model,
+            request_id=raw.request_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class IndexingPlan:
+    requested_mode: RepresentationMode
+    include_description: bool
+    include_source: bool
+    include_transcript: bool
+    evidence_refs: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptChunk:
+    content: bytes
+    metadata: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,16 +335,33 @@ class FileIndexWriter:
         sessions: async_sessionmaker[AsyncSession],
         blob_store: BlobStore,
         vectors: VectorStoreWriter,
+        *,
+        settings: Settings | None = None,
+        transcription: MediaTranscriptionGateway | None = None,
+        billing: BillingService | None = None,
     ) -> None:
         self.sessions = sessions
         self.blob_store = blob_store
         self.vectors = vectors
+        self.settings = settings
+        self.transcription = transcription
+        self.billing = billing
+        self.max_provider_file_bytes = (
+            settings.max_provider_file_bytes if settings is not None else 512 * 1024 * 1024
+        )
+        self.max_media_transcription_bytes = (
+            settings.max_media_transcription_bytes if settings is not None else 25 * 1024 * 1024
+        )
 
     async def index(
         self,
         owner_id: str,
         asset_id: str,
         description: str,
+        *,
+        representation_mode: Literal["auto", "description", "source", "both"] = "auto",
+        evidence_refs: Sequence[str] | None = None,
+        replace_existing: bool = False,
     ) -> IndexCollectionFileResult:
         description = description.strip()
         if not description:
@@ -267,23 +370,36 @@ class FileIndexWriter:
             raise ValueError("The retrieval description must be at most 4,000 characters")
 
         asset = await self._owned_asset(owner_id, asset_id)
+        route = classify_file(asset.filename).route
+        plan = self._plan(asset, route, representation_mode, evidence_refs)
         active = await self._active_attempt(owner_id, asset_id)
         if active is not None:
-            return await self._result(active, asset, reused=True)
+            if not replace_existing and self._matches(active, description, plan):
+                return await self._result(active, asset, reused=True)
+            if not replace_existing:
+                raise ValueError(
+                    "The file is already indexed with a different plan; set replace_existing=true "
+                    "only after the user asks to update it"
+                )
 
-        route = classify_file(asset.filename).route
-        ingestion = await self._create_attempt(asset, route, description)
+        ingestion = await self._create_attempt(asset, route, description, plan)
         provider_ids: list[str] = []
         try:
-            description_artifact = await self._create_description_artifact(
-                ingestion, asset, description
-            )
-            artifacts = [description_artifact]
-            if route in _PROVIDER_NATIVE_ROUTES:
+            artifacts: list[AssetIndexArtifactRow] = []
+            if plan.include_description:
+                artifacts.append(
+                    await self._create_description_artifact(ingestion, asset, description, plan)
+                )
+            if plan.include_transcript:
+                artifacts.extend(await self._create_transcript_artifacts(ingestion, asset, route))
+            if plan.include_source:
                 artifacts.append(await self._create_source_artifact(ingestion, asset))
 
             store_id = await self._ensure_store(owner_id)
             for artifact in artifacts:
+                if artifact.kind == ArtifactKind.TRANSCRIPT:
+                    await self._mark_local_artifact_ready(artifact.id)
+                    continue
                 provider_id = await self.vectors.upload(
                     store_id,
                     filename=_index_provider_filename(asset, artifact),
@@ -311,6 +427,72 @@ class FileIndexWriter:
                 continue
         ready = await self._get_attempt(ingestion.id)
         return await self._result(ready, asset, reused=False)
+
+    def _plan(
+        self,
+        asset: AssetRow,
+        route: FileRoute,
+        requested: str,
+        evidence_refs: Sequence[str] | None,
+    ) -> IndexingPlan:
+        mode = RepresentationMode(requested)
+        refs = tuple(dict.fromkeys(item.strip() for item in evidence_refs or () if item.strip()))
+        if len(refs) > 20 or any(len(item) > 500 for item in refs):
+            raise ValueError("evidence_refs must contain at most 20 references of 500 characters")
+
+        source_supported = route in _PROVIDER_NATIVE_ROUTES
+        include_transcript = route in {FileRoute.AUDIO, FileRoute.VIDEO} and mode in {
+            RepresentationMode.AUTO,
+            RepresentationMode.BOTH,
+            RepresentationMode.SOURCE,
+        }
+        if mode is RepresentationMode.AUTO:
+            include_description = True
+            include_source = source_supported and route is not FileRoute.JSON
+        else:
+            include_description = mode in {RepresentationMode.DESCRIPTION, RepresentationMode.BOTH}
+            include_source = mode in {RepresentationMode.SOURCE, RepresentationMode.BOTH}
+        if include_source and not source_supported and not include_transcript:
+            raise ValueError(
+                f"Provider-native source indexing is unavailable for {route.value} files"
+            )
+        if route in {FileRoute.AUDIO, FileRoute.VIDEO} and mode is RepresentationMode.SOURCE:
+            include_source = False
+
+        warnings: list[str] = []
+        if include_source and asset.size_bytes > self.max_provider_file_bytes:
+            include_source = False
+            include_description = True
+            warnings.append(
+                "Canonical source exceeded the provider file limit; indexed the description only."
+            )
+        if include_transcript and asset.size_bytes > self.max_media_transcription_bytes:
+            raise ValueError(
+                "Media exceeds the configured transcription limit; provide a smaller "
+                "browser-derived audio/video asset"
+            )
+        if include_transcript and self.transcription is None:
+            raise RuntimeError("OpenAI media transcription is unavailable")
+        if route is FileRoute.VIDEO and include_transcript:
+            warnings.append("Video indexing analyzes the audio track only.")
+        return IndexingPlan(
+            requested_mode=mode,
+            include_description=include_description,
+            include_source=include_source,
+            include_transcript=include_transcript,
+            evidence_refs=refs,
+            warnings=tuple(warnings),
+        )
+
+    @staticmethod
+    def _matches(
+        active: AssetIngestionRow, description: str, plan: IndexingPlan
+    ) -> bool:
+        try:
+            prepared = json.loads(active.prepared_json)
+        except (TypeError, json.JSONDecodeError):
+            return False
+        return active.description == description and prepared.get("plan") == _plan_payload(plan)
 
     async def _owned_asset(self, owner_id: str, asset_id: str) -> AssetRow:
         async with self.sessions() as session:
@@ -343,6 +525,7 @@ class FileIndexWriter:
         asset: AssetRow,
         route: FileRoute,
         description: str,
+        plan: IndexingPlan,
     ) -> AssetIngestionRow:
         now = datetime.now(UTC)
         async with self.sessions.begin() as session:
@@ -367,6 +550,7 @@ class FileIndexWriter:
                     {
                         "providerNativeSource": route in _PROVIDER_NATIVE_ROUTES,
                         "serverMediaProcessing": False,
+                        "plan": _plan_payload(plan),
                     }
                 ),
                 description=description,
@@ -384,6 +568,7 @@ class FileIndexWriter:
         ingestion: AssetIngestionRow,
         asset: AssetRow,
         description: str,
+        plan: IndexingPlan,
     ) -> AssetIndexArtifactRow:
         content = (f"# {asset.filename}\n\nModality: {ingestion.route}\n\n{description}\n").encode()
         key = f"ingestion/{asset.owner_id}/{asset.id}/{ingestion.id}/{uuid4().hex}-description.md"
@@ -398,7 +583,109 @@ class FileIndexWriter:
             ArtifactKind.DESCRIPTION,
             "text/markdown",
             location,
-            {"strategyVersion": INDEXING_STRATEGY_VERSION, "modelAuthored": True},
+            {
+                "strategyVersion": INDEXING_STRATEGY_VERSION,
+                "modelAuthored": True,
+                "evidenceRefs": list(plan.evidence_refs),
+            },
+        )
+
+    async def _create_transcript_artifacts(
+        self,
+        ingestion: AssetIngestionRow,
+        asset: AssetRow,
+        route: FileRoute,
+    ) -> list[AssetIndexArtifactRow]:
+        assert self.transcription is not None
+        content = await self.blob_store.read_range(_asset_location(asset), 0, asset.size_bytes)
+        transcript = await self.transcription.transcribe(
+            asset.filename,
+            content,
+            asset.media_type,
+        )
+        if self.billing is not None and self.settings is not None:
+            amount = transcription_cost_microusd(
+                transcript.model,
+                seconds=transcript.duration,
+                markup=self.settings.billing_markup_multiplier,
+            )
+            await self.billing.append_event(
+                user_id=asset.owner_id,
+                amount_microusd=-amount,
+                event_type="media_diarization",
+                description=f"Media transcription: {asset.filename}",
+                provider_request_id=transcript.request_id,
+                idempotency_key=(
+                    f"openai:{transcript.request_id}"
+                    if transcript.request_id
+                    else f"diarization:{ingestion.id}"
+                ),
+                event_metadata={
+                    "model": transcript.model,
+                    "duration_seconds": transcript.duration,
+                    "asset_id": asset.id,
+                    "markup_multiplier": self.settings.billing_markup_multiplier,
+                    "pricing_version": self.settings.billing_pricing_version,
+                },
+            )
+        warning = (
+            "Video indexing analyzes the audio track only."
+            if route is FileRoute.VIDEO
+            else None
+        )
+        payload = {
+            "duration": transcript.duration,
+            "text": transcript.text,
+            "warning": warning,
+            "segments": list(transcript.segments),
+        }
+        transcript_artifact = await self._create_bytes_artifact(
+            ingestion,
+            asset,
+            ArtifactKind.TRANSCRIPT,
+            json.dumps(payload, ensure_ascii=False).encode(),
+            "application/json",
+            {"durationSeconds": transcript.duration, "warning": warning},
+        )
+        artifacts = [transcript_artifact]
+        for chunk in _transcript_chunks(transcript.segments):
+            artifacts.append(
+                await self._create_bytes_artifact(
+                    ingestion,
+                    asset,
+                    ArtifactKind.TRANSCRIPT_INDEX,
+                    chunk.content,
+                    "text/markdown",
+                    chunk.metadata,
+                )
+            )
+        return artifacts
+
+    async def _create_bytes_artifact(
+        self,
+        ingestion: AssetIngestionRow,
+        asset: AssetRow,
+        kind: ArtifactKind,
+        content: bytes,
+        media_type: str,
+        metadata: Mapping[str, object],
+    ) -> AssetIndexArtifactRow:
+        key = (
+            f"ingestion/{asset.owner_id}/{asset.id}/{ingestion.id}/"
+            f"{uuid4().hex}-{kind.value}"
+        )
+        location = await self.blob_store.put(
+            key,
+            _bytes_chunks(content),
+            media_type=media_type,
+        )
+        return await self._create_artifact(
+            ingestion,
+            asset,
+            kind,
+            media_type,
+            location,
+            metadata,
         )
 
     async def _create_source_artifact(
@@ -486,6 +773,20 @@ class FileIndexWriter:
                 )
             )
 
+    async def _mark_local_artifact_ready(self, artifact_id: str) -> None:
+        now = datetime.now(UTC)
+        async with self.sessions.begin() as session:
+            await session.execute(
+                update(AssetIndexArtifactRow)
+                .where(AssetIndexArtifactRow.id == artifact_id)
+                .values(
+                    state=ArtifactState.READY,
+                    provider_status="local",
+                    provider_checked_at=now,
+                    provider_error=None,
+                )
+            )
+
     async def _activate(self, ingestion_id: str, asset_id: str) -> tuple[str, ...]:
         now = datetime.now(UTC)
         async with self.sessions.begin() as session:
@@ -567,6 +868,9 @@ class FileIndexWriter:
                     .order_by(AssetIndexArtifactRow.created_at, AssetIndexArtifactRow.id)
                 )
             )
+        prepared_plan = _prepared_plan(ingestion)
+        mode = prepared_plan.get("requestedMode")
+        raw_warnings = prepared_plan.get("warnings")
         return {
             "ingestionId": ingestion.id,
             "assetId": asset.id,
@@ -580,21 +884,32 @@ class FileIndexWriter:
                 artifact.provider_file_id is not None for artifact in artifacts
             ),
             "serverMediaProcessing": False,
+            "representationMode": (
+                mode if isinstance(mode, str) else RepresentationMode.AUTO.value
+            ),
+            "warnings": (
+                [item for item in raw_warnings if isinstance(item, str)]
+                if isinstance(raw_warnings, list)
+                else []
+            ),
         }
 
 
 class FileIndexReader:
-    """Read already-prepared demo artifacts without processing source media."""
+    """Read indexed artifacts without processing source media."""
 
     def __init__(
         self,
         sessions: async_sessionmaker[AsyncSession],
         blob_store: BlobStore,
         vectors: VectorStoreReader,
+        *,
+        max_vision_pdf_bytes: int = 40 * 1024 * 1024,
     ) -> None:
         self.sessions = sessions
         self.blob_store = blob_store
         self.vectors = vectors
+        self.max_vision_pdf_bytes = max_vision_pdf_bytes
 
     async def search(
         self,
@@ -810,6 +1125,11 @@ class FileIndexReader:
             if not original:
                 artifact = await self._matching_pdf_range(owner_id, asset_id, artifact)
             if original or artifact is None:
+                if asset.size_bytes > self.max_vision_pdf_bytes:
+                    raise ValueError(
+                        "PDF exceeds the direct vision-input budget; use the browser PDF tools "
+                        "to create a bounded page sample"
+                    )
                 location = _asset_location(asset)
                 filename = asset.filename
                 provenance: Mapping[str, object] = {"original": True}
@@ -827,6 +1147,19 @@ class FileIndexReader:
                 "provenance": dict(provenance),
             }
         if route in {FileRoute.JSON, FileRoute.TABULAR}:
+            if artifact is not None and artifact.kind == ArtifactKind.DESCRIPTION:
+                content = await self._artifact_content(artifact, asset)
+                return {
+                    "assetId": asset.id,
+                    "artifactId": artifact.id,
+                    "filename": asset.filename,
+                    "route": route.value,
+                    "inputKind": "text",
+                    "text": content[:65_536].decode("utf-8", "replace"),
+                    "hasMore": len(content) > 65_536,
+                    "provenance": _metadata(artifact),
+                    "nextAction": "Use browser tools for canonical structured-data queries.",
+                }
             if artifact is not None and artifact.kind == ArtifactKind.SOURCE_FILE:
                 content = await self._artifact_content(artifact, asset)
                 return {
@@ -1145,6 +1478,12 @@ def _index_provider_filename(asset: AssetRow, artifact: AssetIndexArtifactRow) -
     if artifact.kind == ArtifactKind.SOURCE_FILE:
         return asset.filename
     stem = asset.filename.rsplit(".", 1)[0]
+    if artifact.kind == ArtifactKind.TRANSCRIPT_INDEX:
+        metadata = _metadata(artifact)
+        return (
+            f"{stem}-transcript-{int(_required_number(metadata, 'startSeconds'))}-"
+            f"{int(_required_number(metadata, 'endSeconds'))}.md"
+        )
     return f"{stem}-retrieval-description-{artifact.id[-8:]}.md"
 
 
@@ -1164,3 +1503,59 @@ def _index_chunking_strategy(
 
 async def _bytes_chunks(content: bytes) -> AsyncIterator[bytes]:
     yield content
+
+
+def _plan_payload(plan: IndexingPlan) -> dict[str, object]:
+    return {
+        "requestedMode": plan.requested_mode.value,
+        "includeDescription": plan.include_description,
+        "includeSource": plan.include_source,
+        "includeTranscript": plan.include_transcript,
+        "evidenceRefs": list(plan.evidence_refs),
+        "warnings": list(plan.warnings),
+    }
+
+
+def _prepared_plan(ingestion: AssetIngestionRow) -> dict[str, object]:
+    try:
+        value = json.loads(ingestion.prepared_json)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(value, dict) or not isinstance(value.get("plan"), dict):
+        return {}
+    return cast(dict[str, object], value["plan"])
+
+
+def _transcript_chunks(
+    segments: Sequence[TranscriptSegmentPayload],
+) -> list[TranscriptChunk]:
+    chunks: list[TranscriptChunk] = []
+    current: list[TranscriptSegmentPayload] = []
+    window_start = 0.0
+    for segment in segments:
+        if current and segment["start"] - window_start >= 300:
+            chunks.append(_transcript_chunk(current))
+            current = []
+        if not current:
+            window_start = segment["start"]
+        current.append(segment)
+    if current:
+        chunks.append(_transcript_chunk(current))
+    return chunks
+
+
+def _transcript_chunk(segments: list[TranscriptSegmentPayload]) -> TranscriptChunk:
+    start = segments[0]["start"]
+    end = segments[-1]["end"]
+    speakers = sorted({item["speaker"] for item in segments})
+    return TranscriptChunk(
+        content=(
+            f"# Transcript {_timestamp(start)}–{_timestamp(end)}\n\n"
+            + "\n".join(_transcript_line(item) for item in segments)
+        ).encode(),
+        metadata={
+            "startSeconds": start,
+            "endSeconds": end,
+            "speakers": ", ".join(speakers),
+        },
+    )

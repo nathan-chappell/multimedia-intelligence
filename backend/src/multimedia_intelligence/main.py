@@ -32,6 +32,7 @@ from multimedia_intelligence.files.access import ScopedAgentDataAccess
 from multimedia_intelligence.files.indexing import (
     FileIndexReader,
     FileIndexWriter,
+    OpenAIMediaTranscriptionGateway,
     OpenAIVectorStoreGateway,
 )
 from multimedia_intelligence.files.s3_store import S3BlobStore
@@ -74,13 +75,30 @@ blob_store = S3BlobStore.from_settings(settings)
 vector_store_gateway = (
     OpenAIVectorStoreGateway(settings.openai_api_key, settings) if settings.openai_api_key else None
 )
+media_transcription_gateway = (
+    OpenAIMediaTranscriptionGateway(settings.openai_api_key, settings.openai_diarization_model)
+    if settings.openai_api_key
+    else None
+)
 file_index = (
-    FileIndexReader(sessions, blob_store, vector_store_gateway)
+    FileIndexReader(
+        sessions,
+        blob_store,
+        vector_store_gateway,
+        max_vision_pdf_bytes=settings.max_vision_pdf_bytes,
+    )
     if vector_store_gateway is not None
     else None
 )
 file_index_writer = (
-    FileIndexWriter(sessions, blob_store, vector_store_gateway)
+    FileIndexWriter(
+        sessions,
+        blob_store,
+        vector_store_gateway,
+        settings=settings,
+        transcription=media_transcription_gateway,
+        billing=billing,
+    )
     if vector_store_gateway is not None
     else None
 )
@@ -95,7 +113,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             "gpt-5.6",
             settings.openai_title_model,
         ),
-        transcription_models=(settings.openai_dictation_model,),
+        transcription_models=(
+            settings.openai_dictation_model,
+            settings.openai_diarization_model,
+        ),
     )
     await store.initialize()
     yield

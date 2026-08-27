@@ -6,6 +6,7 @@ import jmespath
 import pytest
 from openai import OpenAI
 
+from multimedia_intelligence.config import get_settings
 from tests.support.jmespath_commands import (
     JmesPathValidator,
     jmespath_custom_tool,
@@ -37,7 +38,10 @@ GENERATION_CASES = (
 )
 @pytest.mark.parametrize("prompt", GENERATION_CASES)
 def test_model_generates_valid_jmespath(prompt: str) -> None:
-    response = OpenAI().responses.create(
+    api_key = get_settings().openai_api_key
+    if not api_key:
+        pytest.skip("OPENAI_API_KEY is unavailable")
+    response = OpenAI(api_key=api_key).responses.create(
         model=LIVE_MODEL,
         input=prompt,
         tools=[jmespath_custom_tool()],  # type: ignore[list-item]

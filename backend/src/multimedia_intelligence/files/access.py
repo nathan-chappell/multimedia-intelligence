@@ -250,6 +250,9 @@ class ScopedAgentDataAccess:
         self,
         asset_id: str,
         description: str,
+        representation_mode: Literal["auto", "description", "source", "both"],
+        evidence_refs: list[str] | None,
+        replace_existing: bool,
     ) -> IndexCollectionFileResult:
         if self.file_index_writer is None:
             raise RuntimeError("User file indexing is unavailable")
@@ -257,7 +260,14 @@ class ScopedAgentDataAccess:
         if collection.owner_id != self.owner_id:
             raise ValueError("Public collection files are read-only")
         await self._require_selected_asset(asset_id, collection)
-        return await self.file_index_writer.index(self.owner_id, asset_id, description)
+        return await self.file_index_writer.index(
+            self.owner_id,
+            asset_id,
+            description,
+            representation_mode=representation_mode,
+            evidence_refs=evidence_refs,
+            replace_existing=replace_existing,
+        )
 
     async def _selected_collection(self) -> FileCollectionRow:
         return await selected_collection(

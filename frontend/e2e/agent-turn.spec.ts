@@ -273,7 +273,7 @@ test("hydrates a saved conversation file before a client tool reads it", async (
             status: "pending",
             call_id: "call_hydrated_read",
             name: "read_text_chars",
-            arguments: { assetId: "asset_saved", start: 0, count: 200 },
+            arguments: { workspaceFileId: "asset_saved", start: 0, count: 200 },
           },
         },
       ]);
@@ -283,7 +283,7 @@ test("hydrates a saved conversation file before a client tool reads it", async (
       continuationSeen = true;
       expect(request.params.result).toMatchObject({
         ok: true,
-        assetId: "asset_saved",
+        workspaceFileId: "asset_saved",
         start: 0,
       });
       expect(request.params.result?.text).toContain("Juniper");
@@ -654,7 +654,7 @@ interface ChatKitRequest {
     input?: { content?: Array<{ text?: string }> };
     result?: {
       ok?: boolean;
-      assetId?: string;
+      workspaceFileId?: string;
       start?: number;
       text?: string;
       page?: number;

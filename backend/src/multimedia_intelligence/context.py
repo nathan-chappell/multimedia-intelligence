@@ -88,6 +88,8 @@ class IndexCollectionFileResult(TypedDict):
     indexedRepresentations: list[str]
     providerFileCount: int
     serverMediaProcessing: bool
+    representationMode: str
+    warnings: list[str]
 
 
 class AgentDataAccess(Protocol):
@@ -142,6 +144,9 @@ class AgentDataAccess(Protocol):
         self,
         asset_id: str,
         description: str,
+        representation_mode: Literal["auto", "description", "source", "both"],
+        evidence_refs: list[str] | None,
+        replace_existing: bool,
     ) -> IndexCollectionFileResult: ...
 
 

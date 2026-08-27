@@ -42,14 +42,32 @@ def build_file_index_tools() -> list[Tool]:
         ctx: ToolContext[AgentContext[RequestContext]],
         asset_id: str,
         description: Annotated[str, Field(min_length=1, max_length=4_000)],
+        representation_mode: Literal["auto", "description", "source", "both"] = "auto",
+        evidence_refs: Annotated[
+            list[str] | None,
+            Field(
+                default=None,
+                max_length=20,
+                description="Bounded page, timestamp, or artifact references supporting the plan.",
+            ),
+        ] = None,
+        replace_existing: bool = False,
     ) -> IndexCollectionFileResult:
         """Index an owned selected-collection file after the user explicitly requests it.
 
-        The description becomes a durable searchable artifact. Provider-supported documents are
-        also attached in canonical form; the server does not parse or transform source media.
+        Use representation_mode to choose a searchable description, a provider-native source, or
+        both. Auto follows the route policy and creates transcripts for audio/video. Set
+        replace_existing only when the user asks to update an existing index. The server does not
+        parse or transform source media; transcription is performed by OpenAI.
         """
 
-        return await _access(ctx).index_collection_file(asset_id, description)
+        return await _access(ctx).index_collection_file(
+            asset_id,
+            description,
+            representation_mode,
+            evidence_refs,
+            replace_existing,
+        )
 
     @function_tool(name_override="find_collection_files")
     async def find_collection_files(

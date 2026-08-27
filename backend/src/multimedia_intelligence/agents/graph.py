@@ -12,6 +12,7 @@ from multimedia_intelligence.files.client_tools import (
     CLIENT_TOOL_NAMES,
     DOCUMENT_CLIENT_TOOLS,
     FILE_DISCOVERY_CLIENT_TOOLS,
+    IMAGE_CLIENT_TOOLS,
     STRUCTURED_DATA_CLIENT_TOOLS,
     build_file_client_tools,
 )
@@ -59,7 +60,8 @@ class AssistantGraph:
 When the request refers to documents or could materially benefit from the user's files, prefer to
 check them rather than answering generically. Do not call file tools for unrelated requests.
 The conversation workspace is the current thread's active working set. Use list_files to discover
-its included or browser-staged files, then use browser tools through the matching specialist.
+its included or browser-staged files. Pass a returned workspaceFileId as workspace_file_id to
+browser tools; durable server tools take asset_id from assetId. Never substitute the identifiers.
 The selected collection is a durable library where uploads and ingestion happen. Use
 find_collection_files for filename, creation-date, recent-file, or collection-inventory requests;
 it queries authoritative database metadata and includes unindexed files. Prefer exact or prefix
@@ -69,9 +71,11 @@ Use file_search for semantic discovery by subject or file contents; it searches 
 representations. Both tools are restricted to the selected collection. Preserve collection,
 assetId, and artifactId when present, then hand content work to the matching specialist.
 Only call index_collection_file when the user explicitly asks to index, ingest, or add a file to
-collection search. First inspect enough evidence to write a truthful retrieval description; never
-invent file contents. The tool stores that description and attaches provider-supported canonical
-documents without server-side PDF, image, audio, or video processing.
+collection search. First inspect enough evidence to write a truthful retrieval description and
+include bounded evidence_refs; never invent file contents. Use representation_mode=description for
+CSV/image summaries, source or both for provider-native text/PDF/JSON when requested, and auto for
+route defaults including OpenAI transcription of audio/video. Use replace_existing only when the
+user asks to refresh an existing index.
 When selected PDF pages are the right retrieval unit, have the document specialist create a
 durable as_files sample in the browser, then index the returned asset instead of slicing it on the
 server.
@@ -106,6 +110,8 @@ artifactId; PDF hydration defaults to the matching page-range PDF. Direct collec
 does not change workspace membership.
 Use pdf_random_sample with text_content for cheap text evidence.
 Use as_files when layout or images matter, or extracted text is empty or incoherent.
+Use pdf_render_page when one page needs close visual inspection; its saved PNG is attached to the
+continuation as high-detail vision input.
 Keep the range focused and the sample count as small as the question allows.
 Preserve page and layout context and separate evidence from inference.
 Return control to the root after producing the needed overview.""",
@@ -145,13 +151,15 @@ Return control to the root after producing the needed overview.""",
             model_settings=self.model_settings,
             instructions="""Summarize audio or video evidence and propose timestamped analysis.
 Use get_transcript with timestamp ranges and cursors for indexed audio or video discovered by
-file_search or find_collection_files. Video ingestion describes only the audio track unless
-separate visual evidence is available. Return control to the root after producing the needed
-evidence.""",
+file_search or find_collection_files and identified by a durable assetId. A browser-staged
+workspaceFileId has no transcript until the user explicitly requests collection indexing; explain
+that boundary instead of calling get_transcript. Video ingestion describes only the audio track
+unless separate visual evidence is available. Return control to the root after producing the
+needed evidence.""",
             tools=media_tools,
             handoffs=[return_to_root],
         )
-        image_tools = self._tools("get_file")
+        image_tools = self._tools(*IMAGE_CLIENT_TOOLS, "get_file")
         self.image = Agent(
             name="Image specialist",
             model=model,
@@ -159,9 +167,11 @@ evidence.""",
             instructions="""Summarize image evidence while preserving asset identity.
 For an image discovered by file_search or find_collection_files, use get_file to receive the
 canonical image as vision input. Separate observation from inference, then return control to the
-root.""",
+root. For a browser-staged or included workspace image, call view_workspace_image with its
+workspace_file_id; never infer image content from a filename.""",
             tools=image_tools,
             handoffs=[return_to_root],
+            tool_use_behavior=self._stop_at_client_tools(image_tools),
         )
 
         self.root.handoffs = [
@@ -190,6 +200,7 @@ root.""",
             **{name: self.root for name in FILE_DISCOVERY_CLIENT_TOOLS},
             **{name: self.document for name in DOCUMENT_CLIENT_TOOLS},
             **{name: self.structured_data for name in STRUCTURED_DATA_CLIENT_TOOLS},
+            **{name: self.image for name in IMAGE_CLIENT_TOOLS},
         }
 
     @property

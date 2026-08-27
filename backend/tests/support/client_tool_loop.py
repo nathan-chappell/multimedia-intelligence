@@ -204,15 +204,35 @@ class FixtureFileClient:
                 "files": files[start : start + 10],
             }
 
-        asset_id = _required_string(arguments, "assetId")
+        asset_id = _required_string(
+            arguments,
+            "workspaceFileId" if "workspaceFileId" in arguments else "assetId",
+        )
         file = self.files.get(asset_id)
         if file is None:
             raise ValueError(f"No staged file is registered for asset ID {asset_id}")
+        if name == "view_workspace_image":
+            if file.route is not FileRoute.IMAGE:
+                raise ValueError("Vision inspection requires an image file")
+            return {
+                "workspaceFileId": asset_id,
+                "file": {
+                    "assetId": f"asset_saved_{asset_id}",
+                    "filename": file.path.name,
+                    "mediaType": file.media_type,
+                    "sizeBytes": file.path.stat().st_size,
+                    "durability": "included",
+                },
+            }
         if name in {"read_text_chars", "json_chars"}:
             start = _integer(arguments, "start", default=0, minimum=0)
             count = _integer(arguments, "count", default=16_384, minimum=1)
             text = file.path.read_text(encoding="utf-8")
-            return {"assetId": asset_id, "start": start, "text": text[start : start + count]}
+            return {
+                "workspaceFileId": asset_id,
+                "start": start,
+                "text": text[start : start + count],
+            }
         if name == "query_structured_data":
             expression = _required_string(arguments, "expression")
             self.jmespath_validator.validate(expression)
@@ -229,7 +249,7 @@ class FixtureFileClient:
             if truncated:
                 value = value[:100]
             return {
-                "assetId": asset_id,
+                "workspaceFileId": asset_id,
                 "expression": expression,
                 "value": value,
                 "truncated": truncated,
@@ -250,7 +270,7 @@ class FixtureFileClient:
             sampled_pages = list(range(start_page, end_page + 1))[:count]
             mode = arguments.get("outputMode", "text_content")
             common: dict[str, object] = {
-                "assetId": asset_id,
+                "workspaceFileId": asset_id,
                 "mode": mode,
                 "pageCount": page_count,
                 "range": {"startPage": start_page, "endPage": end_page},
@@ -302,7 +322,8 @@ class FixtureFileClient:
     @staticmethod
     def _file_metadata(file: StagedFile) -> dict[str, object]:
         return {
-            "assetId": file.asset_id,
+            "workspaceFileId": file.asset_id,
+            "assetId": None,
             "name": file.path.name,
             "mediaType": file.media_type,
             "sizeBytes": file.path.stat().st_size,
@@ -323,7 +344,7 @@ class FixtureFileClient:
             writer.write(handle)
         return {
             "artifactId": f"artifact_{file.asset_id}_{start_page}_{end_page}",
-            "sourceAssetId": file.asset_id,
+            "sourceWorkspaceFileId": file.asset_id,
             "kind": "pdf_part",
             "mediaType": "application/pdf",
             "sizeBytes": target.stat().st_size,
@@ -356,7 +377,7 @@ class FixtureFileClient:
             document.close()
         return {
             "artifactId": f"artifact_{file.asset_id}_page_{page_number}",
-            "sourceAssetId": file.asset_id,
+            "sourceWorkspaceFileId": file.asset_id,
             "kind": "pdf_page_image",
             "mediaType": "image/png",
             "sizeBytes": target.stat().st_size,

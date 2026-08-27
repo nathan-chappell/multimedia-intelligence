@@ -85,7 +85,8 @@ def test_runtime_instructions_forbid_server_side_file_processing() -> None:
 
     assert "Hand off content inspection" in instructions
     assert "Only call index_collection_file when the user explicitly asks" in instructions
-    assert "without server-side PDF, image, audio, or video processing" in instructions
+    assert "never claim that the server parsed or transformed source media" in instructions
+    assert "OpenAI transcription of audio/video" in instructions
     assert "never claim that the server parsed or transformed" in instructions
 
 
@@ -111,7 +112,7 @@ def test_specialists_receive_modality_specific_tools() -> None:
             "get_file",
         },
         "Media specialist": {"get_transcript"},
-        "Image specialist": {"get_file"},
+        "Image specialist": {"view_workspace_image", "get_file"},
     }
 
 
@@ -123,6 +124,7 @@ def test_client_tool_continuations_resume_with_the_owning_agent() -> None:
     assert graph.agent_for_client_tool("query_structured_data").name == (
         "Structured data specialist"
     )
+    assert graph.agent_for_client_tool("view_workspace_image").name == "Image specialist"
 
 
 def test_client_tool_continuation_keeps_the_originating_turn_correlation() -> None:
@@ -162,6 +164,9 @@ def test_client_tool_schemas_are_strict_and_pause_the_turn() -> None:
     assert all(
         tool.params_json_schema.get("additionalProperties") is False for tool in client_tools
     )
+    read_tool = next(tool for tool in client_tools if tool.name == "read_text_chars")
+    assert "workspace_file_id" in read_tool.params_json_schema["properties"]
+    assert "asset_id" not in read_tool.params_json_schema["properties"]
     assert graph.root.tool_use_behavior == {"stop_at_tool_names": ["list_files"]}
     document = graph.agent_for_client_tool("pdf_random_sample")
     assert document.tool_use_behavior == {
@@ -176,6 +181,8 @@ def test_client_tool_schemas_are_strict_and_pause_the_turn() -> None:
     assert structured.tool_use_behavior == {
         "stop_at_tool_names": ["json_chars", "query_structured_data"]
     }
+    image = graph.agent_for_client_tool("view_workspace_image")
+    assert image.tool_use_behavior == {"stop_at_tool_names": ["view_workspace_image"]}
 
 
 async def test_conversation_turn_sends_only_the_current_user_message() -> None:
@@ -333,7 +340,54 @@ async def test_pdf_file_sample_is_attached_to_function_output_by_signed_url() ->
         "type": "input_file",
         "file_url": "https://objects.example.test/signed-sample.pdf",
         "filename": "report-sample-2-9-17.pdf",
-        "detail": "low",
+        "detail": "high",
+    }
+
+
+async def test_rendered_pdf_page_is_attached_as_high_detail_image() -> None:
+    class FileAccess:
+        async def ready_file_download_url(self, thread_id: str, asset_id: str) -> str:
+            assert (thread_id, asset_id) == ("thread_1", "asset_page")
+            return "https://objects.example.test/signed-page.png"
+
+    tool_call = ClientToolCallItem(
+        id="tool_page",
+        thread_id="thread_1",
+        created_at=datetime.now(UTC),
+        status="completed",
+        call_id="call_page",
+        name="pdf_render_page",
+        arguments={"workspaceFileId": "local_pdf", "page": 4, "scale": 1.75},
+        output={
+            "ok": True,
+            "artifactId": "artifact_page",
+            "sourceWorkspaceFileId": "local_pdf",
+            "kind": "pdf_page_image",
+            "mediaType": "image/png",
+            "sizeBytes": 1234,
+            "durability": "included",
+            "file": {
+                "assetId": "asset_page",
+                "filename": "report-page-4.png",
+                "mediaType": "image/png",
+                "sizeBytes": 1234,
+                "durability": "included",
+            },
+        },
+    )
+    context = RequestContext(
+        client=ClientInfo(user_id="user_1", username="reader"),
+        data_access=FileAccess(),  # type: ignore[arg-type]
+    )
+
+    result = await MultimediaChatServer._conversation_input(None, [tool_call], context=context)
+
+    output = result[0]["output"]
+    assert isinstance(output, list)
+    assert output[1] == {
+        "type": "input_image",
+        "image_url": "https://objects.example.test/signed-page.png",
+        "detail": "high",
     }
 
 

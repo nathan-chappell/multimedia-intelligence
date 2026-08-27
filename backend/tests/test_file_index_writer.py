@@ -9,10 +9,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from multimedia_intelligence.auth import ensure_builtin_admin
+from multimedia_intelligence.billing.models import LedgerEventRow
+from multimedia_intelligence.billing.service import BillingService
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
 from multimedia_intelligence.files.collections import selected_collection
 from multimedia_intelligence.files.domain import AssetState, ObjectLocation
-from multimedia_intelligence.files.indexing import FileIndexWriter
+from multimedia_intelligence.files.indexing import (
+    DiarizedTranscript,
+    FileIndexWriter,
+    MediaTranscriptionGateway,
+    TranscriptSegmentPayload,
+)
 from multimedia_intelligence.files.records import AssetIndexArtifactRow, AssetIngestionRow, AssetRow
 
 from .settings import TEST_SETTINGS
@@ -86,12 +93,41 @@ class RecordingVectors:
         self.deleted.append(file_id)
 
 
+class RecordingTranscription:
+    model = "gpt-4o-transcribe-diarize"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bytes, str]] = []
+
+    async def transcribe(
+        self, filename: str, content: bytes, media_type: str
+    ) -> DiarizedTranscript:
+        self.calls.append((filename, content, media_type))
+        return DiarizedTranscript(
+            duration=12.5,
+            text="Hello from the interview.",
+            segments=(
+                TranscriptSegmentPayload(
+                    id="segment_1",
+                    start=0,
+                    end=12.5,
+                    speaker="A",
+                    text="Hello from the interview.",
+                ),
+            ),
+            model=self.model,
+            request_id="req_transcription",
+        )
+
+
 async def _writer_fixture(
     filename: str,
     media_type: str,
     content: bytes,
     *,
     vectors: RecordingVectors | None = None,
+    transcription: MediaTranscriptionGateway | None = None,
+    track_billing: bool = False,
 ) -> tuple[
     AsyncEngine,
     async_sessionmaker[AsyncSession],
@@ -125,6 +161,9 @@ async def _writer_fixture(
         sessions,
         MemoryBlobStore({"assets/original": content}),  # type: ignore[arg-type]
         gateway,
+        settings=TEST_SETTINGS,
+        transcription=transcription,
+        billing=BillingService(sessions, TEST_SETTINGS) if track_billing else None,
     )
     return engine, sessions, writer, gateway
 
@@ -142,7 +181,7 @@ async def test_writer_indexes_description_and_provider_native_source_once() -> N
     second = await writer.index(
         TEST_SETTINGS.admin_user_id,
         "asset_test",
-        "This retry must not create another provider upload.",
+        "Research notes about Transformer attention.",
     )
 
     assert first["status"] == "ready"
@@ -163,8 +202,13 @@ async def test_writer_indexes_description_and_provider_native_source_once() -> N
 
 
 async def test_writer_indexes_media_description_without_processing_source() -> None:
-    engine, _sessions, writer, vectors = await _writer_fixture(
-        "recording.mp3", "audio/mpeg", b"not decoded by the server"
+    transcription = RecordingTranscription()
+    engine, sessions, writer, vectors = await _writer_fixture(
+        "recording.mp3",
+        "audio/mpeg",
+        b"sent directly to OpenAI",
+        transcription=transcription,
+        track_billing=True,
     )
 
     result = await writer.index(
@@ -173,10 +217,101 @@ async def test_writer_indexes_media_description_without_processing_source() -> N
         "Interview recording about retrieval systems.",
     )
 
-    assert result["indexedRepresentations"] == ["description"]
-    assert result["providerFileCount"] == 1
-    assert len(vectors.uploads) == 1
+    assert result["indexedRepresentations"] == [
+        "description",
+        "transcript",
+        "transcript_index",
+    ]
+    assert result["providerFileCount"] == 2
+    assert len(vectors.uploads) == 2
     assert vectors.uploads[0]["media_type"] == "text/markdown"
+    assert vectors.uploads[1]["media_type"] == "text/markdown"
+    assert transcription.calls == [
+        ("recording.mp3", b"sent directly to OpenAI", "audio/mpeg")
+    ]
+    async with sessions() as session:
+        transcript = await session.scalar(
+            select(AssetIndexArtifactRow).where(AssetIndexArtifactRow.kind == "transcript")
+        )
+        charge = await session.scalar(select(LedgerEventRow))
+    assert transcript is not None
+    assert transcript.provider_file_id is None
+    assert transcript.state == "ready"
+    assert charge is not None
+    assert charge.event_type == "media_diarization"
+    assert charge.provider_request_id == "req_transcription"
+    assert charge.event_metadata["asset_id"] == "asset_test"
+    await engine.dispose()
+
+
+async def test_writer_requires_explicit_replacement_for_changed_plan() -> None:
+    engine, sessions, writer, vectors = await _writer_fixture(
+        "notes.md", "text/markdown", b"source"
+    )
+    await writer.index(TEST_SETTINGS.admin_user_id, "asset_test", "First description.")
+
+    with pytest.raises(ValueError, match="replace_existing=true"):
+        await writer.index(TEST_SETTINGS.admin_user_id, "asset_test", "Updated description.")
+
+    replaced = await writer.index(
+        TEST_SETTINGS.admin_user_id,
+        "asset_test",
+        "Updated description.",
+        replace_existing=True,
+    )
+
+    assert replaced["reused"] is False
+    assert len(vectors.uploads) == 4
+    assert vectors.deleted == ["file_1", "file_2"]
+    async with sessions() as session:
+        attempts = tuple(
+            await session.scalars(select(AssetIngestionRow).order_by(AssetIngestionRow.version))
+        )
+    assert [attempt.is_active for attempt in attempts] == [False, True]
+    await engine.dispose()
+
+
+async def test_writer_falls_back_to_description_before_reading_oversized_source() -> None:
+    engine, _sessions, writer, vectors = await _writer_fixture(
+        "large.pdf", "application/pdf", b"oversized"
+    )
+    writer.max_provider_file_bytes = 4
+
+    result = await writer.index(
+        TEST_SETTINGS.admin_user_id,
+        "asset_test",
+        "A bounded description of the large PDF.",
+    )
+
+    assert result["indexedRepresentations"] == ["description"]
+    assert result["warnings"] == [
+        "Canonical source exceeded the provider file limit; indexed the description only."
+    ]
+    assert len(vectors.uploads) == 1
+    assert vectors.uploads[0]["content"] != b"oversized"
+    await engine.dispose()
+
+
+async def test_description_only_media_plan_does_not_transcribe() -> None:
+    transcription = RecordingTranscription()
+    engine, _sessions, writer, vectors = await _writer_fixture(
+        "recording.mp3",
+        "audio/mpeg",
+        b"audio",
+        transcription=transcription,
+    )
+
+    result = await writer.index(
+        TEST_SETTINGS.admin_user_id,
+        "asset_test",
+        "A user-requested description-only index.",
+        representation_mode="description",
+    )
+
+    assert result["representationMode"] == "description"
+    assert result["indexedRepresentations"] == ["description"]
+    assert transcription.calls == []
+    assert len(vectors.uploads) == 1
     await engine.dispose()
 
 

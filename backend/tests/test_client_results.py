@@ -10,7 +10,12 @@ def test_text_result_is_validated_and_normalized() -> None:
         {"ok": True, "assetId": "asset_1", "start": 0, "text": "hello"},
         max_result_bytes=1024,
     )
-    assert result == {"ok": True, "assetId": "asset_1", "start": 0, "text": "hello"}
+    assert result == {
+        "ok": True,
+        "workspaceFileId": "asset_1",
+        "start": 0,
+        "text": "hello",
+    }
 
 
 @pytest.mark.parametrize(
@@ -71,6 +76,27 @@ def test_client_failure_does_not_require_an_asset_id() -> None:
     )
 
     assert result["ok"] is False
+
+
+def test_workspace_image_result_requires_a_durable_image_file() -> None:
+    result = validate_client_tool_result(
+        "view_workspace_image",
+        {"workspaceFileId": "local_image"},
+        {
+            "ok": True,
+            "workspaceFileId": "local_image",
+            "file": {
+                "assetId": "asset_image",
+                "filename": "diagram.webp",
+                "mediaType": "image/webp",
+                "sizeBytes": 100,
+                "durability": "included",
+            },
+        },
+        max_result_bytes=2048,
+    )
+
+    assert result["file"]["assetId"] == "asset_image"  # type: ignore[index]
 
 
 def test_pdf_random_text_sample_preserves_bounded_extracted_content() -> None:
@@ -147,7 +173,8 @@ def test_list_files_accepts_current_browser_workspace_states_without_warning() -
     )
 
     assert "warning" not in result
-    assert result["files"][0]["durableAssetId"] == "asset_1"  # type: ignore[index]
+    assert result["files"][0]["workspaceFileId"] == "local_1"  # type: ignore[index]
+    assert result["files"][0]["assetId"] == "asset_1"  # type: ignore[index]
 
 
 def test_list_files_rejects_more_than_ten_items() -> None:

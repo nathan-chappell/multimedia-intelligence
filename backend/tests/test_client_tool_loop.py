@@ -130,7 +130,7 @@ async def test_fixture_client_samples_text_and_extracts_pdf_range(tmp_path: Path
 
     assert sampled["pageCount"] == 3
     assert [page["page"] for page in sampled["pages"]] == [1, 2]  # type: ignore[union-attr]
-    assert extracted["sourceAssetId"] == "asset_pdf"
+    assert extracted["sourceWorkspaceFileId"] == "asset_pdf"
     assert extracted["durability"] == "transient_browser_only"
     assert rendered["kind"] == "pdf_page_image"
     assert (tmp_path / "handbook-page-1.png").read_bytes().startswith(b"\x89PNG")

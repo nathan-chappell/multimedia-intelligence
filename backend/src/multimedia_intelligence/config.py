@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     )
     signed_download_ttl_seconds: Annotated[int, Field(ge=1, le=7 * 24 * 60 * 60)] = 900
     max_upload_bytes: Annotated[int, Field(gt=0)] = 5 * 1024 * 1024 * 1024
+    max_provider_file_bytes: Annotated[int, Field(gt=0, le=512 * 1024 * 1024)] = (
+        512 * 1024 * 1024
+    )
+    max_vision_pdf_bytes: Annotated[int, Field(gt=0, le=50 * 1024 * 1024)] = 40 * 1024 * 1024
+    max_media_transcription_bytes: Annotated[int, Field(gt=0, le=25 * 1024 * 1024)] = (
+        25 * 1024 * 1024
+    )
     max_dictation_bytes: Annotated[int, Field(ge=1024, le=25 * 1024 * 1024)] = 25 * 1024 * 1024
     max_client_tool_result_bytes: Annotated[int, Field(ge=1024, le=1024 * 1024)] = 256 * 1024
     chatkit_max_page_size: Annotated[int, Field(ge=1, le=500)] = 100

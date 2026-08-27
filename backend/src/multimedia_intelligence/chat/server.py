@@ -41,6 +41,7 @@ from openai.types.responses.response_function_call_output_item_list_param import
     ResponseFunctionCallOutputItemParam,
 )
 from openai.types.responses.response_input_file_content_param import ResponseInputFileContentParam
+from openai.types.responses.response_input_image_content_param import ResponseInputImageContentParam
 from openai.types.responses.response_input_item_param import FunctionCallOutput
 from openai.types.responses.response_input_text_content_param import ResponseInputTextContentParam
 
@@ -52,9 +53,15 @@ from multimedia_intelligence.config import get_settings
 from multimedia_intelligence.context import RequestContext
 from multimedia_intelligence.files.client_results import (
     PdfRandomSampleResult,
+    TransientArtifactResult,
+    WorkspaceImageResult,
     validate_client_tool_result,
 )
-from multimedia_intelligence.files.client_tools import PDF_RANDOM_SAMPLE
+from multimedia_intelligence.files.client_tools import (
+    PDF_RANDOM_SAMPLE,
+    PDF_RENDER_PAGE,
+    VIEW_WORKSPACE_IMAGE,
+)
 from multimedia_intelligence.observability import (
     AgentRunHooks,
     RunCorrelation,
@@ -624,9 +631,57 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
                             type="input_file",
                             file_url=file_url,
                             filename=file.filename,
-                            detail="low",
+                            detail="high",
                         )
                     )
+            elif (
+                latest_item.name == PDF_RENDER_PAGE
+                and isinstance(latest_item.output, dict)
+                and latest_item.output.get("ok") is True
+            ):
+                if context is None or context.data_access is None:
+                    raise RuntimeError("Rendered page access is unavailable")
+                rendered = TransientArtifactResult.model_validate(latest_item.output)
+                if rendered.file is None:
+                    raise RuntimeError("Rendered page was not saved")
+                image_url = await context.data_access.ready_file_download_url(
+                    latest_item.thread_id,
+                    rendered.file.asset_id,
+                )
+                output = [
+                    ResponseInputTextContentParam(
+                        type="input_text",
+                        text=json.dumps(latest_item.output),
+                    ),
+                    ResponseInputImageContentParam(
+                        type="input_image",
+                        image_url=image_url,
+                        detail="high",
+                    ),
+                ]
+            elif (
+                latest_item.name == VIEW_WORKSPACE_IMAGE
+                and isinstance(latest_item.output, dict)
+                and latest_item.output.get("ok") is True
+            ):
+                if context is None or context.data_access is None:
+                    raise RuntimeError("Workspace image access is unavailable")
+                viewed = WorkspaceImageResult.model_validate(latest_item.output)
+                image_url = await context.data_access.ready_file_download_url(
+                    latest_item.thread_id,
+                    viewed.file.asset_id,
+                )
+                output = [
+                    ResponseInputTextContentParam(
+                        type="input_text",
+                        text=json.dumps(latest_item.output),
+                    ),
+                    ResponseInputImageContentParam(
+                        type="input_image",
+                        image_url=image_url,
+                        detail="high",
+                    ),
+                ]
             agent_input = [
                 cast(
                     TResponseInputItem,

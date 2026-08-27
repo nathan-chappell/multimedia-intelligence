@@ -25,6 +25,7 @@ PDF_RENDER_PAGE = "pdf_render_page"
 PDF_EXTRACT_RANGE = "pdf_extract_range"
 JSON_CHARS = "json_chars"
 QUERY_STRUCTURED_DATA = "query_structured_data"
+VIEW_WORKSPACE_IMAGE = "view_workspace_image"
 
 FILE_DISCOVERY_CLIENT_TOOLS = (LIST_FILES,)
 DOCUMENT_CLIENT_TOOLS = (
@@ -37,10 +38,12 @@ STRUCTURED_DATA_CLIENT_TOOLS = (
     JSON_CHARS,
     QUERY_STRUCTURED_DATA,
 )
+IMAGE_CLIENT_TOOLS = (VIEW_WORKSPACE_IMAGE,)
 CLIENT_TOOL_NAMES = (
     *FILE_DISCOVERY_CLIENT_TOOLS,
     *DOCUMENT_CLIENT_TOOLS,
     *STRUCTURED_DATA_CLIENT_TOOLS,
+    *IMAGE_CLIENT_TOOLS,
 )
 
 
@@ -90,9 +93,8 @@ def build_file_client_tools(
 ) -> list[Tool]:
     """Build tools backed by files in the conversation workspace and user's browser.
 
-    These tools never receive bucket credentials and never turn a browser result into a
-    durable artifact. A later upload/finalization endpoint must verify and persist any
-    derivative before a provider upload or ingestion plan can depend on it.
+    These tools never receive bucket credentials. Visual inputs and sampled PDF pages may use the
+    authenticated asset endpoint to persist a bounded browser result before the next model turn.
     """
 
     @function_tool(name_override=LIST_FILES)
@@ -117,7 +119,7 @@ def build_file_client_tools(
     @function_tool(name_override=READ_TEXT_CHARS)
     async def read_text_chars_tool(
         ctx: ChatKitToolContext,
-        asset_id: str,
+        workspace_file_id: str,
         start: int = 0,
         count: int = 16_384,
     ) -> dict[str, object]:
@@ -126,13 +128,13 @@ def build_file_client_tools(
         return await invoker(
             ctx,
             READ_TEXT_CHARS,
-            {"assetId": asset_id, "start": start, "count": count},
+            {"workspaceFileId": workspace_file_id, "start": start, "count": count},
         )
 
     @function_tool(name_override=JSON_CHARS)
     async def json_chars_tool(
         ctx: ChatKitToolContext,
-        asset_id: str,
+        workspace_file_id: str,
         start: int = 0,
         count: int = 16_384,
     ) -> dict[str, object]:
@@ -141,13 +143,13 @@ def build_file_client_tools(
         return await invoker(
             ctx,
             JSON_CHARS,
-            {"assetId": asset_id, "start": start, "count": count},
+            {"workspaceFileId": workspace_file_id, "start": start, "count": count},
         )
 
     @function_tool(name_override=QUERY_STRUCTURED_DATA)
     async def query_structured_data_tool(
         ctx: ChatKitToolContext,
-        asset_id: str,
+        workspace_file_id: str,
         expression: Annotated[str, Field(min_length=1, max_length=4096)],
     ) -> dict[str, object]:
         """Evaluate JMESPath against workspace JSON or CSV converted to JSON rows."""
@@ -155,13 +157,13 @@ def build_file_client_tools(
         return await invoker(
             ctx,
             QUERY_STRUCTURED_DATA,
-            {"assetId": asset_id, "expression": expression},
+            {"workspaceFileId": workspace_file_id, "expression": expression},
         )
 
     @function_tool(name_override=PDF_RANDOM_SAMPLE)
     async def pdf_random_sample_tool(
         ctx: ChatKitToolContext,
-        asset_id: str,
+        workspace_file_id: str,
         start_page: Annotated[int, Field(ge=1)] = 1,
         end_page: Annotated[int | None, Field(ge=1)] = None,
         count: Annotated[int, Field(ge=1, le=10)] = 5,
@@ -173,7 +175,7 @@ def build_file_client_tools(
             ctx,
             PDF_RANDOM_SAMPLE,
             {
-                "assetId": asset_id,
+                "workspaceFileId": workspace_file_id,
                 "startPage": start_page,
                 "endPage": end_page,
                 "count": count,
@@ -184,7 +186,7 @@ def build_file_client_tools(
     @function_tool(name_override=PDF_RENDER_PAGE)
     async def pdf_render_page_tool(
         ctx: ChatKitToolContext,
-        asset_id: str,
+        workspace_file_id: str,
         page: int,
         scale: float = 1.75,
     ) -> dict[str, object]:
@@ -193,13 +195,13 @@ def build_file_client_tools(
         return await invoker(
             ctx,
             PDF_RENDER_PAGE,
-            {"assetId": asset_id, "page": page, "scale": scale},
+            {"workspaceFileId": workspace_file_id, "page": page, "scale": scale},
         )
 
     @function_tool(name_override=PDF_EXTRACT_RANGE)
     async def pdf_extract_range_tool(
         ctx: ChatKitToolContext,
-        asset_id: str,
+        workspace_file_id: str,
         start_page: int,
         end_page: int,
     ) -> dict[str, object]:
@@ -209,10 +211,23 @@ def build_file_client_tools(
             ctx,
             PDF_EXTRACT_RANGE,
             {
-                "assetId": asset_id,
+                "workspaceFileId": workspace_file_id,
                 "startPage": start_page,
                 "endPage": end_page,
             },
+        )
+
+    @function_tool(name_override=VIEW_WORKSPACE_IMAGE)
+    async def view_workspace_image_tool(
+        ctx: ChatKitToolContext,
+        workspace_file_id: str,
+    ) -> dict[str, object]:
+        """Save one workspace image when needed and attach it as high-detail vision input."""
+
+        return await invoker(
+            ctx,
+            VIEW_WORKSPACE_IMAGE,
+            {"workspaceFileId": workspace_file_id},
         )
 
     tools: list[Tool] = [
@@ -223,6 +238,7 @@ def build_file_client_tools(
         pdf_extract_range_tool,
         json_chars_tool,
         query_structured_data_tool,
+        view_workspace_image_tool,
     ]
     if names is None:
         return tools

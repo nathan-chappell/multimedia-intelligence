@@ -28,7 +28,7 @@ frontend/dist/
 frontend/.vite/
 frontend/playwright-report/
 frontend/blob-report/
-frontend/test-results/
+frontend/test-results*/
 frontend/coverage/
 .eslintcache
 *.lcov

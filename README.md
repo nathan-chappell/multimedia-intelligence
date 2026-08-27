@@ -2,6 +2,7 @@
 
 ## Setup / Quick Start
 
+Initialize virtual environment, install dependencies, set environment variables (OpenAI API key and Clerk information required!), build frontend, start backend.
 See the [AI generated instructions](#quick-start)
 
 ## Introduction 
@@ -11,8 +12,8 @@ This project is a multimedia document intelligence agent, using the OpenAI platf
 ### Summary of file handling:
 
 | Type | Ingestion |
----
-| pdf | Agent inspects pdf and determines an ingestion strategy.  It determines if there are important images that should be extracted for viewing with image, and uses [OpenAI file inputs](https://developers.openai.com/api/docs/guides/file-inputs) to ensure the file gets processed by OCR and Vision\*.  It may decide to add to a collection. |
+|-|-|
+| pdf | Agent inspects pdf and determines an ingestion strategy.  It determines if there are important images that should be extracted for viewing with image, and uses [OpenAI file inputs](https://developers.openai.com/api/docs/guides/file-inputs) to ensure the file gets processed by OCR and Vision\*.  It may decide to add to a collection, where it may be used directly or as a reverse index. |
 | text | Agent can inspect file, and may decide to add it to a collection. |
 | csv | Agent can inspect file with a JMESPath (the csv is converted to a JSON and queries with a JMESPath library).  It may decide to add a summary of the csv to a collection, which is used as a reverse index. |
 | json | Agent can inspect file with a JMESPath.  It may decide to add a summary of the json to a collection, which is used as a reverse index, or the entire json, in which case standard text-similarity is used. |
@@ -24,32 +25,34 @@ This project is a multimedia document intelligence agent, using the OpenAI platf
 
 ## Architecture Overview
 
-This is a fairly standard web app - FastAPI containerized web server, requirement on a DB and Bucket (S3 compatible storage), and of course the OpenAI API.  The web server is intended to be lean - it should not be large in size or do much computation - and suitable for horizontal scaling.  A major implementation choice was the use of Chatkit by OpenAI.  This provides a good Chat UI as well as a conceptual model for storing conversation UI information.  It also provides an intersting capability, client side tool calls.  These are tool calls that are handled by the frontend (i.e. the user's browser).  We take advantage of this to handle file processing on the user's system and avoid things like pdf parsing or audio file decoding on the server.
+This is a fairly standard web app - FastAPI containerized web server, requirement on a DB and Bucket (S3 compatible storage), and of course the OpenAI API.  The web server is intended to be lean - it should not be large in size or do much computation - and suitable for horizontal scaling.  A major implementation choice was the use of Chatkit by OpenAI.  This provides a good Chat UI as well as a conceptual model for storing conversation UI information.  It also provides an intersting capability, client side tool calls.  These are tool calls that are handled by the frontend (i.e. the user's browser).  We take advantage of this to handle file processing on the user's system and avoid things like pdf parsing or csv file querying on the server.
 
 ## Road to Production
 
 The following issues require further consideration before being truly ready for a 
 
+- Conceptual finalization (e.g. determining our restrictions / contstraints / guarantees )
 - Eval plan (e.g. data collection, analysis, and principled / versioned iteration of prompts and tools)
 - QA and more testing
 - Database allocation and tenancy considerations
-- Pricing and rate-limits (Note I am currently bounded by tier 3, which for [Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna) allows 5000 RPM)
+- Pricing and rate-limits (e.g. I am currently bounded by tier 3, which for [Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna) allows 5000 RPM)
 - Optimizations (e.g. stress testing web server, maybe setting up a CDS for the frontend code...)
 - Guardrails and safeties (e.g. detecting abuse or misuse by individual users)
 
 ## Key Technical Decisions
 
-Well, I'm using pretty standard backend setup for Python (fastapi / sqlalchemy).  FastAPI is pretty battle-tested at this point, and pydantic is pretty widespread as well.  I'm using chatkit due to it's ease of use with the OpenAI platform, and the capabilities provided by client tools.  There are good cases to be made against becoming so vertically integrated to some extent, however it enables more rapid development, easiest access to the most advanced and specialized capabilities, and can act as a simplifying constraint.
+I'm using pretty standard backend setup for Python (fastapi / sqlalchemy).  FastAPI is pretty battle-tested at this point, and pydantic is pretty widespread as well.  I'm using chatkit due to it's ease of use with the OpenAI platform and relevant sdks (e.g. `openai-agents`), and the capabilities provided by client tools.  There are good cases to be made against becoming so vertically integrated to some extent, however it enables more rapid development, easiest access to the most advanced and specialized capabilities, and can act as a simplifying constraint.
 
 ## Engineering Standards
 
 - We're using automated tests where appropriate, including e2e and playwright tests.
 - We use popular type-checking, linting, and formatting tools.
+- Using git / github for version control (once v0 is "released" move to major/minor/patch to keep backend/frontend/image aligned)
 - All or nearly all code in the repository is AI generated, and not 100% of the code has been reviewed in high detail.
 
 ## AI Tools Used
 
-All or almost all of the code in the repository has been generated with codex.  It had examples and similar projects in neighboring directories, so it used much of this to start work and establish the structure and architecture.  Codex has been used for everything from planning, configuration, implementation, version-control, building, running tests, and deployment to railway.
+All or almost all of the code in the repository has been generated with codex (`gpt-5.6-Sol`).  It had examples and similar projects in neighboring directories, so it used much of this to start work and establish the structure and architecture.  Codex has been used for everything from planning, configuration, implementation, version-control, building, running tests, and deployment to railway.
 
 # Future Development
 

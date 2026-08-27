@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    ValidationError,
+    model_validator,
+)
 
 ShortText = Annotated[str, Field(min_length=1, max_length=1024)]
 Identifier = Annotated[str, Field(min_length=1, max_length=128)]
@@ -26,7 +34,8 @@ class ClientToolFailure(BaseModel):
 class FileInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    asset_id: Identifier = Field(alias="assetId")
+    workspace_file_id: Identifier = Field(alias="workspaceFileId")
+    asset_id: Identifier | None = Field(default=None, alias="assetId")
     name: ShortText
     media_type: ShortText = Field(alias="mediaType")
     size_bytes: Annotated[int, Field(ge=0)] = Field(alias="sizeBytes")
@@ -50,9 +59,18 @@ class FileInfo(BaseModel):
         "error",
         "local_browser_only",
     ]
-    durable_asset_id: Identifier | None = Field(default=None, alias="durableAssetId")
     reference: ShortText | None = None
     preview_path: ShortText | None = Field(default=None, alias="previewPath")
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_identifiers(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "workspaceFileId" in value:
+            return value
+        migrated = dict(value)
+        migrated["workspaceFileId"] = migrated.get("assetId")
+        migrated["assetId"] = migrated.pop("durableAssetId", None)
+        return migrated
 
 
 class ListFilesResult(ClientResult):
@@ -64,13 +82,19 @@ class ListFilesResult(ClientResult):
 
 
 class TextCharsResult(ClientResult):
-    asset_id: Identifier = Field(alias="assetId")
+    workspace_file_id: Identifier = Field(
+        alias="workspaceFileId",
+        validation_alias=AliasChoices("workspaceFileId", "assetId"),
+    )
     start: Annotated[int, Field(ge=0)]
     text: str
 
 
 class StructuredQueryResult(ClientResult):
-    asset_id: Identifier = Field(alias="assetId")
+    workspace_file_id: Identifier = Field(
+        alias="workspaceFileId",
+        validation_alias=AliasChoices("workspaceFileId", "assetId"),
+    )
     expression: Annotated[str, Field(min_length=1, max_length=4096)]
     value: JsonValue
     truncated: bool
@@ -105,7 +129,10 @@ class SampledPdfFile(BaseModel):
 
 
 class PdfRandomSampleResult(ClientResult):
-    asset_id: Identifier = Field(alias="assetId")
+    workspace_file_id: Identifier = Field(
+        alias="workspaceFileId",
+        validation_alias=AliasChoices("workspaceFileId", "assetId"),
+    )
     mode: Literal["text_content", "as_files"]
     page_count: Annotated[int, Field(ge=1)] = Field(alias="pageCount")
     page_range: PdfPageRange = Field(alias="range")
@@ -143,16 +170,49 @@ class PdfRandomSampleResult(ClientResult):
         return self
 
 
+class SavedVisualFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: Identifier = Field(alias="assetId")
+    filename: ShortText
+    media_type: Annotated[str, Field(pattern=r"^image/[a-z0-9.+-]+$")] = Field(
+        alias="mediaType"
+    )
+    size_bytes: Annotated[int, Field(ge=1)] = Field(alias="sizeBytes")
+    durability: Literal["included"]
+
+
 class TransientArtifactResult(ClientResult):
     artifact_id: Identifier = Field(alias="artifactId")
-    source_asset_id: Identifier = Field(alias="sourceAssetId")
+    source_workspace_file_id: Identifier = Field(
+        alias="sourceWorkspaceFileId",
+        validation_alias=AliasChoices("sourceWorkspaceFileId", "sourceAssetId"),
+    )
     kind: Literal["pdf_page_image", "pdf_part"]
     media_type: Literal["image/png", "application/pdf"] = Field(alias="mediaType")
     size_bytes: Annotated[int, Field(ge=0)] = Field(alias="sizeBytes")
-    durability: Literal["local_preview", "transient_browser_only"]
+    durability: Literal["local_preview", "transient_browser_only", "included"]
+    file: SavedVisualFile | None = None
     next_step: Annotated[str, Field(min_length=1, max_length=1000)] | None = Field(
         default=None, alias="nextStep"
     )
+
+    @model_validator(mode="after")
+    def validate_saved_visual(self) -> TransientArtifactResult:
+        if self.durability == "included":
+            if self.kind != "pdf_page_image" or self.file is None:
+                raise ValueError("Included client artifacts must contain one saved page image")
+        elif self.file is not None:
+            raise ValueError("Transient client artifacts cannot reference a durable file")
+        return self
+
+
+class WorkspaceImageResult(ClientResult):
+    workspace_file_id: Identifier = Field(
+        alias="workspaceFileId",
+        validation_alias=AliasChoices("workspaceFileId", "assetId"),
+    )
+    file: SavedVisualFile
 
 
 type ValidClientResult = (
@@ -162,6 +222,7 @@ type ValidClientResult = (
     | StructuredQueryResult
     | PdfRandomSampleResult
     | TransientArtifactResult
+    | WorkspaceImageResult
 )
 
 _RESULT_MODELS: dict[str, type[BaseModel]] = {
@@ -172,6 +233,7 @@ _RESULT_MODELS: dict[str, type[BaseModel]] = {
     "pdf_random_sample": PdfRandomSampleResult,
     "pdf_render_page": TransientArtifactResult,
     "pdf_extract_range": TransientArtifactResult,
+    "view_workspace_image": WorkspaceImageResult,
 }
 
 
@@ -220,8 +282,10 @@ def validate_client_tool_result(
     ):
         raise ValueError("Structured query result does not match the requested expression")
 
-    expected_asset_id = arguments.get("assetId")
-    actual_asset_id = normalized.get("assetId", normalized.get("sourceAssetId"))
+    expected_asset_id = arguments.get("workspaceFileId", arguments.get("assetId"))
+    actual_asset_id = normalized.get(
+        "workspaceFileId", normalized.get("sourceWorkspaceFileId")
+    )
     if (
         expected_asset_id is not None
         and actual_asset_id is not None
