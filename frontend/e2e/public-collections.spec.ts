@@ -30,6 +30,9 @@ test.beforeEach(async ({ page }) => {
       body: JSON.stringify({ items: [], total: 0, limit: 100, offset: 0 }),
     }),
   );
+  await page.route(/\/api\/assets(?:\?.*)?$/, (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
+  );
 });
 
 test("shows a public collection as a searchable read-only workspace", async ({ page }) => {
@@ -57,7 +60,7 @@ test("shows a public collection as a searchable read-only workspace", async ({ p
   await expect(page.getByLabel("Active collection")).toHaveValue("collection_shared");
   await expect(page.getByText("Public", { exact: true })).toBeVisible();
   await expect(page.getByText(/Chat can search its indexed files/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Upload files" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Add files" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Refresh index status" })).toBeDisabled();
 });
 

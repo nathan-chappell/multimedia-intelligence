@@ -102,12 +102,17 @@ async def test_real_openai_vector_store_ingests_and_searches_csv_and_pdf() -> No
         )
         csv_hits = await access.file_search("Afghanistan Afghani exchange rate", 5, ["csv"])
         pdf_hits = await access.file_search("Transformer multi-head attention", 5, ["pdf"])
-        assert csv_hits and csv_hits[0]["assetId"] == "csv_live"
-        assert pdf_hits and pdf_hits[0]["assetId"] == "pdf_live"
-        csv_file = await access.get_file("csv_live", str(csv_hits[0]["artifactId"]))
+        assert csv_hits and csv_hits[0]["fileId"] == "csv_live"
+        assert pdf_hits and pdf_hits[0]["fileId"] == "pdf_live"
+        reader = FileIndexReader(sessions, blobs, vectors)
+        csv_file = await reader.resolve_file(
+            TEST_SETTINGS.admin_user_id, "csv_live", str(csv_hits[0]["artifactId"])
+        )
         assert csv_file["inputKind"] == "text"
         assert "Afghanistan" in str(csv_file.get("text") or csv_file.get("profile"))
-        hydrated = await access.get_file("pdf_live", str(pdf_hits[0]["artifactId"]))
+        hydrated = await reader.resolve_file(
+            TEST_SETTINGS.admin_user_id, "pdf_live", str(pdf_hits[0]["artifactId"])
+        )
         assert hydrated["inputKind"] == "file"
     finally:
         async with sessions() as session:

@@ -154,7 +154,8 @@ async def test_public_collection_is_selectable_and_read_only_for_another_user() 
     assert files.status_code == 200
     assert files.json()["items"][0]["filename"] == "shared.md"
     assert preview.status_code == 307
-    assert inclusion.status_code == 403
+    assert inclusion.status_code == 200
+    assert inclusion.json()["included"] is True
     assert visibility.status_code == 403
 
     upload = vectors.uploads[0]
@@ -166,7 +167,9 @@ async def test_public_collection_is_selectable_and_read_only_for_another_user() 
     reader = FileIndexReader(sessions, blobs, vectors)
     access = ScopedAgentDataAccess(sessions, viewer.id, blobs, reader)
     search_results = await access.file_search("Shared", 5)
-    assert search_results[0]["assetId"] == "shared-notes"
+    assert search_results[0]["fileId"] == "shared-notes"
+    workspace = await access.list_workspace_files()
+    assert workspace[0]["fileId"] == "shared-notes"
     await engine.dispose()
 
 

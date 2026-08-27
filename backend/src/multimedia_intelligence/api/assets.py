@@ -20,9 +20,7 @@ from multimedia_intelligence.files.domain import (
     Asset,
     AssetState,
     IncludeState,
-    IntentKind,
     ObjectLocation,
-    ThreadAssetInclude,
 )
 from multimedia_intelligence.files.policy import UnsupportedFileType, classify_file
 from multimedia_intelligence.files.ports import BlobStore
@@ -31,6 +29,7 @@ from multimedia_intelligence.files.records import (
     DerivedArtifactRow,
     FileCollectionRow,
     ThreadAssetIncludeRow,
+    UserWorkspaceFileRow,
 )
 from multimedia_intelligence.files.repository import SqlAlchemyAssetRepository
 from multimedia_intelligence.files.retention import as_utc
@@ -47,19 +46,21 @@ class SavedAsset(BaseModel):
 
 
 class IncludeAssetRequest(BaseModel):
-    thread_id: str
+    model_config = ConfigDict(extra="forbid")
+
+    thread_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class UpdateAssetInclusionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    thread_id: str = Field(min_length=1, max_length=128)
+    thread_id: str | None = Field(default=None, min_length=1, max_length=128)
     included: bool
 
 
 class AssetInclusionResponse(BaseModel):
     asset_id: str
-    thread_id: str
+    thread_id: str | None
     included: bool
     include_id: str | None
 
@@ -94,37 +95,36 @@ def build_asset_router(
     @router.get("", response_model=list[SavedAsset])
     async def list_saved_assets(
         request: Request,
-        thread_id: str = Query(min_length=1, max_length=128),
+        thread_id: str | None = Query(default=None, min_length=1, max_length=128),
     ) -> list[SavedAsset]:
-        """List saved files attached to one of the caller's conversations."""
+        """List the caller's durable workspace files.
+
+        ``thread_id`` is accepted for compatibility but workspace membership is user-scoped.
+        """
 
         user = await authenticate_request(request, sessions, settings)
-        await _require_owned_thread(sessions, thread_id, user.id)
         async with sessions() as session:
             rows = (
                 await session.execute(
-                    select(ThreadAssetIncludeRow, AssetRow)
-                    .join(AssetRow, AssetRow.id == ThreadAssetIncludeRow.asset_id)
+                    select(UserWorkspaceFileRow, AssetRow)
+                    .join(AssetRow, AssetRow.id == UserWorkspaceFileRow.asset_id)
                     .where(
-                        ThreadAssetIncludeRow.thread_id == thread_id,
-                        ThreadAssetIncludeRow.owner_id == user.id,
-                        ThreadAssetIncludeRow.state == IncludeState.READY,
-                        AssetRow.owner_id == user.id,
+                        UserWorkspaceFileRow.owner_id == user.id,
                         AssetRow.state == AssetState.STORED,
                     )
-                    .order_by(ThreadAssetIncludeRow.created_at.asc(), AssetRow.id.asc())
+                    .order_by(UserWorkspaceFileRow.created_at.asc(), AssetRow.id.asc())
                 )
             ).all()
         return [
             SavedAsset(
                 asset_id=asset.id,
-                include_id=include.id,
+                include_id=workspace_file.id,
                 filename=asset.filename,
                 media_type=asset.media_type,
                 size_bytes=asset.size_bytes,
                 collection_id=asset.collection_id,
             )
-            for include, asset in rows
+            for workspace_file, asset in rows
         ]
 
     @router.post("", response_model=SavedAsset, status_code=status.HTTP_201_CREATED)
@@ -134,12 +134,6 @@ def build_asset_router(
         thread_id: str | None = Query(default=None, min_length=1, max_length=128),
     ) -> SavedAsset:
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id, is_admin=user.is_admin)
-        if collection.owner_id != user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Public collection files are read-only",
-            )
         safe_filename = Path(filename).name
         if safe_filename != filename:
             raise HTTPException(
@@ -153,9 +147,6 @@ def build_asset_router(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 detail=str(error),
             ) from None
-        if thread_id is not None:
-            await _require_owned_thread(sessions, thread_id, user.id)
-
         media_type = request.headers.get("content-type", "application/octet-stream").split(";", 1)[
             0
         ]
@@ -197,7 +188,7 @@ def build_asset_router(
             location=location,
             state=AssetState.STORED,
             created_at=now,
-            collection_id=collection.id,
+            collection_id=None,
         )
         try:
             await assets.save_asset(asset)
@@ -205,9 +196,7 @@ def build_asset_router(
             await blobs.delete(location)
             raise
 
-        include_id: str | None = None
-        if thread_id is not None:
-            include_id = await _include_asset(assets, sessions, asset, thread_id)
+        include_id = await _ensure_workspace_member(sessions, user.id, asset.id)
         return SavedAsset(
             asset_id=asset.id,
             include_id=include_id,
@@ -217,31 +206,17 @@ def build_asset_router(
             collection_id=asset.collection_id,
         )
 
-    @router.post("/{asset_id}/includes", response_model=SavedAsset)
+    @router.post("/{asset_id}/includes", response_model=SavedAsset, include_in_schema=False)
+    @router.post("/{asset_id}/workspace", response_model=SavedAsset)
     async def include_asset(
         asset_id: str,
         payload: IncludeAssetRequest,
         request: Request,
     ) -> SavedAsset:
         user = await authenticate_request(request, sessions, settings)
-        collection = await selected_collection(sessions, user.id, is_admin=user.is_admin)
-        if collection.owner_id != user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Public collection files are read-only",
-            )
-        await _require_owned_thread(sessions, payload.thread_id, user.id)
-        async with sessions() as session:
-            row = await session.get(AssetRow, asset_id)
-        if (
-            row is None
-            or row.owner_id != user.id
-            or row.collection_id != collection.id
-            or row.state != AssetState.STORED
-        ):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+        row = await _accessible_asset(sessions, user.id, user.is_admin, asset_id)
         asset = _asset_from_row(row)
-        include_id = await _include_asset(assets, sessions, asset, payload.thread_id)
+        include_id = await _ensure_workspace_member(sessions, user.id, asset.id)
         return SavedAsset(
             asset_id=asset.id,
             include_id=include_id,
@@ -257,42 +232,28 @@ def build_asset_router(
         payload: UpdateAssetInclusionRequest,
         request: Request,
     ) -> AssetInclusionResponse:
-        """Add or remove an owned asset from a conversation workspace."""
+        """Add or remove an accessible file from the caller's workspace."""
 
         user = await authenticate_request(request, sessions, settings)
-        await _require_owned_thread(sessions, payload.thread_id, user.id)
+        await _accessible_asset(sessions, user.id, user.is_admin, asset_id)
         async with sessions.begin() as session:
-            asset = await session.get(AssetRow, asset_id)
-            if (
-                asset is None
-                or asset.owner_id != user.id
-                or asset.state != AssetState.STORED
-            ):
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
             include = await session.scalar(
-                select(ThreadAssetIncludeRow).where(
-                    ThreadAssetIncludeRow.thread_id == payload.thread_id,
-                    ThreadAssetIncludeRow.asset_id == asset_id,
-                    ThreadAssetIncludeRow.owner_id == user.id,
+                select(UserWorkspaceFileRow).where(
+                    UserWorkspaceFileRow.asset_id == asset_id,
+                    UserWorkspaceFileRow.owner_id == user.id,
                 )
             )
             if payload.included:
                 if include is None:
-                    include = ThreadAssetIncludeRow(
-                        id=f"include_{uuid4().hex}",
-                        thread_id=payload.thread_id,
+                    include = UserWorkspaceFileRow(
+                        id=f"workspace_{uuid4().hex}",
                         asset_id=asset_id,
                         owner_id=user.id,
-                        user_intent=None,
-                        intent_kind=IntentKind.AUTO,
-                        state=IncludeState.READY,
                         created_at=datetime.now(UTC),
                     )
                     session.add(include)
-                else:
-                    include.state = IncludeState.READY
             elif include is not None:
-                include.state = IncludeState.EXCLUDED
+                await session.delete(include)
         return AssetInclusionResponse(
             asset_id=asset_id,
             thread_id=payload.thread_id,
@@ -406,22 +367,18 @@ def build_asset_router(
     async def download_conversation_asset(
         asset_id: str,
         request: Request,
-        thread_id: str = Query(min_length=1, max_length=128),
+        thread_id: str | None = Query(default=None, min_length=1, max_length=128),
     ) -> StreamingResponse:
-        """Stream a saved file only through its owning conversation boundary."""
+        """Stream a file from the caller's durable workspace."""
 
         user = await authenticate_request(request, sessions, settings)
-        await _require_owned_thread(sessions, thread_id, user.id)
         async with sessions() as session:
             asset = await session.scalar(
                 select(AssetRow)
-                .join(ThreadAssetIncludeRow, ThreadAssetIncludeRow.asset_id == AssetRow.id)
+                .join(UserWorkspaceFileRow, UserWorkspaceFileRow.asset_id == AssetRow.id)
                 .where(
-                    ThreadAssetIncludeRow.thread_id == thread_id,
-                    ThreadAssetIncludeRow.owner_id == user.id,
-                    ThreadAssetIncludeRow.state == IncludeState.READY,
+                    UserWorkspaceFileRow.owner_id == user.id,
                     AssetRow.id == asset_id,
-                    AssetRow.owner_id == user.id,
                     AssetRow.state == AssetState.STORED,
                 )
             )
@@ -498,33 +455,75 @@ async def _require_owned_thread(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
 
-async def _include_asset(
-    repository: SqlAlchemyAssetRepository,
+async def _ensure_workspace_member(
     sessions: async_sessionmaker[AsyncSession],
-    asset: Asset,
-    thread_id: str,
+    owner_id: str,
+    asset_id: str,
 ) -> str:
-    async with sessions() as session:
+    async with sessions.begin() as session:
         existing = await session.scalar(
-            select(ThreadAssetIncludeRow).where(
-                ThreadAssetIncludeRow.thread_id == thread_id,
-                ThreadAssetIncludeRow.asset_id == asset.id,
+            select(UserWorkspaceFileRow).where(
+                UserWorkspaceFileRow.owner_id == owner_id,
+                UserWorkspaceFileRow.asset_id == asset_id,
             )
         )
-    if existing is not None:
-        return existing.id
-    include_id = f"include_{uuid4().hex}"
-    await repository.save_include(
-        ThreadAssetInclude(
-            id=include_id,
-            thread_id=thread_id,
-            asset_id=asset.id,
-            user_intent=None,
-            intent_kind=IntentKind.AUTO,
-            state=IncludeState.READY,
+        if existing is not None:
+            return existing.id
+        workspace_id = f"workspace_{uuid4().hex}"
+        session.add(
+            UserWorkspaceFileRow(
+                id=workspace_id,
+                owner_id=owner_id,
+                asset_id=asset_id,
+                created_at=datetime.now(UTC),
+            )
         )
-    )
-    return include_id
+    return workspace_id
+
+
+async def _accessible_asset(
+    sessions: async_sessionmaker[AsyncSession],
+    owner_id: str,
+    is_admin: bool,
+    asset_id: str,
+) -> AssetRow:
+    async with sessions() as session:
+        workspace_asset = await session.scalar(
+            select(AssetRow)
+            .join(UserWorkspaceFileRow, UserWorkspaceFileRow.asset_id == AssetRow.id)
+            .where(
+                UserWorkspaceFileRow.owner_id == owner_id,
+                AssetRow.id == asset_id,
+                AssetRow.state == AssetState.STORED,
+            )
+        )
+    if workspace_asset is not None:
+        return workspace_asset
+
+    async with sessions() as session:
+        owned_asset = await session.scalar(
+            select(AssetRow).where(
+                AssetRow.id == asset_id,
+                AssetRow.owner_id == owner_id,
+                AssetRow.state == AssetState.STORED,
+            )
+        )
+    if owned_asset is not None:
+        return owned_asset
+
+    collection = await selected_collection(sessions, owner_id, is_admin=is_admin)
+    async with sessions() as session:
+        asset = await session.scalar(
+            select(AssetRow).where(
+                AssetRow.id == asset_id,
+                AssetRow.owner_id == collection.owner_id,
+                AssetRow.collection_id == collection.id,
+                AssetRow.state == AssetState.STORED,
+            )
+        )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    return asset
 
 
 def _asset_from_row(row: AssetRow) -> Asset:

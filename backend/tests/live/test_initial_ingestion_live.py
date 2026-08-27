@@ -68,7 +68,7 @@ SCENARIOS = (
         media_type="text/markdown",
         intent="Summarize the decisions and answer follow-up questions.",
         overview_tool="consult_document_specialist",
-        expected_client_tool_groups=(("list_files",), ("read_text_chars",)),
+        expected_client_tool_groups=(("list_files",), ("read_text",)),
         strategy_terms=("text", "direct context", "bounded"),
     ),
     InitialIngestionScenario(
@@ -79,7 +79,7 @@ SCENARIOS = (
         overview_tool="consult_structured_data_specialist",
         expected_client_tool_groups=(
             ("list_files",),
-            ("json_chars", "query_structured_data"),
+            ("query_data",),
         ),
         strategy_terms=("jmespath", "schema", "bounded"),
     ),
@@ -89,7 +89,7 @@ SCENARIOS = (
         media_type="text/csv",
         intent="Compare revenue trends and identify anomalous regions.",
         overview_tool="consult_structured_data_specialist",
-        expected_client_tool_groups=(("list_files",), ("query_structured_data",)),
+        expected_client_tool_groups=(("list_files",), ("query_data",)),
         strategy_terms=("schema", "revenue", "region", "numeric", "aggregate"),
     ),
     InitialIngestionScenario(
@@ -98,7 +98,7 @@ SCENARIOS = (
         media_type="application/pdf",
         intent="Find architecture diagrams by topic and ask follow-up questions.",
         overview_tool="consult_document_specialist",
-        expected_client_tool_groups=(("list_files",), ("pdf_random_sample",)),
+        expected_client_tool_groups=(("list_files",), ("sample_pdf",)),
         strategy_terms=("pdf", "retrieval", "vision", "ocr"),
     ),
     InitialIngestionScenario(
@@ -107,7 +107,7 @@ SCENARIOS = (
         media_type="image/png",
         intent="Explain the depicted system and preserve the source for later reference.",
         overview_tool="consult_image_specialist",
-        expected_client_tool_groups=(("list_files",), ("view_workspace_image",)),
+        expected_client_tool_groups=(("list_files",), ("view_image",)),
         strategy_terms=("image", "vision", "visual"),
     ),
     InitialIngestionScenario(
@@ -300,7 +300,7 @@ async def test_root_inspects_browser_file_without_server_processing(
             f"Expected one of {alternatives} for {scenario.route}; got {client_calls}"
         )
     assert scenario.overview_tool in result.agent_tool_calls
-    assert "index_collection_file" not in result.agent_tool_calls
+    assert "index_file" not in result.agent_tool_calls
 
     output = str(result.result.final_output).casefold()
     assert len(output) >= 100, f"Expected a substantive strategy for {scenario.route}"

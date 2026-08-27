@@ -35,7 +35,7 @@ def test_file_result_widget_is_collapsed_curated_and_stable() -> None:
             "hasMore": False,
             "files": [
                 {
-                    "assetId": "local-internal-id",
+                    "fileId": "local-internal-id",
                     "name": "notes.md",
                     "mediaType": "text/markdown",
                     "sizeBytes": 42,
@@ -54,7 +54,7 @@ def test_file_result_widget_is_collapsed_curated_and_stable() -> None:
     assert item.id == tool_result_widget_id(tool_call)
     assert widget["type"] == "Card"
     assert widget["collapsed"] is True
-    assert widget["status"] == {"text": "Found 1 conversation file"}
+    assert widget["status"] == {"text": "Found 1 workspace file"}
     assert item.copy_text is not None
     assert "notes.md" in item.copy_text
     assert "internal-reference" not in item.copy_text
@@ -63,10 +63,10 @@ def test_file_result_widget_is_collapsed_curated_and_stable() -> None:
 
 def test_large_text_result_widget_has_a_bounded_preview() -> None:
     tool_call = _tool_call(
-        name="read_text_chars",
+        name="read_text",
         output={
             "ok": True,
-            "assetId": "asset_1",
+            "fileId": "asset_1",
             "start": 0,
             "text": "x" * 50_000,
         },
@@ -86,13 +86,13 @@ def test_collection_search_widget_is_curated_and_drops_internal_identifiers() ->
     item = build_server_tool_result_widget(
         thread_id="thread_1",
         tool_call_id="call_search",
-        tool_name="file_search",
+        tool_name="search_files",
         result={
             "query": "quarterly roadmap",
             "collection": {"collectionId": "col_1", "name": "Research", "secret": "no"},
             "results": [
                 {
-                    "assetId": "asset_secret",
+                    "fileId": "asset_secret",
                     "artifactId": "artifact_secret",
                     "filename": "roadmap.pdf",
                     "mediaType": "application/pdf",
@@ -119,21 +119,21 @@ def test_collection_metadata_widget_shows_file_facts_and_pagination() -> None:
     item = build_server_tool_result_widget(
         thread_id="thread_1",
         tool_call_id="call_metadata",
-        tool_name="find_collection_files",
+        tool_name="find_files",
         result={
             "collectionId": "col_internal",
             "collectionName": "Research",
             "filters": {"filename": "quarterly", "filenameMatch": "prefix"},
             "items": [
                 {
-                    "assetId": "asset_1",
+                    "fileId": "asset_1",
                     "filename": "quarterly-report.pdf",
                     "mediaType": "application/pdf",
                     "modality": "pdf",
                     "sizeBytes": 42,
                     "createdAt": "2026-08-20T10:00:00+00:00",
                     "indexed": True,
-                    "availableActions": ["get_file"],
+                    "availableActions": ["sample_pdf"],
                 }
             ],
             "hasMore": True,
@@ -188,7 +188,7 @@ def test_client_tool_completion_updates_the_pending_workflow_task() -> None:
             type="custom",
             tasks=[
                 CustomTask(
-                    title="Checking conversation workspace files",
+                    title="Checking workspace files",
                     content="Waiting for the browser workspace result…",
                     status_indicator="loading",
                 )
@@ -209,5 +209,5 @@ def test_client_tool_completion_updates_the_pending_workflow_task() -> None:
     task = completed.workflow.tasks[0]
     assert isinstance(task, CustomTask)
     assert task.status_indicator == "complete"
-    assert task.content == "Found 2 conversation files"
+    assert task.content == "Found 2 workspace files"
     assert event.item_id == workflow.id

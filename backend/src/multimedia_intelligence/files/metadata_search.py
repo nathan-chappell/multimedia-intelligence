@@ -150,17 +150,20 @@ def _metadata_result(
 ) -> CollectionFileMetadata:
     route = classify_file(asset.filename).route
     actions: list[str] = []
-    if indexed:
-        actions.append("get_file")
-        if route.value in {"audio", "video"}:
-            actions.append("get_transcript")
+    if route.value in {"audio", "video"} and indexed:
+        actions.append("read_transcript")
+    elif route.value == "pdf":
+        actions.extend(("sample_pdf", "view_pdf_page", "extract_pdf_pages"))
+    elif route.value == "image":
+        actions.append("view_image")
+    elif route.value in {"json", "csv", "tabular"}:
+        actions.extend(("query_data", "read_text"))
     else:
-        if route.value in {"image", "pdf"}:
-            actions.append("get_file")
-        if can_index:
-            actions.append("index_collection_file")
+        actions.append("read_text")
+    if not indexed and can_index:
+        actions.append("index_file")
     return {
-        "assetId": asset.id,
+        "fileId": asset.id,
         "collectionId": cast(str, asset.collection_id),
         "filename": asset.filename,
         "mediaType": asset.media_type,

@@ -19,26 +19,24 @@ type ClientToolInvoker = Callable[
 ]
 
 LIST_FILES = "list_files"
-READ_TEXT_CHARS = "read_text_chars"
-PDF_RANDOM_SAMPLE = "pdf_random_sample"
-PDF_RENDER_PAGE = "pdf_render_page"
-PDF_EXTRACT_RANGE = "pdf_extract_range"
-JSON_CHARS = "json_chars"
-QUERY_STRUCTURED_DATA = "query_structured_data"
-VIEW_WORKSPACE_IMAGE = "view_workspace_image"
+READ_TEXT = "read_text"
+SAMPLE_PDF = "sample_pdf"
+VIEW_PDF_PAGE = "view_pdf_page"
+EXTRACT_PDF_PAGES = "extract_pdf_pages"
+QUERY_DATA = "query_data"
+VIEW_IMAGE = "view_image"
 
 FILE_DISCOVERY_CLIENT_TOOLS = (LIST_FILES,)
 DOCUMENT_CLIENT_TOOLS = (
-    READ_TEXT_CHARS,
-    PDF_RANDOM_SAMPLE,
-    PDF_RENDER_PAGE,
-    PDF_EXTRACT_RANGE,
+    READ_TEXT,
+    SAMPLE_PDF,
+    VIEW_PDF_PAGE,
+    EXTRACT_PDF_PAGES,
 )
 STRUCTURED_DATA_CLIENT_TOOLS = (
-    JSON_CHARS,
-    QUERY_STRUCTURED_DATA,
+    QUERY_DATA,
 )
-IMAGE_CLIENT_TOOLS = (VIEW_WORKSPACE_IMAGE,)
+IMAGE_CLIENT_TOOLS = (VIEW_IMAGE,)
 CLIENT_TOOL_NAMES = (
     *FILE_DISCOVERY_CLIENT_TOOLS,
     *DOCUMENT_CLIENT_TOOLS,
@@ -91,7 +89,7 @@ def build_file_client_tools(
     *,
     names: Collection[str] | None = None,
 ) -> list[Tool]:
-    """Build tools backed by files in the conversation workspace and user's browser.
+    """Build tools backed by files in the user's workspace and browser.
 
     These tools never receive bucket credentials. Visual inputs and sampled PDF pages may use the
     authenticated asset endpoint to persist a bounded browser result before the next model turn.
@@ -102,68 +100,51 @@ def build_file_client_tools(
         ctx: ChatKitToolContext,
         page: Annotated[int, Field(ge=1)] = 1,
     ) -> dict[str, object]:
-        """List one page of up to 10 conversation-workspace files, including browser files."""
+        """List one page of up to 10 workspace files, including browser files."""
 
         app_context = ctx.context.request_context
         durable_files: tuple[ReadyFileReference, ...] = ()
         if app_context.data_access is not None:
-            durable_files = await app_context.data_access.list_ready_file_references(
-                ctx.context.thread.id
-            )
+            durable_files = await app_context.data_access.list_workspace_files()
         return await invoker(
             ctx,
             LIST_FILES,
             {"page": page, "durableFiles": list(durable_files)},
         )
 
-    @function_tool(name_override=READ_TEXT_CHARS)
-    async def read_text_chars_tool(
+    @function_tool(name_override=READ_TEXT)
+    async def read_text_tool(
         ctx: ChatKitToolContext,
-        workspace_file_id: str,
+        file_id: str,
         start: int = 0,
         count: int = 16_384,
     ) -> dict[str, object]:
-        """Read a bounded character range from a conversation-workspace text file."""
+        """Read a bounded character range from a workspace text file."""
 
         return await invoker(
             ctx,
-            READ_TEXT_CHARS,
-            {"workspaceFileId": workspace_file_id, "start": start, "count": count},
+            READ_TEXT,
+            {"fileId": file_id, "start": start, "count": count},
         )
 
-    @function_tool(name_override=JSON_CHARS)
-    async def json_chars_tool(
+    @function_tool(name_override=QUERY_DATA)
+    async def query_data_tool(
         ctx: ChatKitToolContext,
-        workspace_file_id: str,
-        start: int = 0,
-        count: int = 16_384,
-    ) -> dict[str, object]:
-        """Read bounded workspace JSON characters without parsing the whole file."""
-
-        return await invoker(
-            ctx,
-            JSON_CHARS,
-            {"workspaceFileId": workspace_file_id, "start": start, "count": count},
-        )
-
-    @function_tool(name_override=QUERY_STRUCTURED_DATA)
-    async def query_structured_data_tool(
-        ctx: ChatKitToolContext,
-        workspace_file_id: str,
+        file_id: str,
         expression: Annotated[str, Field(min_length=1, max_length=4096)],
     ) -> dict[str, object]:
         """Evaluate JMESPath against workspace JSON or CSV converted to JSON rows."""
 
         return await invoker(
             ctx,
-            QUERY_STRUCTURED_DATA,
-            {"workspaceFileId": workspace_file_id, "expression": expression},
+            QUERY_DATA,
+            {"fileId": file_id, "expression": expression},
         )
 
-    @function_tool(name_override=PDF_RANDOM_SAMPLE)
-    async def pdf_random_sample_tool(
+    @function_tool(name_override=SAMPLE_PDF)
+    async def sample_pdf_tool(
         ctx: ChatKitToolContext,
-        workspace_file_id: str,
+        file_id: str,
         start_page: Annotated[int, Field(ge=1)] = 1,
         end_page: Annotated[int | None, Field(ge=1)] = None,
         count: Annotated[int, Field(ge=1, le=10)] = 5,
@@ -173,9 +154,9 @@ def build_file_client_tools(
 
         return await invoker(
             ctx,
-            PDF_RANDOM_SAMPLE,
+            SAMPLE_PDF,
             {
-                "workspaceFileId": workspace_file_id,
+                "fileId": file_id,
                 "startPage": start_page,
                 "endPage": end_page,
                 "count": count,
@@ -183,10 +164,10 @@ def build_file_client_tools(
             },
         )
 
-    @function_tool(name_override=PDF_RENDER_PAGE)
-    async def pdf_render_page_tool(
+    @function_tool(name_override=VIEW_PDF_PAGE)
+    async def view_pdf_page_tool(
         ctx: ChatKitToolContext,
-        workspace_file_id: str,
+        file_id: str,
         page: int,
         scale: float = 1.75,
     ) -> dict[str, object]:
@@ -194,14 +175,14 @@ def build_file_client_tools(
 
         return await invoker(
             ctx,
-            PDF_RENDER_PAGE,
-            {"workspaceFileId": workspace_file_id, "page": page, "scale": scale},
+            VIEW_PDF_PAGE,
+            {"fileId": file_id, "page": page, "scale": scale},
         )
 
-    @function_tool(name_override=PDF_EXTRACT_RANGE)
-    async def pdf_extract_range_tool(
+    @function_tool(name_override=EXTRACT_PDF_PAGES)
+    async def extract_pdf_pages_tool(
         ctx: ChatKitToolContext,
-        workspace_file_id: str,
+        file_id: str,
         start_page: int,
         end_page: int,
     ) -> dict[str, object]:
@@ -209,36 +190,35 @@ def build_file_client_tools(
 
         return await invoker(
             ctx,
-            PDF_EXTRACT_RANGE,
+            EXTRACT_PDF_PAGES,
             {
-                "workspaceFileId": workspace_file_id,
+                "fileId": file_id,
                 "startPage": start_page,
                 "endPage": end_page,
             },
         )
 
-    @function_tool(name_override=VIEW_WORKSPACE_IMAGE)
-    async def view_workspace_image_tool(
+    @function_tool(name_override=VIEW_IMAGE)
+    async def view_image_tool(
         ctx: ChatKitToolContext,
-        workspace_file_id: str,
+        file_id: str,
     ) -> dict[str, object]:
         """Save one workspace image when needed and attach it as high-detail vision input."""
 
         return await invoker(
             ctx,
-            VIEW_WORKSPACE_IMAGE,
-            {"workspaceFileId": workspace_file_id},
+            VIEW_IMAGE,
+            {"fileId": file_id},
         )
 
     tools: list[Tool] = [
         list_files_tool,
-        read_text_chars_tool,
-        pdf_random_sample_tool,
-        pdf_render_page_tool,
-        pdf_extract_range_tool,
-        json_chars_tool,
-        query_structured_data_tool,
-        view_workspace_image_tool,
+        read_text_tool,
+        sample_pdf_tool,
+        view_pdf_page_tool,
+        extract_pdf_pages_tool,
+        query_data_tool,
+        view_image_tool,
     ]
     if names is None:
         return tools

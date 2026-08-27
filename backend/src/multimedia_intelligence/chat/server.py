@@ -58,9 +58,9 @@ from multimedia_intelligence.files.client_results import (
     validate_client_tool_result,
 )
 from multimedia_intelligence.files.client_tools import (
-    PDF_RANDOM_SAMPLE,
-    PDF_RENDER_PAGE,
-    VIEW_WORKSPACE_IMAGE,
+    SAMPLE_PDF,
+    VIEW_IMAGE,
+    VIEW_PDF_PAGE,
 )
 from multimedia_intelligence.observability import (
     AgentRunHooks,
@@ -607,7 +607,7 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
         elif (latest_item := MultimediaChatServer._continuation_tool_call(items)) is not None:
             output: str | list[ResponseFunctionCallOutputItemParam] = json.dumps(latest_item.output)
             if (
-                latest_item.name == PDF_RANDOM_SAMPLE
+                latest_item.name in {SAMPLE_PDF, "pdf_random_sample"}
                 and isinstance(latest_item.output, dict)
                 and latest_item.output.get("ok") is True
                 and latest_item.output.get("mode") == "as_files"
@@ -622,10 +622,7 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
                 ]
                 sample = PdfRandomSampleResult.model_validate(latest_item.output)
                 for file in sample.files:
-                    file_url = await context.data_access.ready_file_download_url(
-                        latest_item.thread_id,
-                        file.asset_id,
-                    )
+                    file_url = await context.data_access.workspace_file_download_url(file.file_id)
                     output.append(
                         ResponseInputFileContentParam(
                             type="input_file",
@@ -635,7 +632,7 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
                         )
                     )
             elif (
-                latest_item.name == PDF_RENDER_PAGE
+                latest_item.name in {VIEW_PDF_PAGE, "pdf_render_page"}
                 and isinstance(latest_item.output, dict)
                 and latest_item.output.get("ok") is True
             ):
@@ -644,9 +641,8 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
                 rendered = TransientArtifactResult.model_validate(latest_item.output)
                 if rendered.file is None:
                     raise RuntimeError("Rendered page was not saved")
-                image_url = await context.data_access.ready_file_download_url(
-                    latest_item.thread_id,
-                    rendered.file.asset_id,
+                image_url = await context.data_access.workspace_file_download_url(
+                    rendered.file.file_id
                 )
                 output = [
                     ResponseInputTextContentParam(
@@ -660,16 +656,15 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
                     ),
                 ]
             elif (
-                latest_item.name == VIEW_WORKSPACE_IMAGE
+                latest_item.name in {VIEW_IMAGE, "view_workspace_image"}
                 and isinstance(latest_item.output, dict)
                 and latest_item.output.get("ok") is True
             ):
                 if context is None or context.data_access is None:
                     raise RuntimeError("Workspace image access is unavailable")
                 viewed = WorkspaceImageResult.model_validate(latest_item.output)
-                image_url = await context.data_access.ready_file_download_url(
-                    latest_item.thread_id,
-                    viewed.file.asset_id,
+                image_url = await context.data_access.workspace_file_download_url(
+                    viewed.file.file_id
                 )
                 output = [
                     ResponseInputTextContentParam(

@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from agents import function_tool
-from agents.tool import Tool, ToolOutputFileContent, ToolOutputImage, ToolOutputText
+from agents.tool import Tool, ToolOutputText
 from agents.tool_context import ToolContext
 from chatkit.agents import AgentContext
 from pydantic import Field
@@ -14,33 +14,21 @@ from multimedia_intelligence.context import (
     AgentDataAccess,
     IndexCollectionFileResult,
     RequestContext,
-    TextRangeResult,
     TranscriptPageResult,
 )
 
 
 def build_durable_text_tools() -> list[Tool]:
-    @function_tool(name_override="read_durable_text_range")
-    async def read_durable_text_range(
-        ctx: ToolContext[AgentContext[RequestContext]],
-        asset_id: str,
-        start: Annotated[int, Field(ge=0)] = 0,
-        count: Annotated[int, Field(ge=1, le=65_536)] = 16_384,
-    ) -> TextRangeResult:
-        """Read a bounded UTF-8 byte range from a ready conversation-workspace text file."""
+    """Compatibility entry point; workspace reads are browser tools now."""
 
-        return await _access(ctx).read_ready_text_range(
-            ctx.context.thread.id, asset_id, start, count
-        )
-
-    return [read_durable_text_range]
+    return []
 
 
 def build_file_index_tools() -> list[Tool]:
-    @function_tool(name_override="index_collection_file")
-    async def index_collection_file(
+    @function_tool(name_override="index_file")
+    async def index_file(
         ctx: ToolContext[AgentContext[RequestContext]],
-        asset_id: str,
+        file_id: str,
         description: Annotated[str, Field(min_length=1, max_length=4_000)],
         representation_mode: Literal["auto", "description", "source", "both"] = "auto",
         evidence_refs: Annotated[
@@ -53,24 +41,24 @@ def build_file_index_tools() -> list[Tool]:
         ] = None,
         replace_existing: bool = False,
     ) -> IndexCollectionFileResult:
-        """Index an owned selected-collection file after the user explicitly requests it.
+        """Index a workspace file in the selected collection when explicitly requested.
 
-        Use representation_mode to choose a searchable description, a provider-native source, or
-        both. Auto follows the route policy and creates transcripts for audio/video. Set
-        replace_existing only when the user asks to update an existing index. The server does not
-        parse or transform source media; transcription is performed by OpenAI.
+        Workspace files are already durable, so do not call this for preservation or ordinary
+        inspection. Use it only when the user explicitly asks to add or index the file in the
+        selected collection. Auto follows the file policy; replace_existing is for an explicit
+        re-index. The server does not parse source media.
         """
 
-        return await _access(ctx).index_collection_file(
-            asset_id,
+        return await _access(ctx).index_file(
+            file_id,
             description,
             representation_mode,
             evidence_refs,
             replace_existing,
         )
 
-    @function_tool(name_override="find_collection_files")
-    async def find_collection_files(
+    @function_tool(name_override="find_files")
+    async def find_files(
         ctx: ToolContext[AgentContext[RequestContext]],
         filename: Annotated[
             str | None,
@@ -125,8 +113,8 @@ def build_file_index_tools() -> list[Tool]:
             )
         )
 
-    @function_tool(name_override="file_search")
-    async def file_search(
+    @function_tool(name_override="search_files")
+    async def search_files(
         ctx: ToolContext[AgentContext[RequestContext]],
         query: Annotated[str, Field(min_length=1, max_length=2_000)],
         max_results: Annotated[int, Field(ge=1, le=20)] = 8,
@@ -152,37 +140,10 @@ def build_file_index_tools() -> list[Tool]:
             )
         )
 
-    @function_tool(name_override="get_file")
-    async def get_file(
+    @function_tool(name_override="read_transcript")
+    async def read_transcript(
         ctx: ToolContext[AgentContext[RequestContext]],
-        asset_id: str,
-        artifact_id: str | None = None,
-        original: bool = False,
-    ) -> list[ToolOutputText | ToolOutputFileContent | ToolOutputImage]:
-        """Hydrate a selected-collection artifact as text, an image, or a PDF input."""
-
-        result = await _access(ctx).get_file(asset_id, artifact_id, original)
-        metadata = {key: value for key, value in result.items() if key != "url"}
-        outputs: list[ToolOutputText | ToolOutputFileContent | ToolOutputImage] = [
-            ToolOutputText(text=json.dumps(metadata, ensure_ascii=False))
-        ]
-        url = result.get("url")
-        if result.get("inputKind") == "image" and isinstance(url, str):
-            outputs.append(ToolOutputImage(image_url=url, detail="auto"))
-        elif result.get("inputKind") == "file" and isinstance(url, str):
-            filename = result.get("filename")
-            outputs.append(
-                ToolOutputFileContent(
-                    file_url=url,
-                    filename=filename if isinstance(filename, str) else None,
-                )
-            )
-        return outputs
-
-    @function_tool(name_override="get_transcript")
-    async def get_transcript(
-        ctx: ToolContext[AgentContext[RequestContext]],
-        asset_id: str,
+        file_id: str,
         start_seconds: Annotated[float | None, Field(ge=0)] = None,
         end_seconds: Annotated[float | None, Field(ge=0)] = None,
         cursor: str | None = None,
@@ -191,14 +152,13 @@ def build_file_index_tools() -> list[Tool]:
 
         if start_seconds is not None and end_seconds is not None and end_seconds < start_seconds:
             raise ValueError("end_seconds must be greater than or equal to start_seconds")
-        return await _access(ctx).get_transcript(asset_id, start_seconds, end_seconds, cursor)
+        return await _access(ctx).read_transcript(file_id, start_seconds, end_seconds, cursor)
 
     return [
-        index_collection_file,
-        find_collection_files,
-        file_search,
-        get_file,
-        get_transcript,
+        index_file,
+        find_files,
+        search_files,
+        read_transcript,
     ]
 
 

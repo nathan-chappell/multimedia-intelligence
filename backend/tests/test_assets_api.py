@@ -22,6 +22,7 @@ from multimedia_intelligence.files.records import (
     AssetRow,
     DerivedArtifactRow,
     ThreadAssetIncludeRow,
+    UserWorkspaceFileRow,
 )
 
 from .settings import TEST_SETTINGS
@@ -52,7 +53,7 @@ class RecordingBlobStore:
         return self.objects[location.key][start:end]
 
 
-async def test_save_streams_to_bucket_and_includes_in_owned_thread() -> None:
+async def test_save_streams_to_bucket_and_adds_to_user_workspace() -> None:
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     await initialize_schema(engine)
     await ensure_builtin_admin(sessions, TEST_SETTINGS)
@@ -95,26 +96,25 @@ async def test_save_streams_to_bucket_and_includes_in_owned_thread() -> None:
 
     assert response.status_code == 201, response.text
     result = response.json()
-    assert result["include_id"].startswith("include_")
-    assert result["collection_id"].startswith("col_")
+    assert result["include_id"].startswith("workspace_")
+    assert result["collection_id"] is None
     async with sessions() as session:
         asset = await session.get(AssetRow, result["asset_id"])
-        include = await session.get(ThreadAssetIncludeRow, result["include_id"])
+        include = await session.get(UserWorkspaceFileRow, result["include_id"])
     assert asset is not None
     assert asset.state == AssetState.STORED
-    assert asset.collection_id == result["collection_id"]
+    assert asset.collection_id is None
     assert asset.size_bytes == len(b"saved contents")
     assert asset.object_key.startswith(
         f"{TEST_SETTINGS.object_store_prefix}users/{TEST_SETTINGS.admin_user_id}/files/"
     )
     assert blobs.objects[asset.object_key] == b"saved contents"
     assert include is not None
-    assert include.thread_id == thread.id
-    assert include.state == IncludeState.READY
+    assert include.owner_id == TEST_SETTINGS.admin_user_id
     await engine.dispose()
 
 
-async def test_saved_asset_history_is_scoped_to_the_thread_owner() -> None:
+async def test_saved_asset_workspace_is_scoped_to_the_user() -> None:
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     await initialize_schema(engine)
     await ensure_builtin_admin(sessions, TEST_SETTINGS)
@@ -188,13 +188,15 @@ async def test_saved_asset_history_is_scoped_to_the_thread_owner() -> None:
     assert history.json() == [saved.json()]
     assert content.status_code == 200
     assert content.content == b"history contents"
-    assert missing.status_code == 404
-    assert wrong_user.status_code == 404
+    assert missing.status_code == 200
+    assert missing.json() == history.json()
+    assert wrong_user.status_code == 200
+    assert wrong_user.json() == []
     assert wrong_user_content.status_code == 404
     await engine.dispose()
 
 
-async def test_conversation_workspace_survives_collection_selection_changes() -> None:
+async def test_user_workspace_survives_collection_selection_changes() -> None:
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     await initialize_schema(engine)
     await ensure_builtin_admin(sessions, TEST_SETTINGS)

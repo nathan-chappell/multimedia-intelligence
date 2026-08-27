@@ -45,7 +45,7 @@ def test_model_generates_valid_jmespath(prompt: str) -> None:
         model=LIVE_MODEL,
         input=prompt,
         tools=[jmespath_custom_tool()],  # type: ignore[list-item]
-        tool_choice={"type": "custom", "name": "query_structured_data"},
+        tool_choice={"type": "custom", "name": "query_data"},
     )
     calls = [item for item in response.output if item.type == "custom_tool_call"]
     assert len(calls) == 1

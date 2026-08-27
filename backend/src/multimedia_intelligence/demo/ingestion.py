@@ -837,7 +837,7 @@ class FileIngestionService:
             lines.append(line)
             used += size
         return {
-            "assetId": asset.id,
+            "fileId": asset.id,
             "startSeconds": start_seconds,
             "endSeconds": end_seconds,
             "text": "\n".join(lines),

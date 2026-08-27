@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from sqlalchemy import event, inspect, text
+from datetime import UTC, datetime
+from uuid import uuid4
+
+from sqlalchemy import event, inspect, select, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -52,6 +55,31 @@ def _ensure_compatibility_columns(connection: Connection) -> None:
                 "ON assets (owner_id, collection_id, state, filename, id)"
             )
         )
+    if {"user_workspace_files", "thread_asset_includes"} <= tables:
+        workspace = Base.metadata.tables["user_workspace_files"]
+        includes = Base.metadata.tables["thread_asset_includes"]
+        existing = set(connection.execute(select(workspace.c.owner_id, workspace.c.asset_id)))
+        legacy = set(
+            connection.execute(
+                select(includes.c.owner_id, includes.c.asset_id).where(
+                    includes.c.state == "ready"
+                )
+            )
+        )
+        missing = legacy - existing
+        if missing:
+            connection.execute(
+                workspace.insert(),
+                [
+                    {
+                        "id": f"workspace_{uuid4().hex}",
+                        "owner_id": owner_id,
+                        "asset_id": asset_id,
+                        "created_at": datetime.now(UTC),
+                    }
+                    for owner_id, asset_id in missing
+                ],
+            )
 
 
 def create_engine_and_session(

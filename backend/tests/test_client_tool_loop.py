@@ -36,8 +36,8 @@ async def test_fixture_client_lists_and_reads_staged_text(tmp_path: Path) -> Non
     list_call = ClientToolCall(name="list_files", arguments={"page": 1})
     listed = _validate(list_call, await client.execute(list_call))
     read_call = ClientToolCall(
-        name="read_text_chars",
-        arguments={"assetId": "asset_text", "start": 6, "count": 4},
+        name="read_text",
+        arguments={"fileId": "asset_text", "start": 6, "count": 4},
     )
     read = _validate(read_call, await client.execute(read_call))
 
@@ -70,19 +70,19 @@ async def test_fixture_client_returns_valid_bounded_json_and_csv_results(
     )
 
     json_call = ClientToolCall(
-        name="query_structured_data",
-        arguments={"assetId": "asset_json", "expression": "events[*].type"},
+        name="query_data",
+        arguments={"fileId": "asset_json", "expression": "events[*].type"},
     )
     csv_rows_call = ClientToolCall(
-        name="query_structured_data",
+        name="query_data",
         arguments={
-            "assetId": "asset_csv",
+            "fileId": "asset_csv",
             "expression": "[].{region: region, revenue: revenue}",
         },
     )
     csv_mean_call = ClientToolCall(
-        name="query_structured_data",
-        arguments={"assetId": "asset_csv", "expression": "avg([].revenue)"},
+        name="query_data",
+        arguments={"fileId": "asset_csv", "expression": "avg([].revenue)"},
     )
 
     json_result = _validate(json_call, await client.execute(json_call))
@@ -106,9 +106,9 @@ async def test_fixture_client_samples_text_and_extracts_pdf_range(tmp_path: Path
         writer.write(handle)
     client = FixtureFileClient([StagedFile("asset_pdf", path, "application/pdf")])
     sample_call = ClientToolCall(
-        name="pdf_random_sample",
+        name="sample_pdf",
         arguments={
-            "assetId": "asset_pdf",
+            "fileId": "asset_pdf",
             "startPage": 1,
             "endPage": 3,
             "count": 2,
@@ -116,12 +116,12 @@ async def test_fixture_client_samples_text_and_extracts_pdf_range(tmp_path: Path
         },
     )
     extract_call = ClientToolCall(
-        name="pdf_extract_range",
-        arguments={"assetId": "asset_pdf", "startPage": 2, "endPage": 3},
+        name="extract_pdf_pages",
+        arguments={"fileId": "asset_pdf", "startPage": 2, "endPage": 3},
     )
     render_call = ClientToolCall(
-        name="pdf_render_page",
-        arguments={"assetId": "asset_pdf", "page": 1, "scale": 1.25},
+        name="view_pdf_page",
+        arguments={"fileId": "asset_pdf", "page": 1, "scale": 1.25},
     )
 
     sampled = _validate(sample_call, await client.execute(sample_call))
@@ -130,7 +130,7 @@ async def test_fixture_client_samples_text_and_extracts_pdf_range(tmp_path: Path
 
     assert sampled["pageCount"] == 3
     assert [page["page"] for page in sampled["pages"]] == [1, 2]  # type: ignore[union-attr]
-    assert extracted["sourceWorkspaceFileId"] == "asset_pdf"
+    assert extracted["sourceFileId"] == "asset_pdf"
     assert extracted["durability"] == "transient_browser_only"
     assert rendered["kind"] == "pdf_page_image"
     assert (tmp_path / "handbook-page-1.png").read_bytes().startswith(b"\x89PNG")
@@ -138,7 +138,7 @@ async def test_fixture_client_samples_text_and_extracts_pdf_range(tmp_path: Path
 
 def test_replay_replaces_only_the_matching_client_function_output() -> None:
     history = [
-        {"type": "function_call", "call_id": "call_1", "name": "read_text_chars"},
+        {"type": "function_call", "call_id": "call_1", "name": "read_text"},
         {"type": "function_call_output", "call_id": "call_1", "output": "waiting"},
         {"type": "function_call_output", "call_id": "call_2", "output": "untouched"},
     ]
@@ -146,7 +146,7 @@ def test_replay_replaces_only_the_matching_client_function_output() -> None:
     replay = _replace_function_output(
         history,
         "call_1",
-        {"ok": True, "assetId": "asset_text", "start": 0, "text": "hello"},
+        {"ok": True, "fileId": "asset_text", "start": 0, "text": "hello"},
     )
 
     assert json.loads(replay[1]["output"])["text"] == "hello"

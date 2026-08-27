@@ -34,8 +34,10 @@ class ClientToolFailure(BaseModel):
 class FileInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    workspace_file_id: Identifier = Field(alias="workspaceFileId")
-    asset_id: Identifier | None = Field(default=None, alias="assetId")
+    file_id: Identifier = Field(
+        alias="fileId",
+        validation_alias=AliasChoices("fileId", "workspaceFileId", "assetId"),
+    )
     name: ShortText
     media_type: ShortText = Field(alias="mediaType")
     size_bytes: Annotated[int, Field(ge=0)] = Field(alias="sizeBytes")
@@ -65,11 +67,13 @@ class FileInfo(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def migrate_legacy_identifiers(cls, value: Any) -> Any:
-        if not isinstance(value, dict) or "workspaceFileId" in value:
+        if not isinstance(value, dict) or "fileId" in value:
             return value
         migrated = dict(value)
-        migrated["workspaceFileId"] = migrated.get("assetId")
-        migrated["assetId"] = migrated.pop("durableAssetId", None)
+        migrated["fileId"] = migrated.get("assetId") or migrated.get("workspaceFileId")
+        migrated.pop("workspaceFileId", None)
+        migrated.pop("assetId", None)
+        migrated.pop("durableAssetId", None)
         return migrated
 
 
@@ -82,18 +86,18 @@ class ListFilesResult(ClientResult):
 
 
 class TextCharsResult(ClientResult):
-    workspace_file_id: Identifier = Field(
-        alias="workspaceFileId",
-        validation_alias=AliasChoices("workspaceFileId", "assetId"),
+    file_id: Identifier = Field(
+        alias="fileId",
+        validation_alias=AliasChoices("fileId", "workspaceFileId", "assetId"),
     )
     start: Annotated[int, Field(ge=0)]
     text: str
 
 
 class StructuredQueryResult(ClientResult):
-    workspace_file_id: Identifier = Field(
-        alias="workspaceFileId",
-        validation_alias=AliasChoices("workspaceFileId", "assetId"),
+    file_id: Identifier = Field(
+        alias="fileId",
+        validation_alias=AliasChoices("fileId", "workspaceFileId", "assetId"),
     )
     expression: Annotated[str, Field(min_length=1, max_length=4096)]
     value: JsonValue
@@ -118,7 +122,9 @@ class PdfTextSamplePage(BaseModel):
 class SampledPdfFile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    asset_id: Identifier = Field(alias="assetId")
+    file_id: Identifier = Field(
+        alias="fileId", validation_alias=AliasChoices("fileId", "assetId")
+    )
     filename: ShortText
     media_type: Literal["application/pdf"] = Field(alias="mediaType")
     size_bytes: Annotated[int, Field(ge=1)] = Field(alias="sizeBytes")
@@ -129,9 +135,9 @@ class SampledPdfFile(BaseModel):
 
 
 class PdfRandomSampleResult(ClientResult):
-    workspace_file_id: Identifier = Field(
-        alias="workspaceFileId",
-        validation_alias=AliasChoices("workspaceFileId", "assetId"),
+    file_id: Identifier = Field(
+        alias="fileId",
+        validation_alias=AliasChoices("fileId", "workspaceFileId", "assetId"),
     )
     mode: Literal["text_content", "as_files"]
     page_count: Annotated[int, Field(ge=1)] = Field(alias="pageCount")
@@ -173,7 +179,9 @@ class PdfRandomSampleResult(ClientResult):
 class SavedVisualFile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    asset_id: Identifier = Field(alias="assetId")
+    file_id: Identifier = Field(
+        alias="fileId", validation_alias=AliasChoices("fileId", "assetId")
+    )
     filename: ShortText
     media_type: Annotated[str, Field(pattern=r"^image/[a-z0-9.+-]+$")] = Field(
         alias="mediaType"
@@ -184,9 +192,9 @@ class SavedVisualFile(BaseModel):
 
 class TransientArtifactResult(ClientResult):
     artifact_id: Identifier = Field(alias="artifactId")
-    source_workspace_file_id: Identifier = Field(
-        alias="sourceWorkspaceFileId",
-        validation_alias=AliasChoices("sourceWorkspaceFileId", "sourceAssetId"),
+    source_file_id: Identifier = Field(
+        alias="sourceFileId",
+        validation_alias=AliasChoices("sourceFileId", "sourceWorkspaceFileId", "sourceAssetId"),
     )
     kind: Literal["pdf_page_image", "pdf_part"]
     media_type: Literal["image/png", "application/pdf"] = Field(alias="mediaType")
@@ -208,9 +216,9 @@ class TransientArtifactResult(ClientResult):
 
 
 class WorkspaceImageResult(ClientResult):
-    workspace_file_id: Identifier = Field(
-        alias="workspaceFileId",
-        validation_alias=AliasChoices("workspaceFileId", "assetId"),
+    file_id: Identifier = Field(
+        alias="fileId",
+        validation_alias=AliasChoices("fileId", "workspaceFileId", "assetId"),
     )
     file: SavedVisualFile
 
@@ -227,6 +235,13 @@ type ValidClientResult = (
 
 _RESULT_MODELS: dict[str, type[BaseModel]] = {
     "list_files": ListFilesResult,
+    "read_text": TextCharsResult,
+    "query_data": StructuredQueryResult,
+    "sample_pdf": PdfRandomSampleResult,
+    "view_pdf_page": TransientArtifactResult,
+    "extract_pdf_pages": TransientArtifactResult,
+    "view_image": WorkspaceImageResult,
+    # Historical conversation items remain replayable after the tool rename.
     "read_text_chars": TextCharsResult,
     "json_chars": TextCharsResult,
     "query_structured_data": StructuredQueryResult,
@@ -276,16 +291,16 @@ def validate_client_tool_result(
             raise ValueError("File list pagination metadata is inconsistent")
 
     if (
-        tool_name == "query_structured_data"
+        tool_name in {"query_data", "query_structured_data"}
         and normalized["ok"] is True
         and normalized["expression"] != arguments.get("expression")
     ):
         raise ValueError("Structured query result does not match the requested expression")
 
-    expected_asset_id = arguments.get("workspaceFileId", arguments.get("assetId"))
-    actual_asset_id = normalized.get(
-        "workspaceFileId", normalized.get("sourceWorkspaceFileId")
+    expected_asset_id = arguments.get(
+        "fileId", arguments.get("workspaceFileId", arguments.get("assetId"))
     )
+    actual_asset_id = normalized.get("fileId", normalized.get("sourceFileId"))
     if (
         expected_asset_id is not None
         and actual_asset_id is not None

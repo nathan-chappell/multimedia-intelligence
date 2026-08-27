@@ -39,8 +39,8 @@ function Workspace() {
   return (
     <FileDataProvider>
       <main className="app-shell">
-        <WorkspaceHeader user={user} eyebrow="Conversation workspace" />
-        <section className="workspace" aria-label="Conversation workspace">
+        <WorkspaceHeader user={user} eyebrow="Workspace" />
+        <section className="workspace" aria-label="Workspace">
           <ChatPanel />
           <ArtifactPanel />
         </section>
@@ -87,7 +87,7 @@ function NotFoundPage() {
       <p className="eyebrow">404 · Not found</p>
       <h1>This page isn’t part of the workspace.</h1>
       <p>The address may be outdated, or the page may have moved.</p>
-      <Link href="/">Return to the conversation workspace</Link>
+      <Link href="/">Return to the workspace</Link>
     </main>
   );
 }

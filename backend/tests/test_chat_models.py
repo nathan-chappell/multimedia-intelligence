@@ -66,9 +66,9 @@ def test_root_discovers_and_indexes_files_then_delegates_specialist_work() -> No
     tool_names = {tool.name for tool in assistant.tools}
     assert tool_names == {
         "list_files",
-        "find_collection_files",
-        "file_search",
-        "index_collection_file",
+        "find_files",
+        "search_files",
+        "index_file",
     }
     assert {handoff.tool_name for handoff in assistant.handoffs} == {
         "consult_document_specialist",
@@ -83,11 +83,11 @@ def test_runtime_instructions_forbid_server_side_file_processing() -> None:
     assert isinstance(assistant.instructions, str)
     instructions = assistant.instructions
 
-    assert "Hand off content inspection" in instructions
-    assert "Only call index_collection_file when the user explicitly asks" in instructions
-    assert "never claim that the server parsed or transformed source media" in instructions
-    assert "OpenAI transcription of audio/video" in instructions
-    assert "never claim that the server parsed or transformed" in instructions
+    assert "one durable file set per user" in instructions
+    assert "using its file_id" in instructions
+    assert "adds it and loads it on demand" in instructions
+    assert "Use index_file only when the user explicitly asks" in instructions
+    assert "search index, not the workspace" in instructions
 
 
 def test_specialists_receive_modality_specific_tools() -> None:
@@ -98,21 +98,14 @@ def test_specialists_receive_modality_specific_tools() -> None:
     }
     assert tool_names == {
         "Document specialist": {
-            "read_text_chars",
-            "pdf_random_sample",
-            "pdf_render_page",
-            "pdf_extract_range",
-            "read_durable_text_range",
-            "get_file",
+            "read_text",
+            "sample_pdf",
+            "view_pdf_page",
+            "extract_pdf_pages",
         },
-        "Structured data specialist": {
-            "json_chars",
-            "query_structured_data",
-            "read_durable_text_range",
-            "get_file",
-        },
-        "Media specialist": {"get_transcript"},
-        "Image specialist": {"view_workspace_image", "get_file"},
+        "Structured data specialist": {"query_data"},
+        "Media specialist": {"read_transcript"},
+        "Image specialist": {"view_image"},
     }
 
 
@@ -120,11 +113,11 @@ def test_client_tool_continuations_resume_with_the_owning_agent() -> None:
     graph = AssistantGraph(model="gpt-5.6")
 
     assert graph.agent_for_client_tool("list_files") is graph.root
-    assert graph.agent_for_client_tool("pdf_random_sample").name == "Document specialist"
-    assert graph.agent_for_client_tool("query_structured_data").name == (
+    assert graph.agent_for_client_tool("sample_pdf").name == "Document specialist"
+    assert graph.agent_for_client_tool("query_data").name == (
         "Structured data specialist"
     )
-    assert graph.agent_for_client_tool("view_workspace_image").name == "Image specialist"
+    assert graph.agent_for_client_tool("view_image").name == "Image specialist"
 
 
 def test_client_tool_continuation_keeps_the_originating_turn_correlation() -> None:
@@ -164,25 +157,26 @@ def test_client_tool_schemas_are_strict_and_pause_the_turn() -> None:
     assert all(
         tool.params_json_schema.get("additionalProperties") is False for tool in client_tools
     )
-    read_tool = next(tool for tool in client_tools if tool.name == "read_text_chars")
-    assert "workspace_file_id" in read_tool.params_json_schema["properties"]
+    read_tool = next(tool for tool in client_tools if tool.name == "read_text")
+    assert "file_id" in read_tool.params_json_schema["properties"]
+    assert "workspace_file_id" not in read_tool.params_json_schema["properties"]
     assert "asset_id" not in read_tool.params_json_schema["properties"]
     assert graph.root.tool_use_behavior == {"stop_at_tool_names": ["list_files"]}
-    document = graph.agent_for_client_tool("pdf_random_sample")
+    document = graph.agent_for_client_tool("sample_pdf")
     assert document.tool_use_behavior == {
         "stop_at_tool_names": [
-            "read_text_chars",
-            "pdf_random_sample",
-            "pdf_render_page",
-            "pdf_extract_range",
+            "read_text",
+            "sample_pdf",
+            "view_pdf_page",
+            "extract_pdf_pages",
         ]
     }
-    structured = graph.agent_for_client_tool("query_structured_data")
+    structured = graph.agent_for_client_tool("query_data")
     assert structured.tool_use_behavior == {
-        "stop_at_tool_names": ["json_chars", "query_structured_data"]
+        "stop_at_tool_names": ["query_data"]
     }
-    image = graph.agent_for_client_tool("view_workspace_image")
-    assert image.tool_use_behavior == {"stop_at_tool_names": ["view_workspace_image"]}
+    image = graph.agent_for_client_tool("view_image")
+    assert image.tool_use_behavior == {"stop_at_tool_names": ["view_image"]}
 
 
 async def test_conversation_turn_sends_only_the_current_user_message() -> None:
@@ -257,7 +251,7 @@ async def test_conversation_continuation_sends_only_latest_client_tool_output() 
         created_at=datetime.now(UTC),
         status="completed",
         call_id="call_0",
-        name="query_structured_data",
+        name="query_data",
         arguments={"file_id": "file_0"},
         output={"ok": True, "rows": 1},
     )
@@ -285,8 +279,8 @@ async def test_conversation_continuation_sends_only_latest_client_tool_output() 
 
 async def test_pdf_file_sample_is_attached_to_function_output_by_signed_url() -> None:
     class FileAccess:
-        async def ready_file_download_url(self, thread_id: str, asset_id: str) -> str:
-            assert (thread_id, asset_id) == ("thread_1", "asset_sample")
+        async def workspace_file_download_url(self, file_id: str) -> str:
+            assert file_id == "asset_sample"
             return "https://objects.example.test/signed-sample.pdf"
 
     tool_call = ClientToolCallItem(
@@ -295,9 +289,9 @@ async def test_pdf_file_sample_is_attached_to_function_output_by_signed_url() ->
         created_at=datetime.now(UTC),
         status="completed",
         call_id="call_pdf",
-        name="pdf_random_sample",
+        name="sample_pdf",
         arguments={
-            "assetId": "local_pdf",
+            "fileId": "local_pdf",
             "startPage": 1,
             "endPage": 20,
             "count": 3,
@@ -305,14 +299,14 @@ async def test_pdf_file_sample_is_attached_to_function_output_by_signed_url() ->
         },
         output={
             "ok": True,
-            "assetId": "local_pdf",
+            "fileId": "local_pdf",
             "mode": "as_files",
             "pageCount": 20,
             "range": {"startPage": 1, "endPage": 20},
             "sampledPages": [2, 9, 17],
             "files": [
                 {
-                    "assetId": "asset_sample",
+                    "fileId": "asset_sample",
                     "filename": "report-sample-2-9-17.pdf",
                     "mediaType": "application/pdf",
                     "sizeBytes": 1234,
@@ -346,8 +340,8 @@ async def test_pdf_file_sample_is_attached_to_function_output_by_signed_url() ->
 
 async def test_rendered_pdf_page_is_attached_as_high_detail_image() -> None:
     class FileAccess:
-        async def ready_file_download_url(self, thread_id: str, asset_id: str) -> str:
-            assert (thread_id, asset_id) == ("thread_1", "asset_page")
+        async def workspace_file_download_url(self, file_id: str) -> str:
+            assert file_id == "asset_page"
             return "https://objects.example.test/signed-page.png"
 
     tool_call = ClientToolCallItem(
@@ -356,18 +350,18 @@ async def test_rendered_pdf_page_is_attached_as_high_detail_image() -> None:
         created_at=datetime.now(UTC),
         status="completed",
         call_id="call_page",
-        name="pdf_render_page",
-        arguments={"workspaceFileId": "local_pdf", "page": 4, "scale": 1.75},
+        name="view_pdf_page",
+        arguments={"fileId": "local_pdf", "page": 4, "scale": 1.75},
         output={
             "ok": True,
             "artifactId": "artifact_page",
-            "sourceWorkspaceFileId": "local_pdf",
+            "sourceFileId": "local_pdf",
             "kind": "pdf_page_image",
             "mediaType": "image/png",
             "sizeBytes": 1234,
             "durability": "included",
             "file": {
-                "assetId": "asset_page",
+                "fileId": "asset_page",
                 "filename": "report-page-4.png",
                 "mediaType": "image/png",
                 "sizeBytes": 1234,

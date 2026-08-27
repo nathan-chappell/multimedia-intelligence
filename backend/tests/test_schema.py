@@ -10,6 +10,7 @@ def test_asset_domain_uses_separate_tables() -> None:
     assert {
         "assets",
         "thread_asset_includes",
+        "user_workspace_files",
         "derived_artifacts",
         "user_vector_stores",
         "asset_ingestions",
@@ -40,6 +41,7 @@ def test_high_volume_queries_have_composite_indexes() -> None:
         },
         "file_collections": {"ix_file_collections_public_cursor"},
         "thread_asset_includes": {"ix_thread_includes_owner_thread_state_cursor"},
+        "user_workspace_files": {"ix_workspace_files_owner_cursor"},
         "asset_ingestions": {"ix_ingestions_owner_asset_active_status_version"},
         "asset_index_artifacts": {
             "ix_index_artifacts_ingestion_state_cursor",

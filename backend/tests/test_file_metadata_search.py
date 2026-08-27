@@ -133,10 +133,10 @@ async def test_filename_modes_use_indexable_exact_prefix_and_safe_contains() -> 
         can_index=True,
     )
 
-    assert [item["assetId"] for item in exact["items"]] == ["asset_1"]
-    assert [item["assetId"] for item in prefix["items"]] == ["asset_2"]
-    assert {item["assetId"] for item in contains["items"]} == {"asset_1", "asset_5"}
-    assert [item["assetId"] for item in percent["items"]] == ["asset_4"]
+    assert [item["fileId"] for item in exact["items"]] == ["asset_1"]
+    assert [item["fileId"] for item in prefix["items"]] == ["asset_2"]
+    assert {item["fileId"] for item in contains["items"]} == {"asset_1", "asset_5"}
+    assert [item["fileId"] for item in percent["items"]] == ["asset_4"]
     await engine.dispose()
 
 
@@ -168,9 +168,9 @@ async def test_date_bounds_and_cursor_pagination_are_stable() -> None:
         can_index=True,
     )
 
-    assert [item["assetId"] for item in first["items"]] == ["asset_2", "asset_3"]
+    assert [item["fileId"] for item in first["items"]] == ["asset_2", "asset_3"]
     assert first["hasMore"] is True and first["nextCursor"]
-    assert [item["assetId"] for item in second["items"]] == ["asset_4", "asset_5"]
+    assert [item["fileId"] for item in second["items"]] == ["asset_4", "asset_5"]
     assert second["hasMore"] is False and second["nextCursor"] is None
     with pytest.raises(ValueError, match="cursor"):
         await finder.find(
@@ -226,10 +226,14 @@ async def test_results_expose_index_appropriate_agent_actions() -> None:
     )
 
     assert owned["items"][0]["indexed"] is True
-    assert owned["items"][0]["availableActions"] == ["get_file"]
+    assert owned["items"][0]["availableActions"] == [
+        "sample_pdf",
+        "view_pdf_page",
+        "extract_pdf_pages",
+    ]
     assert owned["items"][1]["indexed"] is False
-    assert owned["items"][1]["availableActions"] == ["index_collection_file"]
-    assert public["items"][0]["availableActions"] == []
+    assert owned["items"][1]["availableActions"] == ["read_text", "index_file"]
+    assert public["items"][0]["availableActions"] == ["read_text"]
     await engine.dispose()
 
 
@@ -259,13 +263,13 @@ async def test_metadata_tool_parses_dates_and_returns_a_json_page() -> None:
     )
     context = ToolContext(
         agent_context,
-        tool_name="find_collection_files",
+        tool_name="find_files",
         tool_call_id="call",
         tool_arguments="{}",
     )
     tool = cast(
         FunctionTool,
-        next(item for item in build_file_index_tools() if item.name == "find_collection_files"),
+        next(item for item in build_file_index_tools() if item.name == "find_files"),
     )
     output = await tool.on_invoke_tool(
         context,

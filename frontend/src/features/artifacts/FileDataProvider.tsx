@@ -14,7 +14,7 @@ import {
   type TransientArtifact,
 } from "./fileData";
 
-/** Coordinate collection-library and conversation-workspace state without conflating them. */
+/** Coordinate collection search with the user's single durable workspace. */
 export function FileDataProvider({ children }: { children: ReactNode }) {
   const [files, setFiles] = useState<IncludedLocalFile[]>([]);
   const [artifacts, setArtifacts] = useState<TransientArtifact[]>([]);
@@ -43,12 +43,11 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const loadCollectionFiles = useCallback(async (collectionId: string, threadId: string | null) => {
+  const loadCollectionFiles = useCallback(async (collectionId: string) => {
     setCollectionFilesLoading(true);
     setCollectionFilesError(null);
     try {
       const query = new URLSearchParams({ limit: "100", offset: "0" });
-      if (threadId) query.set("thread_id", threadId);
       const response = await authenticatedFetch(
         `/api/collections/${encodeURIComponent(collectionId)}/files?${query}`,
       );
@@ -80,8 +79,8 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
       setCollectionFiles([]);
       return;
     }
-    void loadCollectionFiles(selectedCollectionId, activeThreadId).catch(console.error);
-  }, [selectedCollectionId, activeThreadId, loadCollectionFiles]);
+    void loadCollectionFiles(selectedCollectionId).catch(console.error);
+  }, [selectedCollectionId, loadCollectionFiles]);
 
   useEffect(() => {
     artifactsRef.current = artifacts;
@@ -125,14 +124,14 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
     });
   }, [updateFiles]);
 
-  const attachSavedFile = useCallback(async (localId: string, assetId: string, threadId: string) => {
+  const attachSavedFile = useCallback(async (localId: string, assetId: string) => {
     if (inclusionInFlight.current.has(localId)) return;
     inclusionInFlight.current.add(localId);
     try {
-      const response = await authenticatedFetch(`/api/assets/${encodeURIComponent(assetId)}/includes`, {
+      const response = await authenticatedFetch(`/api/assets/${encodeURIComponent(assetId)}/workspace`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thread_id: threadId }),
+        body: "{}",
       });
       if (!response.ok) throw new Error(await apiError(response, "Could not include the file"));
       const result = (await response.json()) as SaveResponse;
@@ -160,17 +159,9 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
     }
   }, [updateFiles]);
 
-  const loadSavedFiles = useCallback(async (
-    threadId: string,
-    generation: number,
-    preserveLocal = false,
-  ) => {
+  const loadSavedFiles = useCallback(async (generation: number, preserveLocal = false) => {
     try {
-      const query = new URLSearchParams({ thread_id: threadId });
-      const [response, derivedResponse] = await Promise.all([
-        authenticatedFetch(`/api/assets?${query}`),
-        authenticatedFetch(`/api/assets/derived?${query}`),
-      ]);
+      const response = await authenticatedFetch("/api/assets");
       if (!response.ok) throw new Error(await apiError(response, "Could not load saved files"));
       const saved = (await response.json()) as SavedAssetResponse[];
       const restoredFiles = saved.map(
@@ -190,7 +181,7 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
           };
         },
       );
-      if (loadGeneration.current !== generation || activeThreadRef.current !== threadId) return;
+      if (loadGeneration.current !== generation) return;
       updateFiles((current) => {
         const hydratedByAssetId = new Map(
           current.flatMap((entry) =>
@@ -213,85 +204,26 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
         return [...local, ...hydratedFiles];
       });
 
-      if (!derivedResponse.ok) {
-        console.error(await apiError(derivedResponse, "Could not load saved artifacts"));
-        return;
-      }
-      const savedArtifacts = (await derivedResponse.json()) as SavedArtifactResponse[];
-      let restoredArtifacts: TransientArtifact[];
-      try {
-        restoredArtifacts = await Promise.all(
-          savedArtifacts.map(async (entry): Promise<TransientArtifact> => {
-            const content = await authenticatedFetch(
-              `/api/assets/derived/${encodeURIComponent(entry.artifact_id)}/content?${query}`,
-            );
-            if (!content.ok) {
-              throw new Error(await apiError(content, `Could not restore ${entry.filename}`));
-            }
-            const blob = await content.blob();
-            return {
-              id: entry.artifact_id,
-              sourceAssetId: entry.source_asset_id,
-              kind: entry.kind === "chart" ? "chart" : "pdf_part",
-              label: entry.filename,
-              blob,
-              previewUrl: blob.type.startsWith("image/") ? URL.createObjectURL(blob) : null,
-              durability: "saved",
-            };
-          }),
-        );
-      } catch (error) {
-        console.error(error);
-        return;
-      }
-      if (loadGeneration.current !== generation || activeThreadRef.current !== threadId) {
-        restoredArtifacts.forEach((artifact) => {
-          if (artifact.previewUrl) URL.revokeObjectURL(artifact.previewUrl);
-        });
-        return;
-      }
-      setArtifacts((current) => {
-        if (!preserveLocal) {
-          current.forEach((artifact) => {
-            if (artifact.previewUrl) URL.revokeObjectURL(artifact.previewUrl);
-          });
-          return restoredArtifacts;
-        }
-        const restoredIds = new Set(restoredArtifacts.map((artifact) => artifact.id));
-        const local = current.filter(
-          (artifact) => artifact.durability !== "saved" && !restoredIds.has(artifact.id),
-        );
-        current
-          .filter((artifact) => artifact.durability === "saved" && !restoredIds.has(artifact.id))
-          .forEach((artifact) => {
-            if (artifact.previewUrl) URL.revokeObjectURL(artifact.previewUrl);
-          });
-        return [...local, ...restoredArtifacts];
-      });
     } catch (error) {
-      if (loadGeneration.current !== generation || activeThreadRef.current !== threadId) return;
-      if (!preserveLocal) {
-        updateFiles(() => []);
-        setArtifacts([]);
-      }
+      if (loadGeneration.current !== generation) return;
+      if (!preserveLocal) updateFiles(() => []);
       throw error;
     }
   }, [updateFiles]);
 
   const startHydration = useCallback(
-    (threadId: string, preserveLocal: boolean, force = false): Promise<void> => {
+    (preserveLocal: boolean, force = false): Promise<void> => {
       const current = hydrationRef.current;
-      if (!force && current?.threadId === threadId) return current.promise;
+      if (!force && current) return current.promise;
       const generation = ++loadGeneration.current;
       const hydration: WorkspaceHydration = {
-        threadId,
         generation,
         error: null,
         promise: Promise.resolve(),
       };
-      hydration.promise = loadSavedFiles(threadId, generation, preserveLocal).catch(
+      hydration.promise = loadSavedFiles(generation, preserveLocal).catch(
         (error: unknown) => {
-          hydration.error = asError(error, "Could not hydrate conversation files");
+          hydration.error = asError(error, "Could not hydrate workspace files");
           console.error(error);
         },
       );
@@ -302,24 +234,18 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    const threadId = activeThreadRef.current;
-    if (threadId) void startHydration(threadId, false);
+    void startHydration(false);
   }, [startHydration]);
 
   const waitUntilReady = useCallback(async () => {
     while (true) {
-      const threadId = activeThreadRef.current;
-      if (!threadId) return;
       let hydration = hydrationRef.current;
-      if (!hydration || hydration.threadId !== threadId) {
-        void startHydration(threadId, true);
+      if (!hydration) {
+        void startHydration(true);
         hydration = hydrationRef.current;
       }
       if (!hydration) continue;
       await hydration.promise;
-      if (activeThreadRef.current !== threadId) {
-        throw new Error("The active conversation changed while restoring its files");
-      }
       if (hydrationRef.current !== hydration) continue;
       if (hydration.error) throw hydration.error;
       return;
@@ -331,18 +257,47 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
   const resolveFile = useCallback(
     async (assetId: string): Promise<HydratedLocalFile | undefined> => {
       await waitUntilReady();
-      const entry = filesRef.current.find(
+      let entry = filesRef.current.find(
         (candidate) => candidate.id === assetId || candidate.durableAssetId === assetId,
       );
-      if (!entry) return undefined;
+      if (!entry) {
+        const response = await authenticatedFetch(
+          `/api/assets/${encodeURIComponent(assetId)}/workspace`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          },
+        );
+        if (!response.ok) return undefined;
+        const loaded = (await response.json()) as SavedAssetResponse;
+        const mediaType = loaded.media_type || "application/octet-stream";
+        entry = {
+          id: loaded.asset_id,
+          filename: loaded.filename,
+          mediaType,
+          sizeBytes: loaded.size_bytes,
+          route: classifyLocalFile(new File([], loaded.filename, { type: mediaType })),
+          addedAt: Date.now(),
+          durability: "included",
+          durableAssetId: loaded.asset_id,
+          includeId: loaded.include_id ?? undefined,
+          collectionId: loaded.collection_id ?? undefined,
+        };
+        const loadedEntry = entry;
+        updateFiles((current) =>
+          current.some((candidate) => candidate.durableAssetId === loadedEntry.durableAssetId)
+            ? current
+            : [...current, loadedEntry],
+        );
+      }
       if (entry.file) return { ...entry, file: entry.file };
-      const threadId = activeThreadRef.current;
       const durableAssetId = entry.durableAssetId;
-      if (!threadId || !durableAssetId) return undefined;
-      const cacheKey = `${threadId}:${durableAssetId}`;
+      if (!durableAssetId) return undefined;
+      const cacheKey = durableAssetId;
       let content = contentLoads.current.get(cacheKey);
       if (!content) {
-        content = loadAssetFile(durableAssetId, threadId, entry.filename, entry.mediaType);
+        content = loadAssetFile(durableAssetId, entry.filename, entry.mediaType);
         contentLoads.current.set(cacheKey, content);
         void content.then(
           () => contentLoads.current.delete(cacheKey),
@@ -350,9 +305,6 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
         );
       }
       const file = await content;
-      if (activeThreadRef.current !== threadId) {
-        throw new Error("The active conversation changed while restoring the file");
-      }
       const hydrated: HydratedLocalFile = { ...entry, file };
       updateFiles((current) =>
         current.map((candidate) =>
@@ -366,33 +318,18 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
 
   const changeActiveThread = useCallback(
     (threadId: string | null) => {
-      const previousThreadId = activeThreadRef.current;
-      if (previousThreadId === threadId) return;
+      if (activeThreadRef.current === threadId) return;
       activeThreadRef.current = threadId;
       setActiveThreadId(threadId);
       rememberThreadId(threadId);
-      hydrationRef.current = null;
-
       setArtifacts((current) => {
         current.forEach((artifact) => {
           if (artifact.previewUrl) URL.revokeObjectURL(artifact.previewUrl);
         });
         return [];
       });
-
-      if (threadId === null) {
-        // Returning to ChatKit's new-thread screen starts a fresh file workspace.
-        if (previousThreadId !== null) updateFiles(() => []);
-        return;
-      }
-
-      // When ChatKit creates a thread from the new-thread screen, preserve files
-      // the user just staged so the existing inclusion effect can attach them.
-      if (previousThreadId === null && filesRef.current.length > 0) return;
-      updateFiles(() => []);
-      void startHydration(threadId, false, true);
     },
-    [startHydration, updateFiles],
+    [],
   );
 
   const restoreThread = useCallback(
@@ -400,26 +337,12 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
       activeThreadRef.current = threadId;
       setActiveThreadId(threadId);
       rememberThreadId(threadId);
-      if (
-        hydrationRef.current?.threadId === threadId &&
-        hydrationRef.current.error === null
-      ) return;
-      updateFiles(() => []);
-      setArtifacts((current) => {
-        current.forEach((artifact) => {
-          if (artifact.previewUrl) URL.revokeObjectURL(artifact.previewUrl);
-        });
-        return [];
-      });
-      void startHydration(threadId, false, true);
     },
-    [startHydration, updateFiles],
+    [],
   );
 
   const refreshThreadFiles = useCallback(async () => {
-    const threadId = activeThreadRef.current;
-    if (!threadId) return;
-    await startHydration(threadId, true, true);
+    await startHydration(true, true);
   }, [startHydration]);
 
   const saveFile = useCallback(
@@ -427,9 +350,7 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
       const entry = filesRef.current.find((candidate) => candidate.id === localId);
       if (!entry || entry.durability === "uploading") return;
       if (entry.durableAssetId) {
-        if (activeThreadId) {
-          await attachSavedFile(localId, entry.durableAssetId, activeThreadId);
-        }
+        await attachSavedFile(localId, entry.durableAssetId);
         return;
       }
       updateFiles((current) =>
@@ -442,7 +363,6 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
       try {
         if (!entry.file) throw new Error("File content is unavailable for upload");
         const query = new URLSearchParams({ filename: entry.file.name });
-        if (activeThreadId) query.set("thread_id", activeThreadId);
         const response = await authenticatedFetch(`/api/assets?${query}`, {
           method: "POST",
           headers: { "Content-Type": entry.file.type || "application/octet-stream" },
@@ -465,7 +385,7 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
           ),
         );
         if (result.collection_id) {
-          await loadCollectionFiles(result.collection_id, activeThreadRef.current);
+          await loadCollectionFiles(result.collection_id);
         }
       } catch (error) {
         updateFiles((current) =>
@@ -481,17 +401,18 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
         );
       }
     },
-    [activeThreadId, attachSavedFile, loadCollectionFiles, updateFiles],
+    [attachSavedFile, loadCollectionFiles, updateFiles],
   );
 
   useEffect(() => {
-    if (!activeThreadId) return;
     files.forEach((entry) => {
-      if (entry.durability === "stored" && entry.durableAssetId) {
-        void attachSavedFile(entry.id, entry.durableAssetId, activeThreadId);
+      if (entry.durability === "local") {
+        void saveFile(entry.id);
+      } else if (entry.durability === "stored" && entry.durableAssetId) {
+        void attachSavedFile(entry.id, entry.durableAssetId);
       }
     });
-  }, [activeThreadId, files, attachSavedFile]);
+  }, [files, attachSavedFile, saveFile]);
 
   const selectCollection = useCallback(
     async (collectionId: string) => {
@@ -531,23 +452,21 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
 
   const refreshCollectionFiles = useCallback(async () => {
     if (!selectedCollectionId) return;
-    await loadCollectionFiles(selectedCollectionId, activeThreadRef.current);
+    await loadCollectionFiles(selectedCollectionId);
   }, [selectedCollectionId, loadCollectionFiles]);
 
   const setFileIncluded = useCallback(
     async (assetId: string, included: boolean) => {
-      const threadId = activeThreadRef.current;
-      if (!threadId) throw new Error("Start or select a conversation first");
       const response = await authenticatedFetch(
         `/api/assets/${encodeURIComponent(assetId)}/inclusion`,
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ thread_id: threadId, included }),
+          body: JSON.stringify({ included }),
         },
       );
       if (!response.ok) {
-        throw new Error(await apiError(response, "Could not update the conversation workspace"));
+        throw new Error(await apiError(response, "Could not update the workspace"));
       }
       const result = (await response.json()) as { include_id: string | null };
       setCollectionFiles((current) =>
@@ -565,11 +484,9 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
   const setCollectionFileIncluded = useCallback(
     async (assetId: string, included: boolean) => {
       if (!selectedCollectionId) throw new Error("Select a collection first");
-      const selected = collections.find((collection) => collection.id === selectedCollectionId);
-      if (selected?.read_only) throw new Error("Public collection files are read-only");
       await setFileIncluded(assetId, included);
     },
-    [collections, selectedCollectionId, setFileIncluded],
+    [selectedCollectionId, setFileIncluded],
   );
 
   const reconcileCollection = useCallback(async (): Promise<ReconciliationSummary> => {
@@ -580,7 +497,7 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
     );
     if (!response.ok) throw new Error(await apiError(response, "Could not refresh index status"));
     const result = (await response.json()) as ReconciliationSummary;
-    await loadCollectionFiles(selectedCollectionId, activeThreadRef.current);
+    await loadCollectionFiles(selectedCollectionId);
     return result;
   }, [selectedCollectionId, loadCollectionFiles]);
 
@@ -704,18 +621,7 @@ interface SavedAssetResponse extends SaveResponse {
   size_bytes: number;
 }
 
-interface SavedArtifactResponse {
-  artifact_id: string;
-  source_asset_id: string;
-  filename: string;
-  media_type: string;
-  size_bytes: number;
-  kind: string;
-  collection_id: string | null;
-}
-
 interface WorkspaceHydration {
-  threadId: string;
   generation: number;
   promise: Promise<void>;
   error: Error | null;
@@ -723,15 +629,10 @@ interface WorkspaceHydration {
 
 async function loadAssetFile(
   assetId: string,
-  threadId: string,
   filename: string,
   mediaType: string,
 ): Promise<File> {
-  const content = await authenticatedFetch(
-    `/api/assets/${encodeURIComponent(assetId)}/content?${new URLSearchParams({
-      thread_id: threadId,
-    })}`,
-  );
+  const content = await authenticatedFetch(`/api/assets/${encodeURIComponent(assetId)}/content`);
   if (!content.ok) {
     throw new Error(await apiError(content, `Could not restore ${filename}`));
   }

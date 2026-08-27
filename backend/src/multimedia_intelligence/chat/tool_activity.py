@@ -17,21 +17,18 @@ from .tool_results import (
 
 _CLIENT_TOOLS = {
     "list_files",
-    "read_text_chars",
-    "json_chars",
-    "query_structured_data",
-    "pdf_random_sample",
-    "pdf_render_page",
-    "pdf_extract_range",
-    "view_workspace_image",
+    "read_text",
+    "query_data",
+    "sample_pdf",
+    "view_pdf_page",
+    "extract_pdf_pages",
+    "view_image",
 }
 _SERVER_FILE_TOOLS = {
-    "index_collection_file",
-    "find_collection_files",
-    "file_search",
-    "get_file",
-    "get_transcript",
-    "read_durable_text_range",
+    "index_file",
+    "find_files",
+    "search_files",
+    "read_transcript",
 }
 
 
@@ -135,15 +132,15 @@ def _tool_arguments(context: Any) -> dict[str, Any]:
 
 
 def _started_copy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str | None]:
-    if tool_name == "index_collection_file":
+    if tool_name == "index_file":
         return "Adding a file to collection search", "Uploading verified representations"
-    if tool_name == "find_collection_files":
+    if tool_name == "find_files":
         filename = arguments.get("filename")
         excerpt = str(filename).strip()[:160] if filename is not None else ""
         return "Checking collection file metadata", (
             f"Filename matching “{excerpt}”" if excerpt else "Filtering by file metadata"
         )
-    if tool_name == "file_search":
+    if tool_name == "search_files":
         query = arguments.get("query")
         excerpt = str(query).strip()[:160] if query is not None else ""
         return "Searching indexed collection contents", (
@@ -151,29 +148,23 @@ def _started_copy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str |
         )
     if tool_name == "list_files":
         page = arguments.get("page", 1)
-        return "Checking conversation workspace files", f"Listing workspace page {page}"
-    if tool_name == "get_file":
-        return "Opening an indexed collection file", None
-    if tool_name == "get_transcript":
+        return "Checking workspace files", f"Listing workspace page {page}"
+    if tool_name == "read_transcript":
         return "Reading an indexed transcript", None
-    if tool_name == "read_durable_text_range":
-        return "Reading conversation workspace text", None
-    if tool_name == "read_text_chars":
+    if tool_name == "read_text":
         return "Reading workspace text in the browser", None
-    if tool_name == "json_chars":
-        return "Reading workspace JSON in the browser", None
-    if tool_name == "query_structured_data":
+    if tool_name == "query_data":
         expression = arguments.get("expression")
         excerpt = str(expression).strip()[:160] if expression is not None else ""
         return "Querying workspace data in the browser", excerpt or None
-    if tool_name == "pdf_random_sample":
+    if tool_name == "sample_pdf":
         return "Sampling workspace PDF pages in the browser", None
-    if tool_name == "pdf_render_page":
+    if tool_name == "view_pdf_page":
         page = arguments.get("page")
         return "Rendering a workspace PDF page in the browser", (
             f"Page {page}" if isinstance(page, int) else None
         )
-    if tool_name == "view_workspace_image":
+    if tool_name == "view_image":
         return "Opening a workspace image for vision", None
     return "Extracting workspace PDF pages in the browser", None
 

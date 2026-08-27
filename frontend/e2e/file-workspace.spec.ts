@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("stages a conversation file and offers save", async ({ page }) => {
+test("adds a local file to the durable user workspace", async ({ page }) => {
   await page.addInitScript(() =>
     window.localStorage.setItem("e2e_clerk_token", "test-token"),
   );
@@ -44,6 +44,23 @@ test("stages a conversation file and offers save", async ({ page }) => {
       body: JSON.stringify({ items: [], total: 0, limit: 100, offset: 0 }),
     }),
   );
+  await page.route(/\/api\/assets(?:\?.*)?$/, (route) => {
+    if (route.request().method() === "POST") {
+      return route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          asset_id: "asset_exchange_rates",
+          include_id: "workspace_exchange_rates",
+          filename: "exchange-rates.csv",
+          media_type: "text/csv",
+          size_bytes: 39,
+          collection_id: null,
+        }),
+      });
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
   await page.route("**/chatkit", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: "{}" }),
   );
@@ -57,16 +74,15 @@ test("stages a conversation file and offers save", async ({ page }) => {
   });
 
   await expect(page.getByText("exchange-rates.csv")).toBeVisible();
-  await expect(page.getByRole("status")).toContainText("1 file(s) staged");
+  await expect(page.getByRole("status")).toContainText("1 file(s) added to the workspace");
   await expect(page.getByText("Collection", { exact: true })).toBeVisible();
   await expect(
-    page.getByLabel("Library & workspace").getByText("Conversation workspace", { exact: true }),
+    page.getByLabel("Library & workspace").getByText("Workspace", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("Browser staged")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Upload", exact: true })).toBeVisible();
+  await expect(page.getByText("Available to tools")).toBeVisible();
 });
 
-test("keeps conversation workspace files when the selected collection changes", async ({ page }) => {
+test("keeps user workspace files when the selected collection changes", async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem("e2e_clerk_token", "test-token");
     window.sessionStorage.setItem("mi_active_thread_id", "thread_workspace");
@@ -128,7 +144,7 @@ test("keeps conversation workspace files when the selected collection changes", 
   await page.route("**/api/assets/derived?**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
   );
-  await page.route("**/api/assets?**", (route) =>
+  await page.route(/\/api\/assets(?:\?.*)?$/, (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",

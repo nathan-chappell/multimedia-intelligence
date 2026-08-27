@@ -873,7 +873,7 @@ class FileIndexWriter:
         raw_warnings = prepared_plan.get("warnings")
         return {
             "ingestionId": ingestion.id,
-            "assetId": asset.id,
+            "fileId": asset.id,
             "collectionId": ingestion.collection_id,
             "filename": asset.filename,
             "route": ingestion.route,
@@ -1261,7 +1261,7 @@ class FileIndexReader:
             lines.append(line)
             used += size
         return {
-            "assetId": asset.id,
+            "fileId": asset.id,
             "startSeconds": start_seconds,
             "endSeconds": end_seconds,
             "text": "\n".join(lines),

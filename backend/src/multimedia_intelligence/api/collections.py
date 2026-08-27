@@ -9,7 +9,6 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from multimedia_intelligence.auth import authenticate_request
-from multimedia_intelligence.chat.store import ThreadRow
 from multimedia_intelligence.config import Settings
 from multimedia_intelligence.files.collections import (
     create_collection,
@@ -17,7 +16,7 @@ from multimedia_intelligence.files.collections import (
     select_collection,
     selected_collection,
 )
-from multimedia_intelligence.files.domain import AssetState, IncludeState, IntentKind
+from multimedia_intelligence.files.domain import AssetState
 from multimedia_intelligence.files.indexing import FileIndexReader, ReconciliationSummary
 from multimedia_intelligence.files.policy import classify_file
 from multimedia_intelligence.files.records import (
@@ -25,8 +24,8 @@ from multimedia_intelligence.files.records import (
     AssetIngestionRow,
     AssetRow,
     FileCollectionRow,
-    ThreadAssetIncludeRow,
     UserCollectionSelectionRow,
+    UserWorkspaceFileRow,
 )
 
 
@@ -89,13 +88,13 @@ class CollectionFilePage(BaseModel):
 class FileInclusionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    thread_id: str = Field(min_length=1, max_length=128)
+    thread_id: str | None = Field(default=None, min_length=1, max_length=128)
     included: bool
 
 
 class FileInclusionResponse(BaseModel):
     asset_id: str
-    thread_id: str
+    thread_id: str | None
     included: bool
     include_id: str | None
 
@@ -181,6 +180,14 @@ def build_collection_router(
                         UserCollectionSelectionRow.owner_id != row.owner_id,
                     )
                 )
+                await session.execute(
+                    delete(UserWorkspaceFileRow).where(
+                        UserWorkspaceFileRow.owner_id != row.owner_id,
+                        UserWorkspaceFileRow.asset_id.in_(
+                            select(AssetRow.id).where(AssetRow.collection_id == row.id)
+                        ),
+                    )
+                )
         selected = await selected_collection(sessions, user.id, is_admin=user.is_admin)
         return _collection_view(row, user.id, user.is_admin, selected.id)
 
@@ -197,8 +204,6 @@ def build_collection_router(
             sessions, collection_id, user.id, is_admin=user.is_admin
         )
         collection_owner_id = collection.owner_id
-        if thread_id is not None:
-            await _require_thread(sessions, thread_id, user.id)
         async with sessions() as session:
             total = int(
                 await session.scalar(
@@ -254,14 +259,13 @@ def build_collection_router(
             includes = (
                 list(
                     await session.scalars(
-                        select(ThreadAssetIncludeRow).where(
-                            ThreadAssetIncludeRow.thread_id == thread_id,
-                            ThreadAssetIncludeRow.owner_id == user.id,
-                            ThreadAssetIncludeRow.asset_id.in_(asset_ids),
+                        select(UserWorkspaceFileRow).where(
+                            UserWorkspaceFileRow.owner_id == user.id,
+                            UserWorkspaceFileRow.asset_id.in_(asset_ids),
                         )
                     )
                 )
-                if thread_id and asset_ids
+                if asset_ids
                 else []
             )
 
@@ -291,12 +295,8 @@ def build_collection_router(
                     provider_file_count=sum(
                         artifact.provider_file_id is not None for artifact in indexed
                     ),
-                    included=include is not None and include.state == IncludeState.READY,
-                    include_id=(
-                        include.id
-                        if include is not None and include.state == IncludeState.READY
-                        else None
-                    ),
+                    included=include is not None,
+                    include_id=include.id if include is not None else None,
                     last_error=(ingestion.error[:300] if ingestion and ingestion.error else None),
                 )
             )
@@ -316,44 +316,32 @@ def build_collection_router(
         collection = await _require_collection(
             sessions, collection_id, user.id, is_admin=user.is_admin
         )
-        if collection.owner_id != user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Public collection files are read-only",
-            )
-        await _require_thread(sessions, payload.thread_id, user.id)
         async with sessions.begin() as session:
             asset = await session.get(AssetRow, asset_id)
             if (
                 asset is None
-                or asset.owner_id != user.id
+                or asset.owner_id != collection.owner_id
                 or asset.collection_id != collection_id
                 or asset.state != AssetState.STORED
             ):
                 raise HTTPException(status_code=404, detail="Asset not found")
             include = await session.scalar(
-                select(ThreadAssetIncludeRow).where(
-                    ThreadAssetIncludeRow.thread_id == payload.thread_id,
-                    ThreadAssetIncludeRow.asset_id == asset_id,
+                select(UserWorkspaceFileRow).where(
+                    UserWorkspaceFileRow.owner_id == user.id,
+                    UserWorkspaceFileRow.asset_id == asset_id,
                 )
             )
             if payload.included:
                 if include is None:
-                    include = ThreadAssetIncludeRow(
-                        id=f"include_{uuid4().hex}",
-                        thread_id=payload.thread_id,
+                    include = UserWorkspaceFileRow(
+                        id=f"workspace_{uuid4().hex}",
                         asset_id=asset_id,
                         owner_id=user.id,
-                        user_intent=None,
-                        intent_kind=IntentKind.AUTO,
-                        state=IncludeState.READY,
                         created_at=datetime.now(UTC),
                     )
                     session.add(include)
-                else:
-                    include.state = IncludeState.READY
             elif include is not None:
-                include.state = IncludeState.EXCLUDED
+                await session.delete(include)
         return FileInclusionResponse(
             asset_id=asset_id,
             thread_id=payload.thread_id,
@@ -400,17 +388,6 @@ async def _require_collection(
     if row is None:
         raise HTTPException(status_code=404, detail="Collection not found")
     return row
-
-
-async def _require_thread(
-    sessions: async_sessionmaker[AsyncSession], thread_id: str, owner_id: str
-) -> None:
-    async with sessions() as session:
-        row = await session.scalar(
-            select(ThreadRow.id).where(ThreadRow.id == thread_id, ThreadRow.owner_id == owner_id)
-        )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Thread not found")
 
 
 def _provider_status(artifacts: list[AssetIndexArtifactRow], ingestion_status: str | None) -> str:

@@ -16,8 +16,8 @@ class CollectionContext(TypedDict):
 
 class ReadyFileReference(TypedDict):
     reference: str
-    assetId: str
-    includeId: str
+    fileId: str
+    workspaceId: str
     filename: str
     mediaType: str
     sizeBytes: int
@@ -27,7 +27,7 @@ class ReadyFileReference(TypedDict):
 
 
 class TextRangeResult(TypedDict):
-    assetId: str
+    fileId: str
     start: int
     end: int
     text: str
@@ -35,7 +35,7 @@ class TextRangeResult(TypedDict):
 
 
 class FileSearchResult(TypedDict):
-    assetId: str
+    fileId: str
     artifactId: str
     filename: str
     mediaType: str
@@ -48,7 +48,7 @@ class FileSearchResult(TypedDict):
 
 
 class CollectionFileMetadata(TypedDict):
-    assetId: str
+    fileId: str
     collectionId: str
     filename: str
     mediaType: str
@@ -68,7 +68,7 @@ class CollectionFileMetadataPage(TypedDict):
 
 
 class TranscriptPageResult(TypedDict):
-    assetId: str
+    fileId: str
     startSeconds: float | None
     endSeconds: float | None
     text: str
@@ -79,7 +79,7 @@ class TranscriptPageResult(TypedDict):
 
 class IndexCollectionFileResult(TypedDict):
     ingestionId: str
-    assetId: str
+    fileId: str
     collectionId: str
     filename: str
     route: str
@@ -95,19 +95,18 @@ class IndexCollectionFileResult(TypedDict):
 class AgentDataAccess(Protocol):
     async def collection_context(self) -> CollectionContext: ...
 
-    async def list_ready_file_references(
-        self, thread_id: str
-    ) -> tuple[ReadyFileReference, ...]: ...
+    async def list_workspace_files(self) -> tuple[ReadyFileReference, ...]: ...
 
-    async def ready_file_download_url(self, thread_id: str, asset_id: str) -> str: ...
+    async def workspace_file_download_url(self, file_id: str) -> str: ...
 
-    async def read_ready_text_range(
+    async def read_workspace_text(
         self,
-        thread_id: str,
-        asset_id: str,
+        file_id: str,
         start: int,
         count: int,
     ) -> TextRangeResult: ...
+
+    async def ensure_workspace_file(self, file_id: str) -> ReadyFileReference: ...
 
     async def file_search(
         self, query: str, max_results: int, file_types: list[str] | None = None
@@ -125,24 +124,17 @@ class AgentDataAccess(Protocol):
         cursor: str | None,
     ) -> CollectionFileMetadataPage: ...
 
-    async def get_file(
+    async def read_transcript(
         self,
-        asset_id: str,
-        artifact_id: str | None = None,
-        original: bool = False,
-    ) -> dict[str, object]: ...
-
-    async def get_transcript(
-        self,
-        asset_id: str,
+        file_id: str,
         start_seconds: float | None,
         end_seconds: float | None,
         cursor: str | None,
     ) -> TranscriptPageResult: ...
 
-    async def index_collection_file(
+    async def index_file(
         self,
-        asset_id: str,
+        file_id: str,
         description: str,
         representation_mode: Literal["auto", "description", "source", "both"],
         evidence_refs: list[str] | None,

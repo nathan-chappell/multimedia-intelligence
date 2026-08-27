@@ -50,41 +50,22 @@ class AssistantGraph:
 
         root_tools = [
             *self._tools("list_files"),
-            *self._tools("find_collection_files", "file_search", "index_collection_file"),
+            *self._tools("find_files", "search_files", "index_file"),
         ]
         self.root = Agent(
             name="Root conversation agent",
             model=model,
             model_settings=self.model_settings,
-            instructions="""Discover files, route work, and produce the user-facing answer.
-When the request refers to documents or could materially benefit from the user's files, prefer to
-check them rather than answering generically. Do not call file tools for unrelated requests.
-The conversation workspace is the current thread's active working set. Use list_files to discover
-its included or browser-staged files. Pass a returned workspaceFileId as workspace_file_id to
-browser tools; durable server tools take asset_id from assetId. Never substitute the identifiers.
-The selected collection is a durable library where uploads and ingestion happen. Use
-find_collection_files for filename, creation-date, recent-file, or collection-inventory requests;
-it queries authoritative database metadata and includes unindexed files. Prefer exact or prefix
-filename matching when the request provides matching case; use case-insensitive contains
-otherwise, and follow nextCursor with unchanged filters.
-Use file_search for semantic discovery by subject or file contents; it searches only indexed
-representations. Both tools are restricted to the selected collection. Preserve collection,
-assetId, and artifactId when present, then hand content work to the matching specialist.
-Only call index_collection_file when the user explicitly asks to index, ingest, or add a file to
-collection search. First inspect enough evidence to write a truthful retrieval description and
-include bounded evidence_refs; never invent file contents. Use representation_mode=description for
-CSV/image summaries, source or both for provider-native text/PDF/JSON when requested, and auto for
-route defaults including OpenAI transcription of audio/video. Use replace_existing only when the
-user asks to refresh an existing index.
-When selected PDF pages are the right retrieval unit, have the document specialist create a
-durable as_files sample in the browser, then index the returned asset instead of slicing it on the
-server.
-Inspecting an indexed collection result does not add it to the conversation workspace.
-Start list_files with page 1 and follow hasMore only when needed.
-Hand off content inspection to the matching modality specialist.
-The server reads indexed artifacts and provider-native documents; inspect workspace files with
-browser tools and never claim that the server parsed or transformed source media.
-Use only returned evidence.""",
+            instructions="""Answer the user and delegate file inspection by modality.
+The workspace is one durable file set per user. Use list_files for it. Every file tool accepts the
+returned fileId as file_id. If a collection file is not yet in the workspace, using its file_id
+adds it and loads it on demand.
+The selected collection is a search index, not the workspace. Use find_files for name/date lookup
+and search_files for semantic content search. Hand the returned fileId to the right specialist.
+The workspace already preserves files. Never index merely to preserve a file, inspect it, or make
+it available later. Use index_file only when the user explicitly asks to add or index a workspace
+file in the selected collection. Inspect it first and cite evidence_refs.
+Do not invent file evidence or use file tools for unrelated requests.""",
             tools=root_tools,
             tool_use_behavior=self._stop_at_client_tools(root_tools),
         )
@@ -96,25 +77,14 @@ Use only returned evidence.""",
 
         document_tools = self._tools(
             *DOCUMENT_CLIENT_TOOLS,
-            "read_durable_text_range",
-            "get_file",
         )
         self.document = Agent(
             name="Document specialist",
             model=model,
             model_settings=self.model_settings,
-            instructions="""Inspect text and PDF files with the available bounded tools.
-Use browser tools for files in the conversation workspace. For an indexed selected-collection
-result from file_search or find_collection_files, call get_file with its assetId and any returned
-artifactId; PDF hydration defaults to the matching page-range PDF. Direct collection inspection
-does not change workspace membership.
-Use pdf_random_sample with text_content for cheap text evidence.
-Use as_files when layout or images matter, or extracted text is empty or incoherent.
-Use pdf_render_page when one page needs close visual inspection; its saved PNG is attached to the
-continuation as high-detail vision input.
-Keep the range focused and the sample count as small as the question allows.
-Preserve page and layout context and separate evidence from inference.
-Return control to the root after producing the needed overview.""",
+            instructions="""Inspect text and PDFs by file_id. Use read_text for text, sample_pdf
+for broad PDF evidence, view_pdf_page for layout or images, and extract_pdf_pages for a bounded
+derivative. Keep ranges small, distinguish evidence from inference, then return to root.""",
             tools=document_tools,
             handoffs=[return_to_root],
             tool_use_behavior=self._stop_at_client_tools(document_tools),
@@ -122,53 +92,36 @@ Return control to the root after producing the needed overview.""",
 
         structured_data_tools = self._tools(
             *STRUCTURED_DATA_CLIENT_TOOLS,
-            "read_durable_text_range",
-            "get_file",
         )
         self.structured_data = Agent(
             name="Structured data specialist",
             model=model,
             model_settings=self.model_settings,
-            instructions="""Inspect CSV and JSON files with the available bounded tools.
-Use query_structured_data with valid JMESPath. CSV files are converted to arrays of JSON rows;
-start with [0] to inspect columns and inferred value types, then make focused projections,
-filters, or function calls. Summarize structure, samples, and statistics.
-For indexed assets discovered in the selected collection with file_search or
-find_collection_files, use get_file to read the prepared profile or bounded source text. Use
-browser tools for queries against a conversation-workspace source file.
-The server does not parse
-canonical CSV or JSON assets or render charts.
-Return control to the root after producing the needed overview.""",
+            instructions="""Inspect CSV or JSON by file_id with query_data and valid JMESPath.
+CSV is exposed as JSON rows. Start with [0], then use focused projections, filters, or functions.
+Summarize the evidence and return to root.""",
             tools=structured_data_tools,
             handoffs=[return_to_root],
             tool_use_behavior=self._stop_at_client_tools(structured_data_tools),
         )
 
-        media_tools = self._tools("get_transcript")
+        media_tools = self._tools("read_transcript")
         self.media = Agent(
             name="Media specialist",
             model=model,
             model_settings=self.model_settings,
-            instructions="""Summarize audio or video evidence and propose timestamped analysis.
-Use get_transcript with timestamp ranges and cursors for indexed audio or video discovered by
-file_search or find_collection_files and identified by a durable assetId. A browser-staged
-workspaceFileId has no transcript until the user explicitly requests collection indexing; explain
-that boundary instead of calling get_transcript. Video ingestion describes only the audio track
-unless separate visual evidence is available. Return control to the root after producing the
-needed evidence.""",
+            instructions="""Read indexed audio or video transcripts by file_id with bounded
+timestamp ranges and cursors. Video transcripts cover audio only. Return the evidence to root.""",
             tools=media_tools,
             handoffs=[return_to_root],
         )
-        image_tools = self._tools(*IMAGE_CLIENT_TOOLS, "get_file")
+        image_tools = self._tools(*IMAGE_CLIENT_TOOLS)
         self.image = Agent(
             name="Image specialist",
             model=model,
             model_settings=self.model_settings,
-            instructions="""Summarize image evidence while preserving asset identity.
-For an image discovered by file_search or find_collection_files, use get_file to receive the
-canonical image as vision input. Separate observation from inference, then return control to the
-root. For a browser-staged or included workspace image, call view_workspace_image with its
-workspace_file_id; never infer image content from a filename.""",
+            instructions="""Call view_image with file_id before describing an image. Separate
+observation from inference, never infer content from a filename, then return to root.""",
             tools=image_tools,
             handoffs=[return_to_root],
             tool_use_behavior=self._stop_at_client_tools(image_tools),

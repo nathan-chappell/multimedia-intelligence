@@ -25,8 +25,8 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
       await library.setCollectionFileIncluded(file.asset_id, !file.included);
       setMessage(
         file.included
-          ? "Removed from the conversation workspace"
-          : "Added to the conversation workspace",
+          ? "Removed from your workspace"
+          : "Added to your workspace",
       );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not update the conversation");
@@ -78,7 +78,7 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
         <div className="file-section-heading">
           <div>
             <span className="eyebrow" id="collection-title">Collection</span>
-            <small>Durable library for uploads, ingestion, and search</small>
+            <small>Search index for files selected from your workspace</small>
           </div>
           <span className="counter">{library.collectionFiles.length}</span>
         </div>
@@ -132,12 +132,6 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
         <div className="collection-secondary-actions">
           <button
             type="button"
-            disabled={selectedCollection?.read_only}
-            title={selectedCollection?.read_only ? "Shared collections are read-only" : undefined}
-            onClick={() => inputRef.current?.click()}
-          >Upload files</button>
-          <button
-            type="button"
             disabled={reconciling || !selectedCollection?.can_manage}
             title={selectedCollection?.can_manage ? undefined : "Only the owner can refresh index status"}
             onClick={() => void refreshIndex()}
@@ -151,13 +145,13 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
         ref={inputRef}
         className="visually-hidden"
         type="file"
-        aria-label="Collection files"
+        aria-label="Workspace files"
         accept={acceptedExtensions}
         multiple
         onChange={(event) => {
           if (event.currentTarget.files?.length) {
             workspace.addFiles(event.currentTarget.files);
-            setMessage(`${event.currentTarget.files.length} file(s) staged for upload`);
+            setMessage(`${event.currentTarget.files.length} file(s) added to the workspace`);
           }
           event.currentTarget.value = "";
         }}
@@ -177,7 +171,7 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
             <p>
               {selectedCollection?.read_only
                 ? "The collection owner has not shared any files yet."
-                : "Upload a file to make it available for indexing and conversations."}
+                : "Ask the agent to add a workspace file to this collection."}
             </p>
           </div>
         ) : (
@@ -195,22 +189,11 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
                   className={`include-toggle${file.included ? " included" : ""}`}
                   type="button"
                   disabled={
-                    selectedCollection?.read_only ||
-                    !workspace.activeThreadId ||
                     busyAssetId === file.asset_id
-                  }
-                  title={
-                    selectedCollection?.read_only
-                      ? "Shared collection files are available through chat search"
-                      : workspace.activeThreadId
-                        ? undefined
-                        : "Start or select a conversation first"
                   }
                   onClick={() => void updateInclusion(file)}
                 >
-                  {selectedCollection?.read_only
-                    ? "Shared"
-                    : busyAssetId === file.asset_id
+                  {busyAssetId === file.asset_id
                       ? "…"
                       : file.included
                         ? "In workspace"
@@ -226,19 +209,22 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
       <section className="file-section workspace-section" aria-labelledby="workspace-title">
         <div className="file-section-heading">
           <div>
-            <span className="eyebrow" id="workspace-title">Conversation workspace</span>
-            <small>Files and previews available to browser tools in this conversation</small>
+            <span className="eyebrow" id="workspace-title">Workspace</span>
+            <small>Your durable files, loaded by tools only when needed</small>
           </div>
-          <span className="counter">{workspace.files.length}</span>
+          <div className="collection-secondary-actions">
+            <span className="counter">{workspace.files.length}</span>
+            <button type="button" onClick={() => inputRef.current?.click()}>Add files</button>
+          </div>
         </div>
         <div className="artifact-content">
         {workspace.files.length === 0 ? (
           <div className="empty-state compact-empty">
             <h3>No workspace files</h3>
-            <p>Add a collection file or stage an upload for this conversation.</p>
+            <p>Add a local file or open one from a collection.</p>
           </div>
         ) : (
-          <div className="workspace-file-list" aria-label="Files in the conversation workspace">
+          <div className="workspace-file-list" aria-label="Files in the workspace">
             {workspace.files.map((entry) => (
               <article className="collection-file-row" key={entry.id}>
                 <span className="file-route-icon" aria-hidden="true">{routeIcon(entry.route)}</span>

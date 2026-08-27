@@ -12,7 +12,7 @@ test("shows a host toast when ChatKit emits an application effect", async ({ pag
   await page.route("**/api/collections", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
   );
-  await page.route("**/api/assets?**", (route) =>
+  await page.route(/\/api\/assets(?:\?.*)?$/, (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
   );
   await page.route("**/api/assets/derived?**", (route) =>
@@ -82,9 +82,23 @@ test("completes a browser tool call and renders the agent response", async ({ pa
       ]),
     }),
   );
-  await page.route("**/api/assets?**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
-  );
+  await page.route(/\/api\/assets(?:\?.*)?$/, (route) => {
+    if (route.request().method() === "POST") {
+      return route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          asset_id: "asset_notes",
+          include_id: "workspace_notes",
+          filename: "notes.md",
+          media_type: "text/markdown",
+          size_bytes: 47,
+          collection_id: null,
+        }),
+      });
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
   await page.route("**/api/assets/derived?**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
   );
@@ -146,11 +160,11 @@ test("completes a browser tool call and renders the agent response", async ({ pa
   await composer.fill("Inspect my staged files.");
   await composer.press("Enter");
 
-  await expect(chat.getByText("Checking conversation workspace files")).toBeVisible();
+  await expect(chat.getByText("Checking workspace files")).toBeVisible();
   await expect(chat.getByText("I found notes.md and can inspect it.")).toBeVisible({
     timeout: 15_000,
   });
-  const resultSummary = chat.getByText("Found 1 conversation file").last();
+  const resultSummary = chat.getByText("Found 1 workspace file").last();
   await expect(resultSummary).toBeVisible();
   await expect(chat.getByText("Workspace tool result · List files")).toBeHidden();
   await resultSummary.locator("..").getByRole("button").click();
@@ -190,7 +204,7 @@ test("hydrates a saved conversation file before a client tool reads it", async (
     }),
   );
   let contentLoads = 0;
-  await page.route("**/api/assets/asset_saved/content?**", async (route) => {
+  await page.route("**/api/assets/asset_saved/content", async (route) => {
     contentLoads += 1;
     await route.fulfill({
       status: 200,
@@ -201,7 +215,7 @@ test("hydrates a saved conversation file before a client tool reads it", async (
   await page.route("**/api/assets/derived?**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
   );
-  await page.route("**/api/assets?**", async (route) => {
+  await page.route(/\/api\/assets(?:\?.*)?$/, async (route) => {
     // Make the client tool race the refresh hydration. It must wait for this metadata.
     await new Promise((resolve) => setTimeout(resolve, 350));
     await route.fulfill({
@@ -272,8 +286,8 @@ test("hydrates a saved conversation file before a client tool reads it", async (
             type: "client_tool_call",
             status: "pending",
             call_id: "call_hydrated_read",
-            name: "read_text_chars",
-            arguments: { workspaceFileId: "asset_saved", start: 0, count: 200 },
+            name: "read_text",
+            arguments: { fileId: "asset_saved", start: 0, count: 200 },
           },
         },
       ]);
@@ -283,7 +297,7 @@ test("hydrates a saved conversation file before a client tool reads it", async (
       continuationSeen = true;
       expect(request.params.result).toMatchObject({
         ok: true,
-        workspaceFileId: "asset_saved",
+        fileId: "asset_saved",
         start: 0,
       });
       expect(request.params.result?.text).toContain("Juniper");
@@ -308,14 +322,13 @@ test("hydrates a saved conversation file before a client tool reads it", async (
   expect(contentLoads).toBe(1);
 });
 
-test("renders an inline chart and restores its saved collection artifact", async ({ page }) => {
+test("renders an inline generated chart", async ({ page }) => {
   await authenticate(page);
   const png = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64",
   );
   const dataUrl = `data:image/png;base64,${png.toString("base64")}`;
-  let derivedLoads = 0;
   await page.route("**/api/collections", (route) =>
     route.fulfill({
       status: 200,
@@ -334,7 +347,7 @@ test("renders an inline chart and restores its saved collection artifact", async
       ]),
     }),
   );
-  await page.route("**/api/assets?**", (route) =>
+  await page.route(/\/api\/assets(?:\?.*)?$/, (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -350,32 +363,7 @@ test("renders an inline chart and restores its saved collection artifact", async
       ]),
     }),
   );
-  await page.route("**/api/assets/derived?**", (route) => {
-    derivedLoads += 1;
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(
-        derivedLoads === 1
-          ? []
-          : [
-              {
-                artifact_id: "artifact_chart",
-                source_asset_id: "asset_trends",
-                filename: "programming-trends.png",
-                media_type: "image/png",
-                size_bytes: png.length,
-                kind: "chart",
-                collection_id: "collection_trends",
-              },
-            ],
-      ),
-    });
-  });
-  await page.route("**/api/assets/derived/artifact_chart/content?**", (route) =>
-    route.fulfill({ status: 200, contentType: "image/png", body: png }),
-  );
-  await page.route("**/api/assets/asset_trends/content?**", (route) =>
+  await page.route("**/api/assets/asset_trends/content", (route) =>
     route.fulfill({
       status: 200,
       contentType: "text/csv",
@@ -426,10 +414,6 @@ test("renders an inline chart and restores its saved collection artifact", async
     timeout: 15_000,
   });
   await expect(chat.locator('img[src^="data:image/png;base64,"]').first()).toBeVisible();
-  await page.getByText("Derived previews (1)").click();
-  await expect(page.getByText("programming-trends.png")).toBeVisible();
-  await expect(page.getByText(/saved/)).toBeVisible();
-  expect(derivedLoads).toBeGreaterThanOrEqual(2);
 });
 
 async function authenticate(page: Page): Promise<void> {
@@ -511,8 +495,8 @@ function initialToolCallEvents(): object[] {
 function completedToolWorkflowEvents(): object[] {
   const completedTask = {
     type: "custom",
-    title: "Checking conversation workspace files",
-    content: "Found 1 conversation file",
+    title: "Checking workspace files",
+    content: "Found 1 workspace file",
     status_indicator: "complete",
   };
   return [
@@ -528,7 +512,7 @@ function completedToolWorkflowEvents(): object[] {
     },
     {
       type: "thread.item.done",
-      item: toolWorkflow("Found 1 conversation file", "complete"),
+      item: toolWorkflow("Found 1 workspace file", "complete"),
     },
   ];
 }
@@ -545,7 +529,7 @@ function toolWorkflow(content: string, status: "loading" | "complete"): object {
       tasks: [
         {
           type: "custom",
-          title: "Checking conversation workspace files",
+          title: "Checking workspace files",
           content,
           status_indicator: status,
         },
@@ -631,7 +615,7 @@ function toolResultWidgetEvent(): object {
         type: "Card",
         size: "sm",
         collapsed: true,
-        status: { text: "Found 1 conversation file" },
+        status: { text: "Found 1 workspace file" },
         children: [
           {
             type: "Caption",
@@ -654,7 +638,7 @@ interface ChatKitRequest {
     input?: { content?: Array<{ text?: string }> };
     result?: {
       ok?: boolean;
-      workspaceFileId?: string;
+      fileId?: string;
       start?: number;
       text?: string;
       page?: number;

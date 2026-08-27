@@ -80,7 +80,7 @@ def test_jmespath_binding_order_is_pipe_then_or_then_and() -> None:
 def test_custom_tool_embeds_lark_grammar() -> None:
     tool = jmespath_custom_tool()
     assert tool["type"] == "custom"
-    assert tool["name"] == "query_structured_data"
+    assert tool["name"] == "query_data"
     assert tool["format"] == {
         "type": "grammar",
         "syntax": "lark",

@@ -58,7 +58,7 @@ class AssetRow(Base):
 
 
 class ThreadAssetIncludeRow(Base):
-    """Reversible inclusion; deleting it must not delete the original asset."""
+    """Legacy thread inclusion retained for existing records and derived artifacts."""
 
     __tablename__ = "thread_asset_includes"
     __table_args__ = (
@@ -81,6 +81,29 @@ class ThreadAssetIncludeRow(Base):
     user_intent: Mapped[str | None] = mapped_column(Text, nullable=True)
     intent_kind: Mapped[str] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class UserWorkspaceFileRow(Base):
+    """Durable membership in a user's single workspace."""
+
+    __tablename__ = "user_workspace_files"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "asset_id"),
+        Index(
+            "ix_workspace_files_owner_cursor",
+            "owner_id",
+            "created_at",
+            "id",
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("assets.id", ondelete="RESTRICT"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 

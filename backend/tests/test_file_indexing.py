@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
 
-from agents.tool import ToolOutputFileContent, ToolOutputImage, ToolOutputText
+from agents.tool import ToolOutputText
 from agents.tool_context import ToolContext
 from chatkit.agents import AgentContext
 from chatkit.types import ThreadMetadata
@@ -454,7 +454,7 @@ async def test_failed_reingestion_keeps_previous_index_and_retry_resumes_uploads
     await engine.dispose()
 
 
-async def test_file_search_tool_returns_no_eager_attachment() -> None:
+async def test_search_files_returns_ids_without_eager_attachment() -> None:
     class SearchAccess:
         async def collection_context(self) -> dict[str, object]:
             return {"collectionId": "col_general", "name": "General"}
@@ -465,7 +465,7 @@ async def test_file_search_tool_returns_no_eager_attachment() -> None:
             assert (query, max_results, file_types) == ("quarterly", 8, None)
             return (
                 {
-                    "assetId": "pdf",
+                    "fileId": "pdf",
                     "artifactId": "range",
                     "filename": "report.pdf",
                     "modality": "pdf",
@@ -483,67 +483,32 @@ async def test_file_search_tool_returns_no_eager_attachment() -> None:
     )
     context = ToolContext(
         agent_context,
-        tool_name="file_search",
+        tool_name="search_files",
         tool_call_id="call",
         tool_arguments='{"query":"quarterly"}',
     )
-    tool = next(item for item in build_file_index_tools() if item.name == "file_search")
+    tool = next(item for item in build_file_index_tools() if item.name == "search_files")
     output = await tool.on_invoke_tool(context, json.dumps({"query": "quarterly"}))
     assert isinstance(output, ToolOutputText)
     assert "artifactId" in output.text
 
 
-async def test_get_file_tool_emits_image_and_pdf_inputs_by_kind() -> None:
-    class HydrationAccess:
-        async def get_file(
-            self, asset_id: str, artifact_id: str | None = None, original: bool = False
-        ) -> dict[str, object]:
-            if asset_id == "image":
-                return {
-                    "assetId": asset_id,
-                    "filename": "photo.png",
-                    "inputKind": "image",
-                    "url": "https://objects.example/photo.png",
-                }
-            return {
-                "assetId": asset_id,
-                "artifactId": artifact_id,
-                "filename": "report-pages-21-40.pdf",
-                "inputKind": "file",
-                "url": "https://objects.example/report-range.pdf",
-            }
+def test_collection_tools_hide_hydration_and_use_one_file_id() -> None:
+    tools = {tool.name: tool for tool in build_file_index_tools()}
 
-    request_context = RequestContext(
-        client=ClientInfo("user", "user"),
-        data_access=HydrationAccess(),  # type: ignore[arg-type]
-    )
-    agent_context = AgentContext(
-        thread=ThreadMetadata(id="thread", created_at=datetime.now(UTC)),
-        store=object(),  # type: ignore[arg-type]
-        request_context=request_context,
-    )
-    tool = next(item for item in build_file_index_tools() if item.name == "get_file")
-    image_context = ToolContext(
-        agent_context,
-        tool_name="get_file",
-        tool_call_id="image-call",
-        tool_arguments='{"asset_id":"image"}',
-    )
-    image_output = await tool.on_invoke_tool(image_context, json.dumps({"asset_id": "image"}))
-    assert isinstance(image_output[1], ToolOutputImage)
-    pdf_context = ToolContext(
-        agent_context,
-        tool_name="get_file",
-        tool_call_id="pdf-call",
-        tool_arguments='{"asset_id":"pdf","artifact_id":"range"}',
-    )
-    pdf_output = await tool.on_invoke_tool(
-        pdf_context, json.dumps({"asset_id": "pdf", "artifact_id": "range"})
-    )
-    assert pdf_output[1] == ToolOutputFileContent(
-        file_url="https://objects.example/report-range.pdf",
-        filename="report-pages-21-40.pdf",
-    )
+    assert set(tools) == {
+        "index_file",
+        "find_files",
+        "search_files",
+        "read_transcript",
+    }
+    assert "get_file" not in tools
+    assert set(tools["read_transcript"].params_json_schema["properties"]) == {
+        "file_id",
+        "start_seconds",
+        "end_seconds",
+        "cursor",
+    }
 
 
 def _pdf_bytes(page_count: int, *, readable: bool) -> bytes:

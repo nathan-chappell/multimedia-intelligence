@@ -1,9 +1,6 @@
 from datetime import UTC, datetime
 
-from chatkit.types import ThreadMetadata
-
 from multimedia_intelligence.auth import ensure_builtin_admin
-from multimedia_intelligence.chat.store import ThreadRow
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
 from multimedia_intelligence.files.access import ScopedAgentDataAccess
 from multimedia_intelligence.files.collections import create_collection, selected_collection
@@ -13,7 +10,7 @@ from multimedia_intelligence.files.domain import (
     ObjectLocation,
     ThreadAssetInclude,
 )
-from multimedia_intelligence.files.records import AssetRow, ThreadAssetIncludeRow
+from multimedia_intelligence.files.records import AssetRow, UserWorkspaceFileRow
 
 from .settings import TEST_SETTINGS
 
@@ -37,17 +34,7 @@ async def test_ready_references_are_scoped_and_assets_remain_available() -> None
     await ensure_builtin_admin(sessions, TEST_SETTINGS)
     collection = await selected_collection(sessions, TEST_SETTINGS.admin_user_id)
     now = datetime.now(UTC)
-    thread = ThreadMetadata(id="thread_1", created_at=now)
     async with sessions.begin() as session:
-        session.add(
-            ThreadRow(
-                id=thread.id,
-                conversation_id="conv_thread_1",
-                owner_id=TEST_SETTINGS.admin_user_id,
-                created_at=thread.created_at,
-                payload=thread.model_dump_json(),
-            )
-        )
         session.add(
             AssetRow(
                 id="asset_ready",
@@ -67,14 +54,10 @@ async def test_ready_references_are_scoped_and_assets_remain_available() -> None
         )
     async with sessions.begin() as session:
         session.add(
-            ThreadAssetIncludeRow(
-                id="include_1",
-                thread_id=thread.id,
+            UserWorkspaceFileRow(
+                id="workspace_1",
                 asset_id="asset_ready",
                 owner_id=TEST_SETTINGS.admin_user_id,
-                user_intent=None,
-                intent_kind="auto",
-                state=IncludeState.READY,
                 created_at=now,
             )
         )
@@ -92,19 +75,19 @@ async def test_ready_references_are_scoped_and_assets_remain_available() -> None
         TEST_SETTINGS.admin_user_id,
         blob_store,  # type: ignore[arg-type]
     )
-    references = await access.list_ready_file_references(thread.id)
+    references = await access.list_workspace_files()
     assert references[0]["reference"] == "@asset_ready"
     assert references[0]["previewPath"] == "/api/assets/asset_ready/preview"
-    text_range = await access.read_ready_text_range(thread.id, "asset_ready", 6, 4)
+    text_range = await access.read_workspace_text("asset_ready", 6, 4)
     assert text_range == {
-        "assetId": "asset_ready",
+        "fileId": "asset_ready",
         "start": 6,
         "end": 10,
         "text": "file",
         "hasMore": True,
     }
     assert blob_store.reads[0][0].key == "assets/ready"
-    signed_url = await access.ready_file_download_url(thread.id, "asset_ready")
+    signed_url = await access.workspace_file_download_url("asset_ready")
     assert signed_url == "https://objects.example.test/assets/ready?ttl=300"
 
     await engine.dispose()

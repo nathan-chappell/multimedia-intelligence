@@ -28,7 +28,7 @@ def jmespath_custom_tool() -> dict[str, object]:
 
     return {
         "type": "custom",
-        "name": "query_structured_data",
+        "name": "query_data",
         "description": (
             "Write one JMESPath expression to query JSON data. CSV inputs are represented as "
             "an array of JSON objects, with inferred numbers, booleans, nulls, and strings."

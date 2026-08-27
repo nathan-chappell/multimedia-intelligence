@@ -253,40 +253,50 @@ async def test_every_modality_ingests_and_supports_a_follow_up_query() -> None:
     access = ScopedAgentDataAccess(sessions, TEST_SETTINGS.admin_user_id, blobs, reader)
 
     csv_hits = await access.file_search("Afghanistan exchange rate", 5, ["csv"])
-    assert csv_hits and csv_hits[0]["availableActions"] == ["get_file"]
-    csv_profile = await access.get_file("csv", str(csv_hits[0]["artifactId"]))
+    assert csv_hits and csv_hits[0]["availableActions"] == ["query_data", "read_text"]
+    csv_profile = await reader.resolve_file(
+        TEST_SETTINGS.admin_user_id, "csv", str(csv_hits[0]["artifactId"])
+    )
     assert "csv profile" in str(csv_profile["profile"]).casefold()
 
     json_hits = await access.file_search("Albania currency rate", 5, ["json"])
     assert json_hits
-    json_profile = await access.get_file("json", str(json_hits[0]["artifactId"]))
+    json_profile = await reader.resolve_file(
+        TEST_SETTINGS.admin_user_id, "json", str(json_hits[0]["artifactId"])
+    )
     assert "json profile" in str(json_profile["profile"]).casefold()
 
     text_hits = await access.file_search("scaled dot product attention", 5, ["text"])
     assert text_hits
-    text_file = await access.get_file("text", str(text_hits[0]["artifactId"]))
+    text_file = await reader.resolve_file(
+        TEST_SETTINGS.admin_user_id, "text", str(text_hits[0]["artifactId"])
+    )
     assert "attention" in str(text_file["text"]).casefold()
 
     image_hits = await access.file_search("rendered attention title page", 5, ["image"])
     assert image_hits
-    image_file = await access.get_file("image", str(image_hits[0]["artifactId"]))
+    image_file = await reader.resolve_file(
+        TEST_SETTINGS.admin_user_id, "image", str(image_hits[0]["artifactId"])
+    )
     assert image_file["inputKind"] == "image"
     assert str(image_file["url"]).startswith("https://fixtures.example/")
 
     audio_hits = await access.file_search("learning rate validation", 5, ["audio"])
     assert audio_hits
-    audio_transcript = await access.get_transcript("audio", 0, 10, None)
+    audio_transcript = await access.read_transcript("audio", 0, 10, None)
     assert "three times ten to minus four" in str(audio_transcript["text"])
 
     video_hits = await access.file_search("multi-head attention demo", 5, ["video"])
     assert video_hits
-    video_transcript = await access.get_transcript("video", None, None, None)
+    video_transcript = await access.read_transcript("video", None, None, None)
     assert "multi-head attention" in str(video_transcript["text"])
     assert "only the audio track" in str(video_transcript["warning"]).casefold()
 
     pdf_hits = await access.file_search("transformer encoder decoder", 5, ["application/pdf"])
     assert pdf_hits
-    pdf_file = await access.get_file("pdf", str(pdf_hits[0]["artifactId"]))
+    pdf_file = await reader.resolve_file(
+        TEST_SETTINGS.admin_user_id, "pdf", str(pdf_hits[0]["artifactId"])
+    )
     assert pdf_file["inputKind"] == "file"
     assert "pages-" in str(pdf_file["filename"])
     assert pdf_file["provenance"]

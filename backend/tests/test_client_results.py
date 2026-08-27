@@ -12,7 +12,7 @@ def test_text_result_is_validated_and_normalized() -> None:
     )
     assert result == {
         "ok": True,
-        "workspaceFileId": "asset_1",
+        "fileId": "asset_1",
         "start": 0,
         "text": "hello",
     }
@@ -34,8 +34,8 @@ def test_text_result_is_validated_and_normalized() -> None:
 def test_text_result_rejects_identity_mismatch_and_extra_fields(output: object) -> None:
     with pytest.raises(ValueError):
         validate_client_tool_result(
-            "read_text_chars",
-            {"assetId": "asset_1"},
+            "read_text",
+            {"fileId": "asset_1"},
             output,
             max_result_bytes=1024,
         )
@@ -44,9 +44,9 @@ def test_text_result_rejects_identity_mismatch_and_extra_fields(output: object) 
 def test_text_result_enforces_serialized_byte_limit() -> None:
     with pytest.raises(ValueError, match="byte limit"):
         validate_client_tool_result(
-            "read_text_chars",
-            {"assetId": "asset_1"},
-            {"ok": True, "assetId": "asset_1", "start": 0, "text": "x" * 2000},
+            "read_text",
+            {"fileId": "asset_1"},
+            {"ok": True, "fileId": "asset_1", "start": 0, "text": "x" * 2000},
             max_result_bytes=1024,
         )
 
@@ -54,11 +54,11 @@ def test_text_result_enforces_serialized_byte_limit() -> None:
 def test_structured_query_result_must_echo_the_requested_expression() -> None:
     with pytest.raises(ValueError, match="expression"):
         validate_client_tool_result(
-            "query_structured_data",
-            {"assetId": "asset_1", "expression": "[].revenue"},
+            "query_data",
+            {"fileId": "asset_1", "expression": "[].revenue"},
             {
                 "ok": True,
-                "assetId": "asset_1",
+                "fileId": "asset_1",
                 "expression": "[*].secret",
                 "value": [10, 20],
                 "truncated": False,
@@ -69,9 +69,9 @@ def test_structured_query_result_must_echo_the_requested_expression() -> None:
 
 def test_client_failure_does_not_require_an_asset_id() -> None:
     result = validate_client_tool_result(
-        "pdf_render_page",
-        {"assetId": "asset_1", "page": 1},
-        {"ok": False, "error": "Canvas rendering failed", "tool": "pdf_render_page"},
+        "view_pdf_page",
+        {"fileId": "asset_1", "page": 1},
+        {"ok": False, "error": "Canvas rendering failed", "tool": "view_pdf_page"},
         max_result_bytes=1024,
     )
 
@@ -80,13 +80,13 @@ def test_client_failure_does_not_require_an_asset_id() -> None:
 
 def test_workspace_image_result_requires_a_durable_image_file() -> None:
     result = validate_client_tool_result(
-        "view_workspace_image",
-        {"workspaceFileId": "local_image"},
+        "view_image",
+        {"fileId": "local_image"},
         {
             "ok": True,
-            "workspaceFileId": "local_image",
+            "fileId": "local_image",
             "file": {
-                "assetId": "asset_image",
+                "fileId": "asset_image",
                 "filename": "diagram.webp",
                 "mediaType": "image/webp",
                 "sizeBytes": 100,
@@ -96,16 +96,16 @@ def test_workspace_image_result_requires_a_durable_image_file() -> None:
         max_result_bytes=2048,
     )
 
-    assert result["file"]["assetId"] == "asset_image"  # type: ignore[index]
+    assert result["file"]["fileId"] == "asset_image"  # type: ignore[index]
 
 
 def test_pdf_random_text_sample_preserves_bounded_extracted_content() -> None:
     result = validate_client_tool_result(
-        "pdf_random_sample",
-        {"assetId": "local_pdf", "outputMode": "text_content"},
+        "sample_pdf",
+        {"fileId": "local_pdf", "outputMode": "text_content"},
         {
             "ok": True,
-            "assetId": "local_pdf",
+            "fileId": "local_pdf",
             "mode": "text_content",
             "pageCount": 12,
             "range": {"startPage": 2, "endPage": 10},
@@ -123,18 +123,18 @@ def test_pdf_random_text_sample_preserves_bounded_extracted_content() -> None:
 def test_pdf_random_file_sample_requires_matching_page_provenance() -> None:
     with pytest.raises(ValueError):
         validate_client_tool_result(
-            "pdf_random_sample",
-            {"assetId": "local_pdf", "outputMode": "as_files"},
+            "sample_pdf",
+            {"fileId": "local_pdf", "outputMode": "as_files"},
             {
                 "ok": True,
-                "assetId": "local_pdf",
+                "fileId": "local_pdf",
                 "mode": "as_files",
                 "pageCount": 12,
                 "range": {"startPage": 1, "endPage": 12},
                 "sampledPages": [2, 9],
                 "files": [
                     {
-                        "assetId": "asset_sample",
+                        "fileId": "asset_sample",
                         "filename": "sample.pdf",
                         "mediaType": "application/pdf",
                         "sizeBytes": 100,
@@ -159,13 +159,12 @@ def test_list_files_accepts_current_browser_workspace_states_without_warning() -
             "hasMore": False,
             "files": [
                 {
-                    "assetId": "local_1",
+                    "fileId": "asset_1",
                     "name": "notes.txt",
                     "mediaType": "text/plain",
                     "sizeBytes": 5,
                     "route": "text",
                     "durability": "included",
-                    "durableAssetId": "asset_1",
                 }
             ],
         },
@@ -173,8 +172,7 @@ def test_list_files_accepts_current_browser_workspace_states_without_warning() -
     )
 
     assert "warning" not in result
-    assert result["files"][0]["workspaceFileId"] == "local_1"  # type: ignore[index]
-    assert result["files"][0]["assetId"] == "asset_1"  # type: ignore[index]
+    assert result["files"][0]["fileId"] == "asset_1"  # type: ignore[index]
 
 
 def test_list_files_rejects_more_than_ten_items() -> None:
@@ -186,7 +184,7 @@ def test_list_files_rejects_more_than_ten_items() -> None:
         "hasMore": True,
         "files": [
             {
-                "assetId": f"local_{index}",
+                "fileId": f"local_{index}",
                 "name": f"file-{index}.txt",
                 "mediaType": "text/plain",
                 "sizeBytes": 1,
@@ -223,7 +221,7 @@ def test_list_files_rejects_inconsistent_pagination(change: dict[str, object]) -
         "hasMore": True,
         "files": [
             {
-                "assetId": f"local_{index}",
+                "fileId": f"local_{index}",
                 "name": f"file-{index}.txt",
                 "mediaType": "text/plain",
                 "sizeBytes": 1,

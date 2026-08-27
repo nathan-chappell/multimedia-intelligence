@@ -27,10 +27,10 @@ async def test_server_tool_activity_starts_completes_and_streams_a_card() -> Non
     )
     reporter = ToolActivityReporter("thread_1")
 
-    await reporter.start(hook_context, "file_search", "call_1")
+    await reporter.start(hook_context, "search_files", "call_1")
     await reporter.end(
         hook_context,
-        "file_search",
+        "search_files",
         "call_1",
         {"query": "roadmap", "collection": {"name": "Docs"}, "results": []},
     )
