@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated, Literal, Protocol, TypedDict
 
 from fastapi import Request
@@ -46,6 +47,26 @@ class FileSearchResult(TypedDict):
     availableActions: list[str]
 
 
+class CollectionFileMetadata(TypedDict):
+    assetId: str
+    collectionId: str
+    filename: str
+    mediaType: str
+    modality: str
+    sizeBytes: int
+    createdAt: str
+    indexed: bool
+    availableActions: list[str]
+
+
+class CollectionFileMetadataPage(TypedDict):
+    collectionId: str
+    collectionName: str
+    items: list[CollectionFileMetadata]
+    hasMore: bool
+    nextCursor: str | None
+
+
 class TranscriptPageResult(TypedDict):
     assetId: str
     startSeconds: float | None
@@ -89,6 +110,18 @@ class AgentDataAccess(Protocol):
     async def file_search(
         self, query: str, max_results: int, file_types: list[str] | None = None
     ) -> tuple[FileSearchResult, ...]: ...
+
+    async def find_collection_files(
+        self,
+        *,
+        filename: str | None,
+        filename_match: Literal["exact", "prefix", "contains"],
+        created_after: datetime | None,
+        created_before: datetime | None,
+        sort: Literal["newest", "oldest"],
+        limit: int,
+        cursor: str | None,
+    ) -> CollectionFileMetadataPage: ...
 
     async def get_file(
         self,

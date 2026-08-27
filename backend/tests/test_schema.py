@@ -34,7 +34,10 @@ def test_asset_domain_uses_separate_tables() -> None:
 
 def test_high_volume_queries_have_composite_indexes() -> None:
     expected = {
-        "assets": {"ix_assets_owner_collection_state_cursor"},
+        "assets": {
+            "ix_assets_owner_collection_state_cursor",
+            "ix_assets_owner_collection_state_filename",
+        },
         "file_collections": {"ix_file_collections_public_cursor"},
         "thread_asset_includes": {"ix_thread_includes_owner_thread_state_cursor"},
         "asset_ingestions": {"ix_ingestions_owner_asset_active_status_version"},
@@ -102,4 +105,28 @@ async def test_schema_upgrade_adds_public_collection_visibility() -> None:
 
     assert "is_public" in columns
     assert "ix_file_collections_public_cursor" in indexes
+    await engine.dispose()
+
+
+async def test_schema_upgrade_adds_collection_filename_index() -> None:
+    engine, _sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "CREATE TABLE assets ("
+                "id VARCHAR(128) PRIMARY KEY, owner_id VARCHAR(128), "
+                "collection_id VARCHAR(128), state VARCHAR(64), filename VARCHAR(1024), "
+                "created_at DATETIME)"
+            )
+        )
+
+    await initialize_schema(engine)
+    async with engine.connect() as connection:
+        indexes = await connection.run_sync(
+            lambda sync_connection: {
+                index["name"] for index in inspect(sync_connection).get_indexes("assets")
+            }
+        )
+
+    assert "ix_assets_owner_collection_state_filename" in indexes
     await engine.dispose()

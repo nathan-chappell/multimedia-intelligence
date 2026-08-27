@@ -49,7 +49,7 @@ class AssistantGraph:
 
         root_tools = [
             *self._tools("list_files"),
-            *self._tools("file_search", "index_collection_file"),
+            *self._tools("find_collection_files", "file_search", "index_collection_file"),
         ]
         self.root = Agent(
             name="Root conversation agent",
@@ -60,9 +60,14 @@ When the request refers to documents or could materially benefit from the user's
 check them rather than answering generically. Do not call file tools for unrelated requests.
 The conversation workspace is the current thread's active working set. Use list_files to discover
 its included or browser-staged files, then use browser tools through the matching specialist.
-The selected collection is a durable indexed library where uploads and ingestion happen. Use
-file_search for library-wide discovery there. Search is restricted to the selected collection:
-preserve its collection, assetId, and artifactId, then hand work to the matching specialist.
+The selected collection is a durable library where uploads and ingestion happen. Use
+find_collection_files for filename, creation-date, recent-file, or collection-inventory requests;
+it queries authoritative database metadata and includes unindexed files. Prefer exact or prefix
+filename matching when the request provides matching case; use case-insensitive contains
+otherwise, and follow nextCursor with unchanged filters.
+Use file_search for semantic discovery by subject or file contents; it searches only indexed
+representations. Both tools are restricted to the selected collection. Preserve collection,
+assetId, and artifactId when present, then hand content work to the matching specialist.
 Only call index_collection_file when the user explicitly asks to index, ingest, or add a file to
 collection search. First inspect enough evidence to write a truthful retrieval description; never
 invent file contents. The tool stores that description and attaches provider-supported canonical
@@ -95,9 +100,10 @@ Use only returned evidence.""",
             model=model,
             model_settings=self.model_settings,
             instructions="""Inspect text and PDF files with the available bounded tools.
-Use browser tools for files in the conversation workspace. For a selected-collection file_search
-hit, call get_file with its assetId and artifactId; PDF hydration defaults to the matching
-page-range PDF. Direct collection inspection does not change workspace membership.
+Use browser tools for files in the conversation workspace. For an indexed selected-collection
+result from file_search or find_collection_files, call get_file with its assetId and any returned
+artifactId; PDF hydration defaults to the matching page-range PDF. Direct collection inspection
+does not change workspace membership.
 Use pdf_random_sample with text_content for cheap text evidence.
 Use as_files when layout or images matter, or extracted text is empty or incoherent.
 Keep the range focused and the sample count as small as the question allows.
@@ -121,8 +127,9 @@ Return control to the root after producing the needed overview.""",
 Use query_structured_data with valid JMESPath. CSV files are converted to arrays of JSON rows;
 start with [0] to inspect columns and inferred value types, then make focused projections,
 filters, or function calls. Summarize structure, samples, and statistics.
-For assets discovered in the selected collection with file_search, use get_file to read only the
-prepared demo profile. Use browser tools for queries against a conversation-workspace source file.
+For indexed assets discovered in the selected collection with file_search or
+find_collection_files, use get_file to read the prepared profile or bounded source text. Use
+browser tools for queries against a conversation-workspace source file.
 The server does not parse
 canonical CSV or JSON assets or render charts.
 Return control to the root after producing the needed overview.""",
@@ -137,9 +144,10 @@ Return control to the root after producing the needed overview.""",
             model=model,
             model_settings=self.model_settings,
             instructions="""Summarize audio or video evidence and propose timestamped analysis.
-Use get_transcript with timestamp ranges and cursors for indexed audio or video. Video ingestion
-describes only the audio track unless separate visual evidence is available. Return control to the
-root after producing the needed evidence.""",
+Use get_transcript with timestamp ranges and cursors for indexed audio or video discovered by
+file_search or find_collection_files. Video ingestion describes only the audio track unless
+separate visual evidence is available. Return control to the root after producing the needed
+evidence.""",
             tools=media_tools,
             handoffs=[return_to_root],
         )
@@ -149,8 +157,9 @@ root after producing the needed evidence.""",
             model=model,
             model_settings=self.model_settings,
             instructions="""Summarize image evidence while preserving asset identity.
-For an indexed image, use get_file to receive the canonical image as vision input. Separate
-observation from inference, then return control to the root.""",
+For an image discovered by file_search or find_collection_files, use get_file to receive the
+canonical image as vision input. Separate observation from inference, then return control to the
+root.""",
             tools=image_tools,
             handoffs=[return_to_root],
         )

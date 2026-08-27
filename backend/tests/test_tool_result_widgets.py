@@ -115,6 +115,42 @@ def test_collection_search_widget_is_curated_and_drops_internal_identifiers() ->
     assert "file_secret" not in item.copy_text
 
 
+def test_collection_metadata_widget_shows_file_facts_and_pagination() -> None:
+    item = build_server_tool_result_widget(
+        thread_id="thread_1",
+        tool_call_id="call_metadata",
+        tool_name="find_collection_files",
+        result={
+            "collectionId": "col_internal",
+            "collectionName": "Research",
+            "filters": {"filename": "quarterly", "filenameMatch": "prefix"},
+            "items": [
+                {
+                    "assetId": "asset_1",
+                    "filename": "quarterly-report.pdf",
+                    "mediaType": "application/pdf",
+                    "modality": "pdf",
+                    "sizeBytes": 42,
+                    "createdAt": "2026-08-20T10:00:00+00:00",
+                    "indexed": True,
+                    "availableActions": ["get_file"],
+                }
+            ],
+            "hasMore": True,
+            "nextCursor": "opaque-cursor",
+        },
+    )
+
+    assert item.copy_text is not None
+    assert "quarterly-report.pdf" in item.copy_text
+    assert "2026-08-20" in item.copy_text
+    assert "opaque-cursor" in item.copy_text
+    assert "col_internal" not in item.copy_text
+    assert item.widget.model_dump(mode="json")["status"] == {
+        "text": "Found 1 collection file; more available"
+    }
+
+
 async def test_saved_result_widget_does_not_hide_continuation_tool_output() -> None:
     tool_call = _tool_call(
         name="list_files",

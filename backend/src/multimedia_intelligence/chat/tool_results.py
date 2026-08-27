@@ -18,7 +18,8 @@ _MAX_FALLBACK_PREVIEW_CHARS = 1_000
 
 _TOOL_LABELS = {
     "index_collection_file": "Index collection file",
-    "file_search": "Search collection",
+    "find_collection_files": "Find collection files",
+    "file_search": "Semantic file search",
     "get_file": "Open collection file",
     "get_transcript": "Read transcript",
     "read_durable_text_range": "Read workspace text",
@@ -141,6 +142,12 @@ def tool_result_summary(tool_name: str, output: dict[str, Any]) -> str:
         if isinstance(filename, str):
             return f"{'Already indexed' if reused else 'Indexed'} {filename}"
         return "Collection file indexed"
+    if tool_name == "find_collection_files":
+        items = output.get("items")
+        if isinstance(items, list):
+            noun = "file" if len(items) == 1 else "files"
+            suffix = "; more available" if output.get("hasMore") is True else ""
+            return f"Found {len(items)} collection {noun}{suffix}"
     if tool_name == "file_search":
         results = output.get("results")
         if isinstance(results, list):
@@ -203,6 +210,35 @@ def _display_preview(tool_name: str, output: dict[str, Any]) -> dict[str, object
                 "serverMediaProcessing",
             ),
         )
+
+    if tool_name == "find_collection_files":
+        items = output.get("items")
+        public_items: list[dict[str, object]] = []
+        if isinstance(items, list):
+            for candidate in items[:20]:
+                if isinstance(candidate, dict):
+                    public_items.append(
+                        _selected_fields(
+                            candidate,
+                            (
+                                "assetId",
+                                "filename",
+                                "mediaType",
+                                "modality",
+                                "sizeBytes",
+                                "createdAt",
+                                "indexed",
+                                "availableActions",
+                            ),
+                        )
+                    )
+        return {
+            "collectionName": output.get("collectionName"),
+            "filters": output.get("filters", {}),
+            "items": public_items,
+            "hasMore": output.get("hasMore", False),
+            "nextCursor": output.get("nextCursor"),
+        }
 
     if tool_name == "file_search":
         collection = output.get("collection")

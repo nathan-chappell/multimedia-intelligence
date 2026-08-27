@@ -66,6 +66,7 @@ def test_root_discovers_and_indexes_files_then_delegates_specialist_work() -> No
     tool_names = {tool.name for tool in assistant.tools}
     assert tool_names == {
         "list_files",
+        "find_collection_files",
         "file_search",
         "index_collection_file",
     }

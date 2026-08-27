@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated
+from datetime import datetime
+from typing import Annotated, Literal
 
 from agents import function_tool
 from agents.tool import Tool, ToolOutputFileContent, ToolOutputImage, ToolOutputText
@@ -50,6 +51,62 @@ def build_file_index_tools() -> list[Tool]:
 
         return await _access(ctx).index_collection_file(asset_id, description)
 
+    @function_tool(name_override="find_collection_files")
+    async def find_collection_files(
+        ctx: ToolContext[AgentContext[RequestContext]],
+        filename: Annotated[
+            str | None,
+            Field(
+                default=None,
+                max_length=1_024,
+                description="Optional filename text to match; omit for a date-only listing.",
+            ),
+        ] = None,
+        filename_match: Literal["exact", "prefix", "contains"] = "contains",
+        created_after: Annotated[
+            datetime | None,
+            Field(description="Inclusive ISO 8601 creation timestamp lower bound."),
+        ] = None,
+        created_before: Annotated[
+            datetime | None,
+            Field(description="Exclusive ISO 8601 creation timestamp upper bound."),
+        ] = None,
+        sort: Literal["newest", "oldest"] = "newest",
+        limit: Annotated[int, Field(ge=1, le=20)] = 10,
+        cursor: str | None = None,
+    ) -> ToolOutputText:
+        """Find selected-collection files by database metadata, without semantic search.
+
+        Exact and prefix matching are case-sensitive and index-friendly; contains is the
+        case-insensitive fallback. Follow nextCursor with unchanged filters and sort for another
+        page.
+        """
+
+        result = await _access(ctx).find_collection_files(
+            filename=filename,
+            filename_match=filename_match,
+            created_after=created_after,
+            created_before=created_before,
+            sort=sort,
+            limit=limit,
+            cursor=cursor,
+        )
+        return ToolOutputText(
+            text=json.dumps(
+                {
+                    "filters": {
+                        "filename": filename,
+                        "filenameMatch": filename_match,
+                        "createdAfter": created_after.isoformat() if created_after else None,
+                        "createdBefore": created_before.isoformat() if created_before else None,
+                        "sort": sort,
+                    },
+                    **result,
+                },
+                ensure_ascii=False,
+            )
+        )
+
     @function_tool(name_override="file_search")
     async def file_search(
         ctx: ToolContext[AgentContext[RequestContext]],
@@ -66,7 +123,7 @@ def build_file_index_tools() -> list[Tool]:
             ),
         ] = None,
     ) -> ToolOutputText:
-        """Search the selected collection's index; return discovery metadata, not attachments."""
+        """Semantically search indexed selected-collection content, not DB file metadata."""
 
         results = await _access(ctx).file_search(query, max_results, optional_types)
         collection = await _access(ctx).collection_context()
@@ -120,6 +177,7 @@ def build_file_index_tools() -> list[Tool]:
 
     return [
         index_collection_file,
+        find_collection_files,
         file_search,
         get_file,
         get_transcript,

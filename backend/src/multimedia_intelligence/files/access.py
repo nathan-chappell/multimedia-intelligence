@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Literal
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from multimedia_intelligence.context import (
     CollectionContext,
+    CollectionFileMetadataPage,
     FileSearchResult,
     IndexCollectionFileResult,
     ReadyFileReference,
@@ -15,6 +19,7 @@ from multimedia_intelligence.context import (
 from .collections import selected_collection
 from .domain import AssetState, IncludeState, ObjectLocation
 from .indexing import FileIndexReader, FileIndexWriter
+from .metadata_search import CollectionFileFinder
 from .policy import FileRoute, classify_file
 from .ports import BlobStore
 from .records import AssetRow, FileCollectionRow, ThreadAssetIncludeRow
@@ -38,6 +43,7 @@ class ScopedAgentDataAccess:
         self.blob_store = blob_store
         self.file_index = file_index
         self.file_index_writer = file_index_writer
+        self.file_finder = CollectionFileFinder(sessions)
         self.is_admin = is_admin
 
     async def collection_context(self) -> CollectionContext:
@@ -185,6 +191,30 @@ class ScopedAgentDataAccess:
                 "availableActions": _follow_up_actions(result.route),
             }
             for result in results
+        )
+
+    async def find_collection_files(
+        self,
+        *,
+        filename: str | None,
+        filename_match: Literal["exact", "prefix", "contains"],
+        created_after: datetime | None,
+        created_before: datetime | None,
+        sort: Literal["newest", "oldest"],
+        limit: int,
+        cursor: str | None,
+    ) -> CollectionFileMetadataPage:
+        collection = await self._selected_collection()
+        return await self.file_finder.find(
+            collection,
+            filename=filename,
+            filename_match=filename_match,
+            created_after=created_after,
+            created_before=created_before,
+            sort=sort,
+            limit=limit,
+            cursor=cursor,
+            can_index=collection.owner_id == self.owner_id,
         )
 
     async def get_file(

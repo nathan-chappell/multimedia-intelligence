@@ -31,6 +31,14 @@ class AssetRow(Base):
             "created_at",
             "id",
         ),
+        Index(
+            "ix_assets_owner_collection_state_filename",
+            "owner_id",
+            "collection_id",
+            "state",
+            "filename",
+            "id",
+        ),
     )
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     owner_id: Mapped[str] = mapped_column(String(128), index=True)

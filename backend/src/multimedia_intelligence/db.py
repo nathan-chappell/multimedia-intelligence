@@ -45,6 +45,13 @@ def _ensure_compatibility_columns(connection: Connection) -> None:
                 "ON file_collections (is_public, created_at, id)"
             )
         )
+    if "assets" in tables:
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_assets_owner_collection_state_filename "
+                "ON assets (owner_id, collection_id, state, filename, id)"
+            )
+        )
 
 
 def create_engine_and_session(
