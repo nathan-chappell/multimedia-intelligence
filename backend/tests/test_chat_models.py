@@ -385,6 +385,31 @@ async def test_rendered_pdf_page_is_attached_as_high_detail_image() -> None:
     }
 
 
+async def test_attachment_client_tool_contract_rejects_missing_file_id() -> None:
+    tool_call = ClientToolCallItem(
+        id="tool_image",
+        thread_id="thread_1",
+        created_at=datetime.now(UTC),
+        status="completed",
+        call_id="call_image",
+        name="view_image",
+        arguments={"fileId": "local_image"},
+        output={
+            "ok": True,
+            "fileId": "local_image",
+            "file": {
+                "filename": "diagram.png",
+                "mediaType": "image/png",
+                "sizeBytes": 1234,
+                "durability": "included",
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="Invalid view_image client-tool result"):
+        await MultimediaChatServer._conversation_input(None, [tool_call])
+
+
 async def test_repaired_conversation_adds_removed_suffix_playback_to_current_input() -> None:
     current = user_message("gpt-5.6")
     recovery = ConversationRepair(
@@ -441,6 +466,37 @@ def test_missing_chatkit_client_tool_event_is_recovered_from_run_items() -> None
     assert event.item.call_id == "call_provider"
     assert event.item.name == "list_files"
     assert event.item.arguments == {"page": 1, "durableFiles": []}
+
+
+def test_malformed_pending_client_tool_envelope_is_not_recovered() -> None:
+    thread = ThreadMetadata(id="thread_1", created_at=datetime.now(UTC))
+    context = RequestContext(client=ClientInfo(user_id="user_1", username="reader"))
+    agent_context = AgentContext(
+        thread=thread,
+        store=cast(Any, object()),
+        request_context=context,
+    )
+    result = SimpleNamespace(
+        new_items=[
+            SimpleNamespace(
+                type="tool_call_output_item",
+                output=(
+                    '{"client_tool":"list_files","status":"waiting_for_browser",'
+                    '"arguments":["not","an","object"]}'
+                ),
+            )
+        ]
+    )
+    server = cast(
+        MultimediaChatServer,
+        SimpleNamespace(store=SimpleNamespace(generate_item_id=lambda *_args: "fallback")),
+    )
+
+    event = MultimediaChatServer._recover_client_tool_event(
+        server, result, agent_context, thread, context
+    )
+
+    assert event is None
 
 
 def test_missing_chatkit_client_tool_event_is_recovered_from_tool_bridge() -> None:
