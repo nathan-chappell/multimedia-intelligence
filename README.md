@@ -71,6 +71,10 @@ uvicorn multimedia_intelligence.main:app --reload --host 0.0.0.0 --port 8000 \
 npm --prefix frontend run dev
 ```
 
+Open `http://localhost:5173` for the Vite development UI. The backend also
+serves the latest production build at `https://localhost:8000`; both origins
+must remain in `CLERK_AUTHORIZED_PARTIES` when using both local entry points.
+
 Vite reads frontend variables from the repository-root `.env` file and refuses to start or build
 when `VITE_CLERK_PUBLISHABLE_KEY` is empty or missing. This prevents serving a bundle that can only
 fail later in the browser.
