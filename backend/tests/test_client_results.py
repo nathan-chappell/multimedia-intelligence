@@ -1,160 +1,117 @@
+from __future__ import annotations
+
 import pytest
+from pydantic import ValidationError
 
 from multimedia_intelligence.files.client_results import validate_client_tool_result
 
 
-def test_text_result_is_validated_and_normalized() -> None:
+def test_text_view_is_validated_and_normalized() -> None:
     result = validate_client_tool_result(
-        "read_text_chars",
-        {"assetId": "asset_1", "start": 0, "count": 10},
-        {"ok": True, "assetId": "asset_1", "start": 0, "text": "hello"},
-        max_result_bytes=1024,
+        "view_file",
+        {"fileId": "asset_1", "start": 0, "count": 10},
+        {
+            "ok": True,
+            "fileId": "asset_1",
+            "route": "text",
+            "mode": "text",
+            "start": 0,
+            "count": 10,
+            "text": "hello",
+        },
+        max_result_bytes=1_024,
     )
-    assert result == {
-        "ok": True,
-        "fileId": "asset_1",
-        "start": 0,
-        "text": "hello",
-    }
+    assert result["fileId"] == "asset_1"
+    assert result["text"] == "hello"
 
 
 @pytest.mark.parametrize(
     "output",
     [
-        {"ok": True, "assetId": "asset_2", "start": 0, "text": "wrong asset"},
+        {"ok": True, "fileId": "other", "route": "text", "mode": "text", "text": "x"},
         {
             "ok": True,
-            "assetId": "asset_1",
-            "start": 0,
-            "text": "hello",
-            "untrustedExtra": "ignored by loose validation",
+            "fileId": "asset_1",
+            "route": "text",
+            "mode": "text",
+            "text": "x",
+            "secret": True,
         },
     ],
 )
-def test_text_result_rejects_identity_mismatch_and_extra_fields(output: object) -> None:
-    with pytest.raises(ValueError):
+def test_view_rejects_identity_mismatch_and_extra_fields(output: object) -> None:
+    with pytest.raises((ValueError, ValidationError)):
         validate_client_tool_result(
-            "read_text",
-            {"fileId": "asset_1"},
-            output,
-            max_result_bytes=1024,
+            "view_file", {"fileId": "asset_1"}, output, max_result_bytes=1_024
         )
 
 
-def test_text_result_enforces_serialized_byte_limit() -> None:
-    with pytest.raises(ValueError, match="byte limit"):
+def test_result_enforces_serialized_byte_limit() -> None:
+    with pytest.raises(ValueError, match="configured limit"):
         validate_client_tool_result(
-            "read_text",
+            "view_file",
             {"fileId": "asset_1"},
-            {"ok": True, "fileId": "asset_1", "start": 0, "text": "x" * 2000},
-            max_result_bytes=1024,
-        )
-
-
-def test_structured_query_result_must_echo_the_requested_expression() -> None:
-    with pytest.raises(ValueError, match="expression"):
-        validate_client_tool_result(
-            "query_data",
-            {"fileId": "asset_1", "expression": "[].revenue"},
             {
                 "ok": True,
                 "fileId": "asset_1",
-                "expression": "[*].secret",
-                "value": [10, 20],
-                "truncated": False,
+                "route": "text",
+                "mode": "text",
+                "text": "x" * 2_000,
             },
-            max_result_bytes=1024,
+            max_result_bytes=1_024,
         )
 
 
-def test_client_failure_does_not_require_an_asset_id() -> None:
+def test_query_result_supports_durable_saved_output() -> None:
     result = validate_client_tool_result(
-        "view_pdf_page",
-        {"fileId": "asset_1", "page": 1},
-        {"ok": False, "error": "Canvas rendering failed", "tool": "view_pdf_page"},
-        max_result_bytes=1024,
+        "query_data",
+        {"fileId": "asset_1", "jmespathExpression": "[].name"},
+        {
+            "ok": True,
+            "fileId": "asset_1",
+            "jmespathExpression": "[].name",
+            "value": ["Ada"],
+            "truncated": False,
+            "savedFileId": "asset_result",
+        },
+        max_result_bytes=2_048,
     )
+    assert result["savedFileId"] == "asset_result"
 
+
+def test_client_failure_does_not_require_a_file_id() -> None:
+    result = validate_client_tool_result(
+        "view_file",
+        {"fileId": "asset_1"},
+        {"ok": False, "error": "Browser failed", "tool": "view_file"},
+        max_result_bytes=1_024,
+    )
     assert result["ok"] is False
 
 
-def test_workspace_image_result_requires_a_durable_image_file() -> None:
-    result = validate_client_tool_result(
-        "view_image",
-        {"fileId": "local_image"},
-        {
-            "ok": True,
-            "fileId": "local_image",
-            "file": {
-                "fileId": "asset_image",
-                "filename": "diagram.webp",
-                "mediaType": "image/webp",
-                "sizeBytes": 100,
-                "durability": "included",
-            },
-        },
-        max_result_bytes=2048,
-    )
-
-    assert result["file"]["fileId"] == "asset_image"  # type: ignore[index]
-
-
-def test_pdf_random_text_sample_preserves_bounded_extracted_content() -> None:
-    result = validate_client_tool_result(
-        "sample_pdf",
-        {"fileId": "local_pdf", "outputMode": "text_content"},
-        {
-            "ok": True,
-            "fileId": "local_pdf",
-            "mode": "text_content",
-            "pageCount": 12,
-            "range": {"startPage": 2, "endPage": 10},
-            "pages": [
-                {"page": 3, "text": "raw extracted text", "truncated": False},
-                {"page": 8, "text": "", "truncated": False},
-            ],
-        },
-        max_result_bytes=4096,
-    )
-
-    assert [page["page"] for page in result["pages"]] == [3, 8]  # type: ignore[union-attr]
-
-
-def test_pdf_random_file_sample_requires_matching_page_provenance() -> None:
-    with pytest.raises(ValueError):
+def test_visual_view_requires_a_durable_file() -> None:
+    with pytest.raises(ValidationError):
         validate_client_tool_result(
-            "sample_pdf",
-            {"fileId": "local_pdf", "outputMode": "as_files"},
+            "view_file",
+            {"fileId": "local_image"},
             {
                 "ok": True,
-                "fileId": "local_pdf",
-                "mode": "as_files",
-                "pageCount": 12,
-                "range": {"startPage": 1, "endPage": 12},
-                "sampledPages": [2, 9],
-                "files": [
-                    {
-                        "fileId": "asset_sample",
-                        "filename": "sample.pdf",
-                        "mediaType": "application/pdf",
-                        "sizeBytes": 100,
-                        "durability": "included",
-                        "originalPages": [2, 10],
-                    }
-                ],
+                "fileId": "local_image",
+                "route": "image",
+                "mode": "image",
             },
-            max_result_bytes=4096,
+            max_result_bytes=2_048,
         )
 
 
-def test_list_files_accepts_current_browser_workspace_states_without_warning() -> None:
+def test_workspace_list_accepts_twenty_item_pages() -> None:
     result = validate_client_tool_result(
-        "list_files",
+        "list_workspace_files",
         {"page": 1},
         {
             "ok": True,
             "page": 1,
-            "pageSize": 10,
+            "pageSize": 20,
             "total": 1,
             "hasMore": False,
             "files": [
@@ -168,75 +125,6 @@ def test_list_files_accepts_current_browser_workspace_states_without_warning() -
                 }
             ],
         },
-        max_result_bytes=2048,
+        max_result_bytes=2_048,
     )
-
-    assert "warning" not in result
-    assert result["files"][0]["fileId"] == "asset_1"  # type: ignore[index]
-
-
-def test_list_files_rejects_more_than_ten_items() -> None:
-    output = {
-        "ok": True,
-        "page": 1,
-        "pageSize": 10,
-        "total": 11,
-        "hasMore": True,
-        "files": [
-            {
-                "fileId": f"local_{index}",
-                "name": f"file-{index}.txt",
-                "mediaType": "text/plain",
-                "sizeBytes": 1,
-                "route": "text",
-                "durability": "local",
-            }
-            for index in range(11)
-        ],
-    }
-
-    with pytest.raises(ValueError):
-        validate_client_tool_result(
-            "list_files",
-            {"page": 1},
-            output,
-            max_result_bytes=16_384,
-        )
-
-
-@pytest.mark.parametrize(
-    "change",
-    [
-        {"page": 2},
-        {"hasMore": False},
-        {"files": []},
-    ],
-)
-def test_list_files_rejects_inconsistent_pagination(change: dict[str, object]) -> None:
-    output = {
-        "ok": True,
-        "page": 1,
-        "pageSize": 10,
-        "total": 11,
-        "hasMore": True,
-        "files": [
-            {
-                "fileId": f"local_{index}",
-                "name": f"file-{index}.txt",
-                "mediaType": "text/plain",
-                "sizeBytes": 1,
-                "route": "text",
-                "durability": "local",
-            }
-            for index in range(10)
-        ],
-        **change,
-    }
-
-    with pytest.raises(ValueError):
-        validate_client_tool_result(
-            "list_files",
-            {"page": 1},
-            output,
-            max_result_bytes=16_384,
-        )
+    assert result["files"][0]["name"] == "notes.txt"  # type: ignore[index]

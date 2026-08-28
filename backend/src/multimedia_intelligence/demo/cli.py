@@ -5,6 +5,7 @@ import hashlib
 import json
 import mimetypes
 import shutil
+import subprocess
 import sys
 import urllib.request
 from collections.abc import AsyncIterator, Sequence
@@ -18,24 +19,17 @@ from pydantic_settings import CliApp, CliSubCommand, get_subcommand
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from multimedia_intelligence.auth import AuthenticatedUser, ensure_identity_row
 from multimedia_intelligence.config import Settings, get_settings
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
-from multimedia_intelligence.demo.ingestion import (
-    FileIngestionService,
-    OpenAIDiarizationGateway,
-    OpenAIVectorStoreGateway,
-    OpenAIVisionCaptionGateway,
-)
-from multimedia_intelligence.files.collections import create_collection, select_collection
+from multimedia_intelligence.files.collections import create_collection
 from multimedia_intelligence.files.domain import AssetState
+from multimedia_intelligence.files.indexing import OpenAIVectorStoreGateway
 from multimedia_intelligence.files.ports import BlobStore
 from multimedia_intelligence.files.records import (
     AssetIngestionRow,
     AssetRow,
     FileCollectionRow,
 )
-from multimedia_intelligence.files.s3_store import S3BlobStore
 
 from .survey import build_language_trends, methodology_markdown
 
@@ -58,7 +52,6 @@ class TypeScriptDocManifest(TypedDict):
 class AssetManifest(TypedDict):
     path: str
     description: str
-    pdfRanges: NotRequired[list[list[int]]]
     arxiv: NotRequired[str]
     version: NotRequired[str]
     url: NotRequired[str]
@@ -123,7 +116,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _prepare(manifest, cli.workspace, force=command.force)
         return 0
     if isinstance(command, Seed):
-        asyncio.run(_seed(manifest, cli.workspace, get_settings()))
+        asyncio.run(_seed(manifest, cli.workspace, get_settings(), cli.manifest))
         return 0
     if isinstance(command, Verify):
         asyncio.run(_verify(manifest, cli.workspace, get_settings(), command.live_search))
@@ -153,9 +146,7 @@ def _prepare(manifest: DemoManifest, workspace: Path, *, force: bool) -> None:
         survey_sources[year] = destination
     trends_path = generated / survey["output"]
     result = build_language_trends(survey_sources, trends_path)
-    (generated / "methodology.md").write_text(
-        methodology_markdown(years), encoding="utf-8"
-    )
+    (generated / "methodology.md").write_text(methodology_markdown(years), encoding="utf-8")
     print(
         f"Built {result.output} from {result.source_rows:,} rows "
         f"({result.eligible_rows:,} eligible)."
@@ -205,66 +196,25 @@ def _prepare(manifest: DemoManifest, workspace: Path, *, force: bool) -> None:
 
 
 async def _seed(
-    manifest: DemoManifest, workspace: Path, settings: Settings
+    manifest: DemoManifest, workspace: Path, settings: Settings, manifest_path: Path
 ) -> None:
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is required to seed vector-store artifacts")
-    engine, sessions = create_engine_and_session(settings.database_url)
-    await initialize_schema(engine)
-    await ensure_identity_row(
-        sessions,
-        AuthenticatedUser(
-            id=settings.admin_user_id,
-            username=settings.admin_username,
-            is_admin=True,
-        ),
+    del manifest, settings
+    harness = REPOSITORY_ROOT / "scripts" / "demo-agent-seed.py"
+    if not harness.is_file():
+        raise RuntimeError(f"Demo agent harness is missing: {harness}")
+    await asyncio.to_thread(
+        subprocess.run,
+        [
+            sys.executable,
+            str(harness),
+            "--manifest",
+            str(manifest_path),
+            "--workspace",
+            str(workspace),
+        ],
+        check=True,
+        cwd=REPOSITORY_ROOT,
     )
-    blobs = S3BlobStore.from_settings(settings)
-    service = FileIngestionService(
-        sessions,
-        blobs,
-        OpenAIVectorStoreGateway(settings.openai_api_key),
-        OpenAIDiarizationGateway(settings.openai_api_key, settings.openai_diarization_model),
-        OpenAIVisionCaptionGateway(settings.openai_api_key, settings.openai_ingestion_model),
-    )
-    try:
-        for collection_spec in manifest["collections"]:
-            collection = await _ensure_collection(
-                sessions,
-                settings.admin_user_id,
-                str(collection_spec["name"]),
-                str(collection_spec.get("description") or ""),
-            )
-            await select_collection(sessions, settings.admin_user_id, collection.id)
-            for asset_spec in collection_spec["assets"]:
-                path = _asset_path(workspace, str(asset_spec["path"]))
-                if not path.is_file():
-                    raise FileNotFoundError(f"Run demo prepare first; missing {path}")
-                asset = await _ensure_asset(
-                    sessions, blobs, settings, collection.id, path
-                )
-                active = await _active_ingestion(sessions, asset.id)
-                if active is not None and active.status == "ready":
-                    print(f"Ready, skipped: {collection.name}/{asset.filename}")
-                    continue
-                prepared = await service.prepare(settings.admin_user_id, asset.id)
-                status = str(prepared["status"])
-                if status == "ready":
-                    print(f"Ready, resumed: {collection.name}/{asset.filename}")
-                    continue
-                ranges = _pdf_ranges(asset_spec)
-                committed = await service.commit(
-                    settings.admin_user_id,
-                    str(prepared["ingestionId"]),
-                    str(asset_spec["description"]),
-                    ranges,
-                    [] if ranges is not None else None,
-                )
-                if committed["status"] != "ready":
-                    raise RuntimeError(f"Ingestion did not become ready: {committed}")
-                print(f"Seeded: {collection.name}/{asset.filename}")
-    finally:
-        await engine.dispose()
 
 
 async def _verify(
@@ -289,7 +239,6 @@ async def _verify(
             if collection is None:
                 failures.append(f"missing collection: {name}")
                 continue
-            await select_collection(sessions, settings.admin_user_id, collection.id)
             expected_ids: set[str] = set()
             for asset_spec in collection_spec["assets"]:
                 path = _asset_path(workspace, str(asset_spec["path"]))
@@ -361,20 +310,12 @@ async def _ensure_collection(
             )
         )
     if row is not None:
-        if not row.is_public:
-            async with sessions.begin() as session:
-                managed = await session.get(FileCollectionRow, row.id)
-                assert managed is not None
-                managed.is_public = True
-            row.is_public = True
         return row
     return await create_collection(
         sessions,
         owner_id,
         name,
         description,
-        select_created=False,
-        is_public=True,
     )
 
 
@@ -474,19 +415,6 @@ def _load_manifest(path: Path) -> DemoManifest:
 
 def _asset_path(workspace: Path, configured: str) -> Path:
     return (workspace / configured).resolve()
-
-
-def _pdf_ranges(asset: AssetManifest) -> list[dict[str, int]] | None:
-    ranges = asset.get("pdfRanges")
-    if ranges is None:
-        return None
-    return [
-        {
-            "startPage": start_page,
-            "endPage": end_page,
-        }
-        for start_page, end_page in ranges
-    ]
 
 
 def _slug(value: str) -> str:

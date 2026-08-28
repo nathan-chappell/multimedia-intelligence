@@ -8,10 +8,11 @@ from fastapi import Request
 from pydantic import SkipValidation
 
 
-class CollectionContext(TypedDict):
-    collectionId: str
+class CollectionSummary(TypedDict):
+    slug: str
     name: str
     description: str
+    fileCount: int
 
 
 class ReadyFileReference(TypedDict):
@@ -23,6 +24,7 @@ class ReadyFileReference(TypedDict):
     sizeBytes: int
     route: str
     collectionId: str | None
+    sourceFileId: str | None
     previewPath: str
 
 
@@ -36,6 +38,8 @@ class TextRangeResult(TypedDict):
 
 class FileSearchResult(TypedDict):
     fileId: str
+    matchFileId: str
+    sourceFileId: str | None
     artifactId: str
     filename: str
     mediaType: str
@@ -45,11 +49,15 @@ class FileSearchResult(TypedDict):
     snippets: list[str]
     provenance: dict[str, object]
     availableActions: list[str]
+    collectionSlug: str
 
 
 class CollectionFileMetadata(TypedDict):
     fileId: str
+    matchFileId: str
+    sourceFileId: str | None
     collectionId: str
+    collectionSlug: str
     filename: str
     mediaType: str
     modality: str
@@ -60,8 +68,6 @@ class CollectionFileMetadata(TypedDict):
 
 
 class CollectionFileMetadataPage(TypedDict):
-    collectionId: str
-    collectionName: str
     items: list[CollectionFileMetadata]
     hasMore: bool
     nextCursor: str | None
@@ -92,10 +98,28 @@ class IndexCollectionFileResult(TypedDict):
     warnings: list[str]
 
 
-class AgentDataAccess(Protocol):
-    async def collection_context(self) -> CollectionContext: ...
+class PdfRangeSelection(TypedDict):
+    fileId: str
+    startPage: int
+    endPage: int
+    title: str
+    chapter: str | None
+    section: str | None
 
-    async def list_workspace_files(self) -> tuple[ReadyFileReference, ...]: ...
+
+class AgentIndexingPlan(TypedDict):
+    sourceFileId: str
+    collectionSlug: str
+    summary: str
+    includeOriginal: bool
+    reverseIndexFileId: str | None
+    ranges: list[PdfRangeSelection]
+
+
+class AgentDataAccess(Protocol):
+    async def list_collections(self, page: int) -> tuple[CollectionSummary, ...]: ...
+
+    async def list_workspace_files(self, page: int = 1) -> tuple[ReadyFileReference, ...]: ...
 
     async def workspace_file_download_url(self, file_id: str) -> str: ...
 
@@ -108,13 +132,24 @@ class AgentDataAccess(Protocol):
 
     async def ensure_workspace_file(self, file_id: str) -> ReadyFileReference: ...
 
+    async def view_transcript(
+        self,
+        file_id: str,
+        start_seconds: float | None,
+        count_seconds: float | None,
+    ) -> TranscriptPageResult: ...
+
     async def file_search(
-        self, query: str, max_results: int, file_types: list[str] | None = None
+        self,
+        query: str,
+        collection_slugs: list[str] | None,
+        max_results: int = 8,
     ) -> tuple[FileSearchResult, ...]: ...
 
     async def find_collection_files(
         self,
         *,
+        collection_slugs: list[str] | None,
         filename: str | None,
         filename_match: Literal["exact", "prefix", "contains"],
         created_after: datetime | None,
@@ -124,22 +159,17 @@ class AgentDataAccess(Protocol):
         cursor: str | None,
     ) -> CollectionFileMetadataPage: ...
 
-    async def read_transcript(
+    async def start_collection_indexing(
         self,
-        file_id: str,
-        start_seconds: float | None,
-        end_seconds: float | None,
-        cursor: str | None,
-    ) -> TranscriptPageResult: ...
-
-    async def index_file(
-        self,
-        file_id: str,
-        description: str,
-        representation_mode: Literal["auto", "description", "source", "both"],
-        evidence_refs: list[str] | None,
-        replace_existing: bool,
+        plan: AgentIndexingPlan,
     ) -> IndexCollectionFileResult: ...
+
+    async def create_markdown_file(
+        self,
+        filename: str,
+        content: str,
+        source_file_id: str | None,
+    ) -> ReadyFileReference: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,7 +189,7 @@ class ClientToolRequest:
 
 @dataclass(frozen=True, slots=True)
 class RequestContext:
-    """Shared application context inherited by the root agent and every specialist."""
+    """Shared application context for the single assistant agent."""
 
     client: ClientInfo
     data_access: Annotated[AgentDataAccess | None, SkipValidation] = None

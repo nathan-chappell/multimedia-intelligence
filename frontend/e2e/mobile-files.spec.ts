@@ -29,13 +29,9 @@ test("mobile file library is separate, dense, and preserves conversation inclusi
       body: JSON.stringify([
         {
           id: "collection_general",
+          slug: "general",
           name: "General",
           description: null,
-          selected: true,
-          is_public: false,
-          owned: true,
-          can_manage: true,
-          read_only: false,
         },
       ]),
     }),

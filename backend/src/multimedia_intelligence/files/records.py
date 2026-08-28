@@ -45,6 +45,9 @@ class AssetRow(Base):
     collection_id: Mapped[str | None] = mapped_column(
         ForeignKey("file_collections.id", ondelete="RESTRICT"), nullable=True, index=True
     )
+    source_asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     filename: Mapped[str] = mapped_column(String(1024))
     media_type: Mapped[str] = mapped_column(String(255))
     size_bytes: Mapped[int] = mapped_column(BigInteger)
@@ -98,13 +101,33 @@ class UserWorkspaceFileRow(Base):
         ),
     )
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    owner_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id", ondelete="RESTRICT"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class AssetTranscriptRow(Base):
+    """Durable, collection-independent transcript cached for one media asset."""
+
+    __tablename__ = "asset_transcripts"
+    __table_args__ = (
+        Index("ix_asset_transcripts_owner_status_updated", "owner_id", "status", "updated_at"),
     )
     asset_id: Mapped[str] = mapped_column(
-        ForeignKey("assets.id", ondelete="RESTRICT"), index=True
+        ForeignKey("assets.id", ondelete="CASCADE"), primary_key=True
     )
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(64), index=True)
+    bucket: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    object_key: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    etag: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    version_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class DerivedArtifactRow(Base):
@@ -134,29 +157,15 @@ class FileCollectionRow(Base):
     __tablename__ = "file_collections"
     __table_args__ = (
         UniqueConstraint("owner_id", "name"),
-        Index("ix_file_collections_public_cursor", "is_public", "created_at", "id"),
+        UniqueConstraint("owner_id", "slug"),
+        Index("ix_file_collections_owner_cursor", "owner_id", "created_at", "id"),
     )
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    slug: Mapped[str] = mapped_column(String(160))
     name: Mapped[str] = mapped_column(String(160))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_public: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="0", nullable=False
-    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-
-
-class UserCollectionSelectionRow(Base):
-    """The collection globally selected for one user's current work."""
-
-    __tablename__ = "user_collection_selections"
-    owner_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
-    collection_id: Mapped[str] = mapped_column(
-        ForeignKey("file_collections.id", ondelete="RESTRICT"), index=True
-    )
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class UserVectorStoreRow(Base):
@@ -186,6 +195,7 @@ class AssetIngestionRow(Base):
             "version",
         ),
         Index("ix_ingestions_collection_status", "collection_id", "status"),
+        Index("ix_ingestions_provider_batch", "provider_batch_id"),
     )
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id", ondelete="CASCADE"), index=True)
@@ -200,6 +210,7 @@ class AssetIngestionRow(Base):
     prepared_json: Mapped[str] = mapped_column(Text, default="{}")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_batch_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

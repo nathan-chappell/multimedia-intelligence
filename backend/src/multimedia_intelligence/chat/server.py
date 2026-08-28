@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from agents import Runner, TResponseInputItem
 from chatkit.actions import Action
@@ -44,7 +44,7 @@ from openai.types.responses.response_input_file_content_param import ResponseInp
 from openai.types.responses.response_input_image_content_param import ResponseInputImageContentParam
 from openai.types.responses.response_input_item_param import FunctionCallOutput
 from openai.types.responses.response_input_text_content_param import ResponseInputTextContentParam
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from multimedia_intelligence.agents import AssistantGraph
 from multimedia_intelligence.auth import AuthenticatedUser
@@ -53,11 +53,7 @@ from multimedia_intelligence.billing.service import BillingService
 from multimedia_intelligence.config import get_settings
 from multimedia_intelligence.context import RequestContext
 from multimedia_intelligence.files.client_results import validate_client_tool_result
-from multimedia_intelligence.files.client_tools import (
-    SAMPLE_PDF,
-    VIEW_IMAGE,
-    VIEW_PDF_PAGE,
-)
+from multimedia_intelligence.files.client_tools import VIEW_FILE
 from multimedia_intelligence.observability import (
     AgentRunHooks,
     RunCorrelation,
@@ -94,60 +90,30 @@ class _ClientFile(TypedDict):
     durability: Literal["included"]
 
 
-class _SampledPdfFile(_ClientFile):
-    originalPages: list[int]
-
-
-class _PdfPageRange(TypedDict):
-    startPage: int
-    endPage: int
-
-
-class _PdfFileSampleResult(TypedDict):
+class _ViewedPdfResult(TypedDict):
     ok: Literal[True]
     fileId: str
-    mode: Literal["as_files"]
-    pageCount: int
-    range: _PdfPageRange
-    sampledPages: list[int]
-    files: list[_SampledPdfFile]
-
-
-class _RenderedPdfPageResult(TypedDict):
-    ok: Literal[True]
-    artifactId: str
-    sourceFileId: str
-    kind: Literal["pdf_page_image"]
-    mediaType: Literal["image/png"]
-    sizeBytes: int
-    durability: Literal["included"]
+    route: Literal["pdf"]
+    mode: Literal["pdf"]
+    startPage: NotRequired[int]
+    endPage: NotRequired[int]
     file: _ClientFile
 
 
 class _ViewedImageResult(TypedDict):
     ok: Literal[True]
     fileId: str
+    route: Literal["image"]
+    mode: Literal["image"]
     file: _ClientFile
 
 
-class _PdfFileSampleCall(TypedDict):
-    name: Literal["sample_pdf"]
-    output: _PdfFileSampleResult
+class _ViewedFileCall(TypedDict):
+    name: Literal["view_file"]
+    output: _ViewedPdfResult | _ViewedImageResult
 
 
-class _RenderedPdfPageCall(TypedDict):
-    name: Literal["view_pdf_page"]
-    output: _RenderedPdfPageResult
-
-
-class _ViewedImageCall(TypedDict):
-    name: Literal["view_image"]
-    output: _ViewedImageResult
-
-
-type _AttachmentClientToolCall = (
-    _PdfFileSampleCall | _RenderedPdfPageCall | _ViewedImageCall
-)
+type _AttachmentClientToolCall = _ViewedFileCall
 
 
 class _PendingClientToolCall(TypedDict):
@@ -157,7 +123,7 @@ class _PendingClientToolCall(TypedDict):
 
 
 _ATTACHMENT_CLIENT_TOOL_CALL_ADAPTER: TypeAdapter[_AttachmentClientToolCall] = TypeAdapter(
-    Annotated[_AttachmentClientToolCall, Field(discriminator="name")]
+    _AttachmentClientToolCall
 )
 _PENDING_CLIENT_TOOL_CALL_ADAPTER = TypeAdapter(_PendingClientToolCall)
 
@@ -167,17 +133,11 @@ def _parse_attachment_client_tool_call(
 ) -> _AttachmentClientToolCall | None:
     """Parse client-tool results that must become OpenAI file or image inputs."""
 
-    name = {
-        "pdf_random_sample": SAMPLE_PDF,
-        "pdf_render_page": VIEW_PDF_PAGE,
-        "view_workspace_image": VIEW_IMAGE,
-    }.get(item.name, item.name)
+    name = item.name
     output = item.output
     if not isinstance(output, dict) or output.get("ok") is not True:
         return None
-    if name == SAMPLE_PDF and output.get("mode") != "as_files":
-        return None
-    if name not in {SAMPLE_PDF, VIEW_PDF_PAGE, VIEW_IMAGE}:
+    if name != VIEW_FILE or output.get("mode") not in {"pdf", "image"}:
         return None
     try:
         return _ATTACHMENT_CLIENT_TOOL_CALL_ADAPTER.validate_python(
@@ -301,9 +261,7 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
 
         del thread, sender, context
         if action.type != "app.notice":
-            yield self._toast(
-                level="warning", message="Unsupported application action"
-            )
+            yield self._toast(level="warning", message="Unsupported application action")
             return
         payload = action.payload if isinstance(action.payload, dict) else {}
         message = payload.get("message")
@@ -382,8 +340,8 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
             client_tool_requests=[],
         )
 
-        # ChatKit attachments are intentionally disabled. Files reach the agent only
-        # through our conversation-scoped asset/include/derived-artifact pipeline.
+        # ChatKit attachments are intentionally disabled. Files reach the agent through
+        # the user's durable workspace and explicit collection tools.
         turn = await self.chat_store.begin_conversation_turn(
             thread.id,
             context,
@@ -428,7 +386,9 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
         )
         starting_agent = graph.root
         if continuation_tool is not None:
-            starting_agent = graph.agent_for_client_tool(continuation_tool.name)
+            starting_agent = graph.agent_for_client_tool(
+                continuation_tool.name, continuation_tool.arguments
+            )
         trace_metadata = {
             "thread": correlation.group_id,
             "conversation": opaque_id(conversation_id),
@@ -643,9 +603,7 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
             for item in reversed(new_items):
                 if getattr(item, "type", None) != "tool_call_output_item":
                     continue
-                pending_call = _parse_pending_client_tool_call(
-                    getattr(item, "output", None)
-                )
+                pending_call = _parse_pending_client_tool_call(getattr(item, "output", None))
                 if pending_call is not None:
                     client_call = ClientToolCall(
                         name=pending_call["client_tool"],
@@ -715,61 +673,32 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
         elif (latest_item := MultimediaChatServer._continuation_tool_call(items)) is not None:
             output: str | list[ResponseFunctionCallOutputItemParam] = json.dumps(latest_item.output)
             attachment_call = _parse_attachment_client_tool_call(latest_item)
-            if attachment_call is not None and attachment_call["name"] == "sample_pdf":
+            if attachment_call is not None:
                 if context is None or context.data_access is None:
-                    raise RuntimeError("PDF sample file access is unavailable")
-                output = [
-                    ResponseInputTextContentParam(
-                        type="input_text",
-                        text=json.dumps(latest_item.output),
-                    )
-                ]
-                for file in attachment_call["output"]["files"]:
-                    file_url = await context.data_access.workspace_file_download_url(
-                        file["fileId"]
-                    )
-                    output.append(
+                    raise RuntimeError("Workspace file access is unavailable")
+                viewed = attachment_call["output"]
+                file = viewed["file"]
+                file_url = await context.data_access.workspace_file_download_url(file["fileId"])
+                text_part = ResponseInputTextContentParam(
+                    type="input_text", text=json.dumps(latest_item.output)
+                )
+                if viewed["mode"] == "pdf":
+                    output = [
+                        text_part,
                         ResponseInputFileContentParam(
                             type="input_file",
                             file_url=file_url,
                             filename=file["filename"],
                             detail="high",
-                        )
-                    )
-            elif attachment_call is not None and attachment_call["name"] == "view_pdf_page":
-                if context is None or context.data_access is None:
-                    raise RuntimeError("Rendered page access is unavailable")
-                image_url = await context.data_access.workspace_file_download_url(
-                    attachment_call["output"]["file"]["fileId"]
-                )
-                output = [
-                    ResponseInputTextContentParam(
-                        type="input_text",
-                        text=json.dumps(latest_item.output),
-                    ),
-                    ResponseInputImageContentParam(
-                        type="input_image",
-                        image_url=image_url,
-                        detail="high",
-                    ),
-                ]
-            elif attachment_call is not None and attachment_call["name"] == "view_image":
-                if context is None or context.data_access is None:
-                    raise RuntimeError("Workspace image access is unavailable")
-                image_url = await context.data_access.workspace_file_download_url(
-                    attachment_call["output"]["file"]["fileId"]
-                )
-                output = [
-                    ResponseInputTextContentParam(
-                        type="input_text",
-                        text=json.dumps(latest_item.output),
-                    ),
-                    ResponseInputImageContentParam(
-                        type="input_image",
-                        image_url=image_url,
-                        detail="high",
-                    ),
-                ]
+                        ),
+                    ]
+                else:
+                    output = [
+                        text_part,
+                        ResponseInputImageContentParam(
+                            type="input_image", image_url=file_url, detail="high"
+                        ),
+                    ]
             agent_input = [
                 cast(
                     TResponseInputItem,
@@ -841,11 +770,7 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
         if tool_index is None:
             return None
         workflow = next(
-            (
-                item
-                for item in reversed(items[:tool_index])
-                if isinstance(item, WorkflowItem)
-            ),
+            (item for item in reversed(items[:tool_index]) if isinstance(item, WorkflowItem)),
             None,
         )
         if workflow is None:

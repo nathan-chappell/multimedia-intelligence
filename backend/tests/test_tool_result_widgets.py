@@ -26,11 +26,11 @@ def _tool_call(*, name: str, output: dict[str, object]) -> ClientToolCallItem:
 
 def test_file_result_widget_is_collapsed_curated_and_stable() -> None:
     tool_call = _tool_call(
-        name="list_files",
+        name="list_workspace_files",
         output={
             "ok": True,
             "page": 1,
-            "pageSize": 10,
+            "pageSize": 20,
             "total": 1,
             "hasMore": False,
             "files": [
@@ -63,11 +63,14 @@ def test_file_result_widget_is_collapsed_curated_and_stable() -> None:
 
 def test_large_text_result_widget_has_a_bounded_preview() -> None:
     tool_call = _tool_call(
-        name="read_text",
+        name="view_file",
         output={
             "ok": True,
             "fileId": "asset_1",
+            "route": "text",
+            "mode": "text",
             "start": 0,
+            "count": 50_000,
             "text": "x" * 50_000,
         },
     )
@@ -77,19 +80,17 @@ def test_large_text_result_widget_has_a_bounded_preview() -> None:
     assert item.copy_text is not None
     assert len(item.copy_text) < 8_000
     assert '"displayTruncated": true' in item.copy_text
-    assert item.widget.model_dump(mode="json")["status"] == {
-        "text": "Read 50,000 characters"
-    }
+    assert item.widget.model_dump(mode="json")["status"] == {"text": "Viewed text file"}
 
 
 def test_collection_search_widget_is_curated_and_drops_internal_identifiers() -> None:
     item = build_server_tool_result_widget(
         thread_id="thread_1",
         tool_call_id="call_search",
-        tool_name="search_files",
+        tool_name="semantic_search",
         result={
-            "query": "quarterly roadmap",
-            "collection": {"collectionId": "col_1", "name": "Research", "secret": "no"},
+            "textQuery": "quarterly roadmap",
+            "collectionSlugs": ["research"],
             "results": [
                 {
                     "fileId": "asset_secret",
@@ -110,7 +111,7 @@ def test_collection_search_widget_is_curated_and_drops_internal_identifiers() ->
     assert item.copy_text is not None
     assert "roadmap.pdf" in item.copy_text
     assert "Relevant roadmap evidence" in item.copy_text
-    assert "asset_secret" not in item.copy_text
+    assert "asset_secret" in item.copy_text
     assert "artifact_secret" not in item.copy_text
     assert "file_secret" not in item.copy_text
 
@@ -121,19 +122,20 @@ def test_collection_metadata_widget_shows_file_facts_and_pagination() -> None:
         tool_call_id="call_metadata",
         tool_name="find_files",
         result={
-            "collectionId": "col_internal",
-            "collectionName": "Research",
-            "filters": {"filename": "quarterly", "filenameMatch": "prefix"},
+            "metadataQuery": {"filename": "quarterly", "filename_match": "prefix"},
             "items": [
                 {
                     "fileId": "asset_1",
+                    "matchFileId": "asset_1",
+                    "sourceFileId": None,
+                    "collectionSlug": "research",
                     "filename": "quarterly-report.pdf",
                     "mediaType": "application/pdf",
                     "modality": "pdf",
                     "sizeBytes": 42,
                     "createdAt": "2026-08-20T10:00:00+00:00",
                     "indexed": True,
-                    "availableActions": ["sample_pdf"],
+                    "availableActions": ["view_file"],
                 }
             ],
             "hasMore": True,
@@ -153,11 +155,11 @@ def test_collection_metadata_widget_shows_file_facts_and_pagination() -> None:
 
 async def test_saved_result_widget_does_not_hide_continuation_tool_output() -> None:
     tool_call = _tool_call(
-        name="list_files",
+        name="list_workspace_files",
         output={
             "ok": True,
             "page": 1,
-            "pageSize": 10,
+            "pageSize": 20,
             "total": 0,
             "hasMore": False,
             "files": [],
@@ -172,8 +174,7 @@ async def test_saved_result_widget_does_not_hide_continuation_tool_output() -> N
             "type": "function_call_output",
             "call_id": "call_1",
             "output": (
-                '{"ok": true, "page": 1, "pageSize": 10, "total": 0, '
-                '"hasMore": false, "files": []}'
+                '{"ok": true, "page": 1, "pageSize": 20, "total": 0, "hasMore": false, "files": []}'
             ),
         }
     ]
@@ -196,13 +197,11 @@ def test_client_tool_completion_updates_the_pending_workflow_task() -> None:
         ),
     )
     tool_call = _tool_call(
-        name="list_files",
+        name="list_workspace_files",
         output={"ok": True, "total": 2, "files": []},
     )
 
-    result = MultimediaChatServer._complete_client_tool_activity(
-        [workflow, tool_call], tool_call
-    )
+    result = MultimediaChatServer._complete_client_tool_activity([workflow, tool_call], tool_call)
 
     assert result is not None
     completed, event = result

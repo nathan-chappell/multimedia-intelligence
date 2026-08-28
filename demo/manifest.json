@@ -2,24 +2,51 @@
   "$schema": "./manifest.schema.json",
   "version": 1,
   "survey": {
-    "years": [2021, 2022, 2023, 2024, 2025],
+    "years": [
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
     "urlTemplate": "https://media.githubusercontent.com/media/StackExchange/Survey/main/packages/archive/{year}/results.csv",
     "output": "programming-language-trends-2021-2025.csv"
   },
   "typescriptDocs": [
-    {"title": "Type Compatibility", "url": "https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/reference/Type%20Compatibility.md"},
-    {"title": "Object Types", "url": "https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Object%20Types.md"},
-    {"title": "Generics", "url": "https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Type%20Manipulation/Generics.md"},
-    {"title": "Conditional Types", "url": "https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Type%20Manipulation/Conditional%20Types.md"},
-    {"title": "Mapped Types", "url": "https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Type%20Manipulation/Mapped%20Types.md"}
+    {
+      "title": "Type Compatibility",
+      "url": "https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/reference/Type%20Compatibility.md"
+    },
+    {
+      "title": "Object Types",
+      "url": "https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Object%20Types.md"
+    },
+    {
+      "title": "Generics",
+      "url": "https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Type%20Manipulation/Generics.md"
+    },
+    {
+      "title": "Conditional Types",
+      "url": "https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Type%20Manipulation/Conditional%20Types.md"
+    },
+    {
+      "title": "Mapped Types",
+      "url": "https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Type%20Manipulation/Mapped%20Types.md"
+    }
   ],
   "collections": [
     {
       "name": "Language Trends",
       "description": "Stack Overflow language usage and compensation trends, 2021–2025.",
       "assets": [
-        {"path": "generated/programming-language-trends-2021-2025.csv", "description": "Derived Stack Overflow survey table with language usage rates, denominators, compensation sample sizes, and median annual USD compensation by year and country cohort."},
-        {"path": "generated/methodology.md", "description": "Methodology, licensing attribution, cohort definitions, sample suppression, and interpretation caveats for the programming language trends dataset."}
+        {
+          "path": "generated/programming-language-trends-2021-2025.csv",
+          "description": "Derived Stack Overflow survey table with language usage rates, denominators, compensation sample sizes, and median annual USD compensation by year and country cohort."
+        },
+        {
+          "path": "generated/methodology.md",
+          "description": "Methodology, licensing attribution, cohort definitions, sample suppression, and interpretation caveats for the programming language trends dataset."
+        }
       ],
       "promptFile": "prompts/language-trends.md"
     },
@@ -29,10 +56,12 @@
       "assets": [
         {
           "path": "../files/Pierce 2002 - Types and Programming Languages.pdf",
-          "description": "Benjamin C. Pierce's Types and Programming Languages. Selected ranges cover records, variants, subtyping, reconstruction, universal types, parametricity, type operators, kinding, and higher-order type systems.",
-          "pdfRanges": [[139, 158], [203, 222], [339, 358], [361, 380], [461, 480]]
+          "description": "Benjamin C. Pierce's Types and Programming Languages. The ingestion agent chooses useful page ranges and creates a navigational reverse index."
         },
-        {"path": "generated/typescript-handbook-abstractions.md", "description": "Official TypeScript documentation bundle covering structural type compatibility, object types, generics, conditional types, and mapped types, with source URLs and section boundaries."}
+        {
+          "path": "generated/typescript-handbook-abstractions.md",
+          "description": "Official TypeScript documentation bundle covering structural type compatibility, object types, generics, conditional types, and mapped types, with source URLs and section boundaries."
+        }
       ],
       "promptFile": "prompts/type-systems.md"
     },
@@ -40,16 +69,163 @@
       "name": "ML Foundations",
       "description": "Ten foundational machine-learning papers from arXiv.",
       "assets": [
-        {"path": "papers/1312.5602.pdf", "arxiv": "1312.5602", "version": "v1", "url": "https://arxiv.org/pdf/1312.5602v1", "sha256": "8db04120cace173151c77e0faa6f3eaa4207009da66b9417597dc70bfee56d9c", "title": "Playing Atari with Deep Reinforcement Learning", "authors": ["Volodymyr Mnih", "Koray Kavukcuoglu", "David Silver", "Alex Graves", "Ioannis Antonoglou", "Daan Wierstra", "Martin Riedmiller"], "pdfRanges": [[1, 9]], "description": "DQN paper on learning Atari control policies from pixels with deep reinforcement learning."},
-        {"path": "papers/1406.2661.pdf", "arxiv": "1406.2661", "version": "v1", "url": "https://arxiv.org/pdf/1406.2661v1", "sha256": "ff5819e3a7b713c3bd3107b7de3d51fe0a347aa5d8444f0efdcf2345ef0a8b63", "title": "Generative Adversarial Nets", "authors": ["Ian J. Goodfellow", "Jean Pouget-Abadie", "Mehdi Mirza", "Bing Xu", "David Warde-Farley", "Sherjil Ozair", "Aaron Courville", "Yoshua Bengio"], "pdfRanges": [[1, 9]], "description": "Original GAN framework introducing adversarial generator and discriminator training."},
-        {"path": "papers/1412.6980.pdf", "arxiv": "1412.6980", "version": "v9", "url": "https://arxiv.org/pdf/1412.6980v9", "sha256": "eab9c73ae2ceda884b94830bda99312254bac4806f6c9f045cbab90721ecda31", "title": "Adam: A Method for Stochastic Optimization", "authors": ["Diederik P. Kingma", "Jimmy Ba"], "pdfRanges": [[1, 15]], "description": "Adam optimizer paper describing adaptive first- and second-moment estimates."},
-        {"path": "papers/1502.03167.pdf", "arxiv": "1502.03167", "version": "v3", "url": "https://arxiv.org/pdf/1502.03167v3", "sha256": "bdc69e0b568f41d8d3181cc9077a461f58fcdd1c70c9f49efe60a05ee6109655", "title": "Batch Normalization", "authors": ["Sergey Ioffe", "Christian Szegedy"], "pdfRanges": [[1, 11]], "description": "Batch Normalization paper on normalizing intermediate activations to improve optimization."},
-        {"path": "papers/1512.03385.pdf", "arxiv": "1512.03385", "version": "v1", "url": "https://arxiv.org/pdf/1512.03385v1", "sha256": "1e0651b6810ecba34a3dbc5b5b0209226f889004607c1f203540a48d64e5a93a", "title": "Deep Residual Learning for Image Recognition", "authors": ["Kaiming He", "Xiangyu Zhang", "Shaoqing Ren", "Jian Sun"], "pdfRanges": [[1, 12]], "description": "ResNet paper introducing residual connections for very deep visual models."},
-        {"path": "papers/1706.03762.pdf", "arxiv": "1706.03762", "version": "v7", "url": "https://arxiv.org/pdf/1706.03762v7", "sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697", "title": "Attention Is All You Need", "authors": ["Ashish Vaswani", "Noam Shazeer", "Niki Parmar", "Jakob Uszkoreit", "Llion Jones", "Aidan N. Gomez", "Lukasz Kaiser", "Illia Polosukhin"], "pdfRanges": [[1, 15]], "description": "Transformer paper introducing an attention-only sequence transduction architecture."},
-        {"path": "papers/1810.04805.pdf", "arxiv": "1810.04805", "version": "v2", "url": "https://arxiv.org/pdf/1810.04805v2", "sha256": "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e", "title": "BERT", "authors": ["Jacob Devlin", "Ming-Wei Chang", "Kenton Lee", "Kristina Toutanova"], "pdfRanges": [[1, 16]], "description": "BERT paper introducing bidirectional Transformer pretraining with masked language modeling."},
-        {"path": "papers/2005.14165.pdf", "arxiv": "2005.14165", "version": "v4", "url": "https://arxiv.org/pdf/2005.14165v4", "sha256": "97fd272f1fdfc18677462d0292f5fbf26ca86b4d1b485c2dba03269b643a0e83", "title": "Language Models are Few-Shot Learners", "authors": ["Tom B. Brown et al."], "pdfRanges": [[1, 20], [21, 40], [41, 60], [61, 75]], "description": "GPT-3 paper studying scaling and in-context few-shot learning."},
-        {"path": "papers/2006.11239.pdf", "arxiv": "2006.11239", "version": "v2", "url": "https://arxiv.org/pdf/2006.11239v2", "sha256": "aee5e07a802e8dfd2a386374c94fd61d1d056cb7e1e0fec4f28e8120ff5d8505", "title": "Denoising Diffusion Probabilistic Models", "authors": ["Jonathan Ho", "Ajay Jain", "Pieter Abbeel"], "pdfRanges": [[1, 20], [21, 25]], "description": "DDPM paper on high-quality synthesis through learned reverse diffusion."},
-        {"path": "papers/2106.09685.pdf", "arxiv": "2106.09685", "version": "v2", "url": "https://arxiv.org/pdf/2106.09685v2", "sha256": "e9a0d3128767db616085dc0f4e6e455e672e89af823e8ed1282793682787395a", "title": "LoRA", "authors": ["Edward J. Hu", "Yelong Shen", "Phillip Wallis", "Zeyuan Allen-Zhu", "Yuanzhi Li", "Shean Wang", "Lu Wang", "Weizhu Chen"], "pdfRanges": [[1, 20], [21, 26]], "description": "LoRA paper introducing low-rank parameter-efficient adaptation for large language models."}
+        {
+          "path": "papers/1312.5602.pdf",
+          "arxiv": "1312.5602",
+          "version": "v1",
+          "url": "https://arxiv.org/pdf/1312.5602v1",
+          "sha256": "8db04120cace173151c77e0faa6f3eaa4207009da66b9417597dc70bfee56d9c",
+          "title": "Playing Atari with Deep Reinforcement Learning",
+          "authors": [
+            "Volodymyr Mnih",
+            "Koray Kavukcuoglu",
+            "David Silver",
+            "Alex Graves",
+            "Ioannis Antonoglou",
+            "Daan Wierstra",
+            "Martin Riedmiller"
+          ],
+          "description": "DQN paper on learning Atari control policies from pixels with deep reinforcement learning."
+        },
+        {
+          "path": "papers/1406.2661.pdf",
+          "arxiv": "1406.2661",
+          "version": "v1",
+          "url": "https://arxiv.org/pdf/1406.2661v1",
+          "sha256": "ff5819e3a7b713c3bd3107b7de3d51fe0a347aa5d8444f0efdcf2345ef0a8b63",
+          "title": "Generative Adversarial Nets",
+          "authors": [
+            "Ian J. Goodfellow",
+            "Jean Pouget-Abadie",
+            "Mehdi Mirza",
+            "Bing Xu",
+            "David Warde-Farley",
+            "Sherjil Ozair",
+            "Aaron Courville",
+            "Yoshua Bengio"
+          ],
+          "description": "Original GAN framework introducing adversarial generator and discriminator training."
+        },
+        {
+          "path": "papers/1412.6980.pdf",
+          "arxiv": "1412.6980",
+          "version": "v9",
+          "url": "https://arxiv.org/pdf/1412.6980v9",
+          "sha256": "eab9c73ae2ceda884b94830bda99312254bac4806f6c9f045cbab90721ecda31",
+          "title": "Adam: A Method for Stochastic Optimization",
+          "authors": [
+            "Diederik P. Kingma",
+            "Jimmy Ba"
+          ],
+          "description": "Adam optimizer paper describing adaptive first- and second-moment estimates."
+        },
+        {
+          "path": "papers/1502.03167.pdf",
+          "arxiv": "1502.03167",
+          "version": "v3",
+          "url": "https://arxiv.org/pdf/1502.03167v3",
+          "sha256": "bdc69e0b568f41d8d3181cc9077a461f58fcdd1c70c9f49efe60a05ee6109655",
+          "title": "Batch Normalization",
+          "authors": [
+            "Sergey Ioffe",
+            "Christian Szegedy"
+          ],
+          "description": "Batch Normalization paper on normalizing intermediate activations to improve optimization."
+        },
+        {
+          "path": "papers/1512.03385.pdf",
+          "arxiv": "1512.03385",
+          "version": "v1",
+          "url": "https://arxiv.org/pdf/1512.03385v1",
+          "sha256": "1e0651b6810ecba34a3dbc5b5b0209226f889004607c1f203540a48d64e5a93a",
+          "title": "Deep Residual Learning for Image Recognition",
+          "authors": [
+            "Kaiming He",
+            "Xiangyu Zhang",
+            "Shaoqing Ren",
+            "Jian Sun"
+          ],
+          "description": "ResNet paper introducing residual connections for very deep visual models."
+        },
+        {
+          "path": "papers/1706.03762.pdf",
+          "arxiv": "1706.03762",
+          "version": "v7",
+          "url": "https://arxiv.org/pdf/1706.03762v7",
+          "sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
+          "title": "Attention Is All You Need",
+          "authors": [
+            "Ashish Vaswani",
+            "Noam Shazeer",
+            "Niki Parmar",
+            "Jakob Uszkoreit",
+            "Llion Jones",
+            "Aidan N. Gomez",
+            "Lukasz Kaiser",
+            "Illia Polosukhin"
+          ],
+          "description": "Transformer paper introducing an attention-only sequence transduction architecture."
+        },
+        {
+          "path": "papers/1810.04805.pdf",
+          "arxiv": "1810.04805",
+          "version": "v2",
+          "url": "https://arxiv.org/pdf/1810.04805v2",
+          "sha256": "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e",
+          "title": "BERT",
+          "authors": [
+            "Jacob Devlin",
+            "Ming-Wei Chang",
+            "Kenton Lee",
+            "Kristina Toutanova"
+          ],
+          "description": "BERT paper introducing bidirectional Transformer pretraining with masked language modeling."
+        },
+        {
+          "path": "papers/2005.14165.pdf",
+          "arxiv": "2005.14165",
+          "version": "v4",
+          "url": "https://arxiv.org/pdf/2005.14165v4",
+          "sha256": "97fd272f1fdfc18677462d0292f5fbf26ca86b4d1b485c2dba03269b643a0e83",
+          "title": "Language Models are Few-Shot Learners",
+          "authors": [
+            "Tom B. Brown et al."
+          ],
+          "description": "GPT-3 paper studying scaling and in-context few-shot learning."
+        },
+        {
+          "path": "papers/2006.11239.pdf",
+          "arxiv": "2006.11239",
+          "version": "v2",
+          "url": "https://arxiv.org/pdf/2006.11239v2",
+          "sha256": "aee5e07a802e8dfd2a386374c94fd61d1d056cb7e1e0fec4f28e8120ff5d8505",
+          "title": "Denoising Diffusion Probabilistic Models",
+          "authors": [
+            "Jonathan Ho",
+            "Ajay Jain",
+            "Pieter Abbeel"
+          ],
+          "description": "DDPM paper on high-quality synthesis through learned reverse diffusion."
+        },
+        {
+          "path": "papers/2106.09685.pdf",
+          "arxiv": "2106.09685",
+          "version": "v2",
+          "url": "https://arxiv.org/pdf/2106.09685v2",
+          "sha256": "e9a0d3128767db616085dc0f4e6e455e672e89af823e8ed1282793682787395a",
+          "title": "LoRA",
+          "authors": [
+            "Edward J. Hu",
+            "Yelong Shen",
+            "Phillip Wallis",
+            "Zeyuan Allen-Zhu",
+            "Yuanzhi Li",
+            "Shean Wang",
+            "Lu Wang",
+            "Weizhu Chen"
+          ],
+          "description": "LoRA paper introducing low-rank parameter-efficient adaptation for large language models."
+        }
       ],
       "promptFile": "prompts/ml-foundations.md"
     }

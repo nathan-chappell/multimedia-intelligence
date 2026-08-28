@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from multimedia_intelligence.auth import ensure_builtin_admin
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
 from multimedia_intelligence.files.access import ScopedAgentDataAccess
-from multimedia_intelligence.files.collections import create_collection, selected_collection
+from multimedia_intelligence.files.collections import create_collection, ensure_default_collection
 from multimedia_intelligence.files.domain import (
     AssetState,
     IncludeState,
@@ -32,7 +32,7 @@ async def test_ready_references_are_scoped_and_assets_remain_available() -> None
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     await initialize_schema(engine)
     await ensure_builtin_admin(sessions, TEST_SETTINGS)
-    collection = await selected_collection(sessions, TEST_SETTINGS.admin_user_id)
+    collection = await ensure_default_collection(sessions, TEST_SETTINGS.admin_user_id)
     now = datetime.now(UTC)
     async with sessions.begin() as session:
         session.add(
@@ -66,9 +66,8 @@ async def test_ready_references_are_scoped_and_assets_remain_available() -> None
     await create_collection(
         sessions,
         TEST_SETTINGS.admin_user_id,
-        "Different selected collection",
+        "Different collection",
         None,
-        select_created=True,
     )
     access = ScopedAgentDataAccess(
         sessions,

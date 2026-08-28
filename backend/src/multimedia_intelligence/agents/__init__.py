@@ -1,6 +1,3 @@
-from multimedia_intelligence.agents.graph import (
-    AssistantGraph,
-    ChatAgent,
-)
+from multimedia_intelligence.agents.graph import AssistantGraph
 
-__all__ = ["AssistantGraph", "ChatAgent"]
+__all__ = ["AssistantGraph"]

@@ -16,7 +16,9 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
   const [reconciling, setReconciling] = useState(false);
   const library = useCollectionLibrary();
   const workspace = useConversationWorkspace();
-  const selectedCollection = library.collections.find((collection) => collection.selected);
+  const focusedCollection = library.collections.find(
+    (collection) => collection.id === library.focusedCollectionId,
+  );
 
   async function updateInclusion(file: CollectionFileSummary) {
     setBusyAssetId(file.asset_id);
@@ -52,21 +54,6 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
     }
   }
 
-  async function updateVisibility() {
-    if (!selectedCollection?.can_manage) return;
-    setMessage(null);
-    try {
-      await library.setCollectionPublic(selectedCollection.id, !selectedCollection.is_public);
-      setMessage(
-        selectedCollection.is_public
-          ? "Collection is now private"
-          : "Collection is now public and visible to signed-in users",
-      );
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not update visibility");
-    }
-  }
-
   return (
     <aside className={`panel artifact-panel${fullPage ? " artifact-panel-page" : ""}`} aria-labelledby="artifact-title">
       <div className="panel-heading artifact-heading">
@@ -78,21 +65,19 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
         <div className="file-section-heading">
           <div>
             <span className="eyebrow" id="collection-title">Collection</span>
-            <small>Search index for files selected from your workspace</small>
+            <small>Semantic search index for workspace files</small>
           </div>
           <span className="counter">{library.collectionFiles.length}</span>
         </div>
       <div className="collection-control">
-        <label htmlFor={fullPage ? "active-collection-page" : "active-collection"}>Active collection</label>
+        <label htmlFor={fullPage ? "browse-collection-page" : "browse-collection"}>Browse collection</label>
         <div>
           <select
-            id={fullPage ? "active-collection-page" : "active-collection"}
-            value={library.selectedCollectionId ?? ""}
+            id={fullPage ? "browse-collection-page" : "browse-collection"}
+            value={library.focusedCollectionId ?? ""}
             disabled={library.collections.length === 0}
             onChange={(event) => {
-              void library.selectCollection(event.currentTarget.value).catch((error: unknown) =>
-                setMessage(error instanceof Error ? error.message : "Could not select collection"),
-              );
+              library.selectCollection(event.currentTarget.value);
             }}
           >
             {library.collections.map((collection) => (
@@ -112,28 +97,16 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
             }}
           >New</button>
         </div>
-        {selectedCollection && (
+        {focusedCollection && (
           <div className="collection-access-summary">
-            <span className={`visibility-badge${selectedCollection.is_public ? " public" : ""}`}>
-              {selectedCollection.is_public ? "Public" : "Private"}
-            </span>
-            <small>
-              {selectedCollection.read_only
-                ? "Shared read-only collection. Chat can search its indexed files."
-                : selectedCollection.description || "Only you can add files to this collection."}
-            </small>
-            {selectedCollection.can_manage && (
-              <button type="button" onClick={() => void updateVisibility()}>
-                {selectedCollection.is_public ? "Make private" : "Make public"}
-              </button>
-            )}
+            <span className="visibility-badge">{focusedCollection.slug}</span>
+            <small>{focusedCollection.description || "Your private semantic search index."}</small>
           </div>
         )}
         <div className="collection-secondary-actions">
           <button
             type="button"
-            disabled={reconciling || !selectedCollection?.can_manage}
-            title={selectedCollection?.can_manage ? undefined : "Only the owner can refresh index status"}
+            disabled={reconciling || !focusedCollection}
             onClick={() => void refreshIndex()}
           >
             {reconciling ? "Refreshing…" : "Refresh index status"}
@@ -168,14 +141,10 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
         ) : library.collectionFiles.length === 0 ? (
           <div className="empty-state compact-empty">
             <h3>This collection is empty</h3>
-            <p>
-              {selectedCollection?.read_only
-                ? "The collection owner has not shared any files yet."
-                : "Ask the agent to add a workspace file to this collection."}
-            </p>
+            <p>Ask the agent to add a workspace file to this collection.</p>
           </div>
         ) : (
-          <div className="collection-file-list" aria-label="Files in the selected collection">
+          <div className="collection-file-list" aria-label="Files in the focused collection">
             {library.collectionFiles.map((file) => (
               <article className="collection-file-row" key={file.asset_id}>
                 <span className="file-route-icon" aria-hidden="true">{routeIcon(file.route)}</span>
@@ -242,7 +211,7 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
                   <button
                     className="include-toggle"
                     type="button"
-                    disabled={entry.durability === "uploading" || selectedCollection?.read_only}
+                    disabled={entry.durability === "uploading"}
                     onClick={() => void workspace.saveFile(entry.id)}
                   >
                     {entry.durability === "uploading" ? "Uploading…" : "Upload"}
@@ -290,13 +259,8 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
   );
 }
 
-function collectionLabel(collection: {
-  name: string;
-  is_public: boolean;
-  owned: boolean;
-}): string {
-  if (collection.is_public) return `${collection.name} · Public${collection.owned ? "" : " · Shared"}`;
-  return collection.owned ? collection.name : `${collection.name} · Private · Admin`;
+function collectionLabel(collection: { name: string; slug: string }): string {
+  return `${collection.name} · ${collection.slug}`;
 }
 
 function statusLabel(file: CollectionFileSummary): string {

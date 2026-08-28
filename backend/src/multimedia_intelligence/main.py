@@ -36,6 +36,7 @@ from multimedia_intelligence.files.indexing import (
     OpenAIVectorStoreGateway,
 )
 from multimedia_intelligence.files.s3_store import S3BlobStore
+from multimedia_intelligence.files.transcripts import AssetTranscriptCache
 from multimedia_intelligence.observability import configure_logging
 
 settings = get_settings()
@@ -80,6 +81,17 @@ media_transcription_gateway = (
     if settings.openai_api_key
     else None
 )
+transcript_cache = (
+    AssetTranscriptCache(
+        sessions,
+        blob_store,
+        media_transcription_gateway,
+        settings,
+        billing,
+    )
+    if media_transcription_gateway is not None
+    else None
+)
 file_index = (
     FileIndexReader(
         sessions,
@@ -97,6 +109,7 @@ file_index_writer = (
         vector_store_gateway,
         settings=settings,
         transcription=media_transcription_gateway,
+        transcript_cache=transcript_cache,
         billing=billing,
     )
     if vector_store_gateway is not None
@@ -158,7 +171,7 @@ async def chatkit_endpoint(request: Request) -> Response:
             blob_store,
             file_index,
             file_index_writer,
-            is_admin=user.is_admin,
+            transcript_cache=transcript_cache,
         ),
         request=request,
     )

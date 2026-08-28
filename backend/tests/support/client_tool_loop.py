@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import base64
 import csv
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 import jmespath
-import pypdfium2 as pdfium
 from agents import Agent, RunConfig, RunHooks, Runner, RunResult
 from agents.items import HandoffCallItem, ToolCallItem
 from chatkit.agents import AgentContext, ClientToolCall
@@ -22,6 +22,9 @@ from tests.support.jmespath_commands import JmesPathValidator
 
 type AgentInput = str | list[Any]
 type ToolExecutor = Callable[[ClientToolCall], Awaitable[object]]
+type FunctionOutputBuilder = Callable[
+    [ClientToolCall, dict[str, object]], Awaitable[list[dict[str, object]] | None]
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +61,7 @@ class ClientToolAgentLoop:
         run_config: RunConfig | None = None,
         max_client_rounds: int = 8,
         max_result_bytes: int = 256 * 1024,
+        function_output_builder: FunctionOutputBuilder | None = None,
     ) -> None:
         if max_client_rounds < 1:
             raise ValueError("max_client_rounds must be positive")
@@ -68,6 +72,7 @@ class ClientToolAgentLoop:
         self.run_config = run_config
         self.max_client_rounds = max_client_rounds
         self.max_result_bytes = max_result_bytes
+        self.function_output_builder = function_output_builder
 
     async def run(self, input_value: AgentInput) -> ClientToolLoopResult:
         current_input = input_value
@@ -122,7 +127,14 @@ class ClientToolAgentLoop:
                     call_id=call_id,
                 )
             )
-            current_input = _replace_function_output(result.to_input_list(), call_id, output)
+            function_output: object = output
+            if self.function_output_builder is not None:
+                built = await self.function_output_builder(client_call, output)
+                if built is not None:
+                    function_output = built
+            current_input = _replace_function_output(
+                result.to_input_list(), call_id, function_output
+            )
             current_agent = result.last_agent
 
         raise AssertionError("Unreachable client-tool loop state")
@@ -135,10 +147,12 @@ def _client_call_id(result: RunResult, tool_name: str) -> str:
     raise RuntimeError(f"Client tool {tool_name} did not produce a function call ID")
 
 
-def _replace_function_output(
-    items: list[Any], call_id: str, output: dict[str, object]
-) -> list[Any]:
-    replacement = json.dumps(output, ensure_ascii=False, separators=(",", ":"))
+def _replace_function_output(items: list[Any], call_id: str, output: object) -> list[Any]:
+    replacement: object = (
+        output
+        if isinstance(output, list)
+        else json.dumps(output, ensure_ascii=False, separators=(",", ":"))
+    )
     copied = list(items)
     for index in range(len(copied) - 1, -1, -1):
         item = copied[index]
@@ -191,28 +205,69 @@ class FixtureFileClient:
         except Exception as error:
             return {"ok": False, "error": str(error), "tool": call.name}
 
+    async def function_output_content(
+        self, call: ClientToolCall, output: dict[str, object]
+    ) -> list[dict[str, object]] | None:
+        if output.get("ok") is not True or call.name != "view_file":
+            return None
+        mode = output.get("mode")
+        if mode not in {"pdf", "image"}:
+            return None
+        asset_id = _required_string(call.arguments, "fileId")
+        staged = self.files[asset_id]
+        file_info = output.get("file")
+        filename = (
+            file_info.get("filename")
+            if isinstance(file_info, dict) and isinstance(file_info.get("filename"), str)
+            else staged.path.name
+        )
+        attachment_path = staged.path.with_name(filename)
+        encoded = base64.b64encode(attachment_path.read_bytes()).decode()
+        text_part = {
+            "type": "input_text",
+            "text": json.dumps(output, ensure_ascii=False, separators=(",", ":")),
+        }
+        if mode == "pdf":
+            return [
+                text_part,
+                {
+                    "type": "input_file",
+                    "file_data": f"data:application/pdf;base64,{encoded}",
+                    "filename": filename,
+                    "detail": "high",
+                },
+            ]
+        return [
+            text_part,
+            {
+                "type": "input_image",
+                "image_url": f"data:{staged.media_type};base64,{encoded}",
+                "detail": "high",
+            },
+        ]
+
     def _execute(self, name: str, arguments: dict[str, Any]) -> dict[str, object]:
-        if name == "list_files":
+        if name == "list_workspace_files":
             page = _integer(arguments, "page", default=1, minimum=1)
             files = [self._file_metadata(file) for file in self.files.values()]
-            start = (page - 1) * 10
+            start = (page - 1) * 20
             return {
                 "page": page,
-                "pageSize": 10,
+                "pageSize": 20,
                 "total": len(files),
-                "hasMore": start + 10 < len(files),
-                "files": files[start : start + 10],
+                "hasMore": start + 20 < len(files),
+                "files": files[start : start + 20],
             }
 
         asset_id = _required_string(arguments, "fileId")
         file = self.files.get(asset_id)
         if file is None:
             raise ValueError(f"No staged file is registered for asset ID {asset_id}")
-        if name == "view_image":
-            if file.route is not FileRoute.IMAGE:
-                raise ValueError("Vision inspection requires an image file")
+        if name == "view_file" and file.route is FileRoute.IMAGE:
             return {
                 "fileId": asset_id,
+                "route": "image",
+                "mode": "image",
                 "file": {
                     "fileId": f"asset_saved_{asset_id}",
                     "filename": file.path.name,
@@ -221,17 +276,39 @@ class FixtureFileClient:
                     "durability": "included",
                 },
             }
-        if name == "read_text":
-            start = _integer(arguments, "start", default=0, minimum=0)
-            count = _integer(arguments, "count", default=16_384, minimum=1)
+        if name == "view_file" and file.route in {FileRoute.AUDIO, FileRoute.VIDEO}:
+            return {
+                "fileId": asset_id,
+                "route": file.route.value,
+                "mode": "transcript",
+                "transcript": {
+                    "fileId": asset_id,
+                    "startSeconds": arguments.get("start"),
+                    "endSeconds": None,
+                    "text": "[0.00-1.00] speaker: Fixture transcript for behavioral testing.",
+                    "nextCursor": None,
+                    "complete": True,
+                    "warning": (
+                        "Video transcription analyzes the audio track only."
+                        if file.route is FileRoute.VIDEO
+                        else None
+                    ),
+                },
+            }
+        if name == "view_file" and file.route is not FileRoute.PDF:
+            start = int(arguments.get("start") or 0)
+            count = int(arguments.get("count") or 16_384)
             text = file.path.read_text(encoding="utf-8")
             return {
                 "fileId": asset_id,
+                "route": file.route.value,
+                "mode": "text",
                 "start": start,
+                "count": count,
                 "text": text[start : start + count],
             }
         if name == "query_data":
-            expression = _required_string(arguments, "expression")
+            expression = _required_string(arguments, "jmespathExpression")
             self.jmespath_validator.validate(expression)
             if file.route is FileRoute.TABULAR:
                 with file.path.open(encoding="utf-8", newline="") as handle:
@@ -247,73 +324,51 @@ class FixtureFileClient:
                 value = value[:100]
             return {
                 "fileId": asset_id,
-                "expression": expression,
+                "jmespathExpression": expression,
                 "value": value,
                 "truncated": truncated,
             }
-        if name == "sample_pdf":
+        if name == "view_file" and file.route is FileRoute.PDF:
+            if arguments.get("start") is None and arguments.get("count") is None:
+                return {
+                    "fileId": asset_id,
+                    "route": "pdf",
+                    "mode": "pdf",
+                    "file": {
+                        "fileId": asset_id,
+                        "filename": file.path.name,
+                        "mediaType": "application/pdf",
+                        "sizeBytes": file.path.stat().st_size,
+                        "durability": "included",
+                    },
+                }
             reader = PdfReader(file.path, strict=False)
             page_count = len(reader.pages)
-            start_page = _integer(arguments, "startPage", default=1, minimum=1)
-            end_value = arguments.get("endPage")
-            end_page = (
-                page_count
-                if end_value is None
-                else _integer(arguments, "endPage", minimum=start_page)
-            )
+            start_page = int(arguments.get("start") or 1)
+            count = int(arguments.get("count") or 1)
+            end_page = start_page + count - 1
             if end_page > page_count:
                 raise ValueError(f"Page range must be within 1-{page_count}")
-            count = min(_integer(arguments, "count", default=5, minimum=1), 10)
-            sampled_pages = list(range(start_page, end_page + 1))[:count]
-            mode = arguments.get("outputMode", "text_content")
-            common: dict[str, object] = {
-                "fileId": asset_id,
-                "mode": mode,
-                "pageCount": page_count,
-                "range": {"startPage": start_page, "endPage": end_page},
-            }
-            if mode == "text_content":
-                return {
-                    **common,
-                    "pages": [
-                        {
-                            "page": page,
-                            "text": (reader.pages[page - 1].extract_text() or "")[:16_384],
-                            "truncated": False,
-                        }
-                        for page in sampled_pages
-                    ],
-                }
-            if mode != "as_files":
-                raise ValueError("outputMode must be text_content or as_files")
             writer = PdfWriter()
-            for page in sampled_pages:
+            for page in range(start_page, end_page + 1):
                 writer.add_page(reader.pages[page - 1])
-            target = file.path.with_name(f"{file.path.stem}-sample.pdf")
+            target = file.path.with_name(f"{file.path.stem}-pages-{start_page}-{end_page}.pdf")
             with target.open("wb") as handle:
                 writer.write(handle)
             return {
-                **common,
-                "sampledPages": sampled_pages,
-                "files": [
-                    {
-                        "fileId": f"asset_sample_{asset_id}",
-                        "filename": target.name,
-                        "mediaType": "application/pdf",
-                        "sizeBytes": target.stat().st_size,
-                        "durability": "included",
-                        "originalPages": sampled_pages,
-                    }
-                ],
+                "fileId": asset_id,
+                "route": "pdf",
+                "mode": "pdf",
+                "startPage": start_page,
+                "endPage": end_page,
+                "file": {
+                    "fileId": f"asset_pages_{asset_id}",
+                    "filename": target.name,
+                    "mediaType": "application/pdf",
+                    "sizeBytes": target.stat().st_size,
+                    "durability": "included",
+                },
             }
-        if name == "extract_pdf_pages":
-            start_page = _integer(arguments, "startPage", minimum=1)
-            end_page = _integer(arguments, "endPage", minimum=start_page)
-            return self._extract_pdf(file, start_page, end_page)
-        if name == "view_pdf_page":
-            page = _integer(arguments, "page", minimum=1)
-            scale = _number(arguments, "scale", default=1.75, minimum=0.5, maximum=4.0)
-            return self._render_pdf_page(file, page, scale)
         raise ValueError(f"Unsupported client tool: {name}")
 
     @staticmethod
@@ -325,63 +380,6 @@ class FixtureFileClient:
             "sizeBytes": file.path.stat().st_size,
             "route": file.route.value,
             "durability": "local_browser_only",
-        }
-
-    @staticmethod
-    def _extract_pdf(file: StagedFile, start_page: int, end_page: int) -> dict[str, object]:
-        reader = PdfReader(file.path)
-        if end_page > len(reader.pages):
-            raise ValueError(f"Page range must be within 1-{len(reader.pages)}")
-        writer = PdfWriter()
-        for page_index in range(start_page - 1, end_page):
-            writer.add_page(reader.pages[page_index])
-        target = file.path.with_name(f"{file.path.stem}-{start_page}-{end_page}.pdf")
-        with target.open("wb") as handle:
-            writer.write(handle)
-        return {
-            "artifactId": f"artifact_{file.asset_id}_{start_page}_{end_page}",
-            "sourceFileId": file.asset_id,
-            "kind": "pdf_part",
-            "mediaType": "application/pdf",
-            "sizeBytes": target.stat().st_size,
-            "durability": "transient_browser_only",
-            "nextStep": (
-                "Upload and finalize this derivative through the backend before using it as an "
-                "OpenAI file input."
-            ),
-        }
-
-    @staticmethod
-    def _render_pdf_page(file: StagedFile, page_number: int, scale: float) -> dict[str, object]:
-        document = pdfium.PdfDocument(file.path)
-        try:
-            if page_number > len(document):
-                raise ValueError(f"Page must be within 1-{len(document)}")
-            page = document[page_number - 1]
-            try:
-                # NOTE: cast required due to erroneous parameter type inference.
-                bitmap = page.render(scale=cast(int, scale))
-                try:
-                    image = bitmap.to_pil()
-                    target = file.path.with_name(f"{file.path.stem}-page-{page_number}.png")
-                    image.save(target, format="PNG", optimize=True)
-                finally:
-                    bitmap.close()
-            finally:
-                page.close()
-        finally:
-            document.close()
-        return {
-            "artifactId": f"artifact_{file.asset_id}_page_{page_number}",
-            "sourceFileId": file.asset_id,
-            "kind": "pdf_page_image",
-            "mediaType": "image/png",
-            "sizeBytes": target.stat().st_size,
-            "durability": "transient_browser_only",
-            "nextStep": (
-                "Upload and finalize this derivative through the backend before using it as an "
-                "OpenAI file input."
-            ),
         }
 
 
@@ -418,21 +416,3 @@ def _integer(
     if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
         raise ValueError(f"{key} must be an integer of at least {minimum}")
     return value
-
-
-def _number(
-    arguments: dict[str, Any],
-    key: str,
-    *,
-    default: float,
-    minimum: float,
-    maximum: float,
-) -> float:
-    value = arguments.get(key, default)
-    if (
-        not isinstance(value, int | float)
-        or isinstance(value, bool)
-        or not minimum <= value <= maximum
-    ):
-        raise ValueError(f"{key} must be between {minimum} and {maximum}")
-    return float(value)

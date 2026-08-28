@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Collection
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 from agents import function_tool
 from agents.tool import Tool
@@ -18,44 +18,20 @@ type ClientToolInvoker = Callable[
     [ChatKitToolContext, str, ToolArguments], Awaitable[dict[str, object]]
 ]
 
-LIST_FILES = "list_files"
-READ_TEXT = "read_text"
-SAMPLE_PDF = "sample_pdf"
-VIEW_PDF_PAGE = "view_pdf_page"
-EXTRACT_PDF_PAGES = "extract_pdf_pages"
+LIST_WORKSPACE_FILES = "list_workspace_files"
+VIEW_FILE = "view_file"
 QUERY_DATA = "query_data"
-VIEW_IMAGE = "view_image"
-
-FILE_DISCOVERY_CLIENT_TOOLS = (LIST_FILES,)
-DOCUMENT_CLIENT_TOOLS = (
-    READ_TEXT,
-    SAMPLE_PDF,
-    VIEW_PDF_PAGE,
-    EXTRACT_PDF_PAGES,
-)
-STRUCTURED_DATA_CLIENT_TOOLS = (
-    QUERY_DATA,
-)
-IMAGE_CLIENT_TOOLS = (VIEW_IMAGE,)
-CLIENT_TOOL_NAMES = (
-    *FILE_DISCOVERY_CLIENT_TOOLS,
-    *DOCUMENT_CLIENT_TOOLS,
-    *STRUCTURED_DATA_CLIENT_TOOLS,
-    *IMAGE_CLIENT_TOOLS,
-)
+CLIENT_TOOL_NAMES = (LIST_WORKSPACE_FILES, VIEW_FILE, QUERY_DATA)
 
 
 async def _request_client_tool(
-    context: ChatKitToolContext,
-    name: str,
-    arguments: ToolArguments,
+    context: ChatKitToolContext, name: str, arguments: ToolArguments
 ) -> dict[str, object]:
     """Pause the ChatKit run and ask the browser to execute a bounded operation."""
 
     if context.context.client_tool_call is not None:
         raise RuntimeError("Only one client tool may be requested in an agent turn")
-    call = ClientToolCall(name=name, arguments=arguments)
-    context.context.client_tool_call = call
+    context.context.client_tool_call = ClientToolCall(name=name, arguments=arguments)
     provider_item_id = (
         context.tool_call.id
         if context.tool_call is not None and isinstance(context.tool_call.id, str)
@@ -77,149 +53,77 @@ async def _request_client_tool(
         bridge_configured=bridge is not None,
         provider_item_id_available=provider_item_id is not None,
     )
-    return {
-        "client_tool": name,
-        "status": "waiting_for_browser",
-        "arguments": arguments,
-    }
+    return {"client_tool": name, "status": "waiting_for_browser", "arguments": arguments}
 
 
 def build_file_client_tools(
     invoker: ClientToolInvoker = _request_client_tool,
     *,
     names: Collection[str] | None = None,
+    origin: str | None = None,
 ) -> list[Tool]:
-    """Build tools backed by files in the user's workspace and browser.
+    def tagged(arguments: ToolArguments) -> ToolArguments:
+        if origin is not None:
+            arguments["_agentOrigin"] = origin
+        return arguments
 
-    These tools never receive bucket credentials. Visual inputs and sampled PDF pages may use the
-    authenticated asset endpoint to persist a bounded browser result before the next model turn.
-    """
-
-    @function_tool(name_override=LIST_FILES)
-    async def list_files_tool(
+    @function_tool(name_override=LIST_WORKSPACE_FILES)
+    async def list_workspace_files(
         ctx: ChatKitToolContext,
         page: Annotated[int, Field(ge=1)] = 1,
     ) -> dict[str, object]:
-        """List one page of up to 10 workspace files, including browser files."""
+        """List one page of files in the user's durable browser-backed workspace."""
 
         app_context = ctx.context.request_context
         durable_files: tuple[ReadyFileReference, ...] = ()
         if app_context.data_access is not None:
-            durable_files = await app_context.data_access.list_workspace_files()
+            durable_files = await app_context.data_access.list_workspace_files(page)
         return await invoker(
             ctx,
-            LIST_FILES,
-            {"page": page, "durableFiles": list(durable_files)},
+            LIST_WORKSPACE_FILES,
+            tagged({"page": page, "durableFiles": list(durable_files)}),
         )
 
-    @function_tool(name_override=READ_TEXT)
-    async def read_text_tool(
+    @function_tool(name_override=VIEW_FILE)
+    async def view_file(
         ctx: ChatKitToolContext,
         file_id: str,
-        start: int = 0,
-        count: int = 16_384,
+        start: Annotated[float | None, Field(ge=0)] = None,
+        count: Annotated[float | None, Field(gt=0)] = None,
     ) -> dict[str, object]:
-        """Read a bounded character range from a workspace text file."""
+        """View a file; start/count mean chars, PDF pages, or media seconds by file type."""
 
-        return await invoker(
-            ctx,
-            READ_TEXT,
-            {"fileId": file_id, "start": start, "count": count},
-        )
+        arguments: ToolArguments = {"fileId": file_id, "start": start, "count": count}
+        access = ctx.context.request_context.data_access
+        if access is not None:
+            reference = await access.ensure_workspace_file(file_id)
+            arguments["durableFile"] = reference
+            if reference["route"] in {"audio", "video"}:
+                arguments["transcript"] = await access.view_transcript(file_id, start, count)
+        return await invoker(ctx, VIEW_FILE, tagged(arguments))
 
     @function_tool(name_override=QUERY_DATA)
-    async def query_data_tool(
+    async def query_data(
         ctx: ChatKitToolContext,
         file_id: str,
-        expression: Annotated[str, Field(min_length=1, max_length=4096)],
+        jmespath_expression: Annotated[str, Field(min_length=1, max_length=4_096)],
+        save_output: bool = False,
     ) -> dict[str, object]:
-        """Evaluate JMESPath against workspace JSON or CSV converted to JSON rows."""
+        """Evaluate JMESPath against JSON/CSV and optionally save the JSON result."""
 
         return await invoker(
             ctx,
             QUERY_DATA,
-            {"fileId": file_id, "expression": expression},
+            tagged(
+                {
+                    "fileId": file_id,
+                    "jmespathExpression": jmespath_expression,
+                    "saveOutput": save_output,
+                }
+            ),
         )
 
-    @function_tool(name_override=SAMPLE_PDF)
-    async def sample_pdf_tool(
-        ctx: ChatKitToolContext,
-        file_id: str,
-        start_page: Annotated[int, Field(ge=1)] = 1,
-        end_page: Annotated[int | None, Field(ge=1)] = None,
-        count: Annotated[int, Field(ge=1, le=10)] = 5,
-        output_mode: Literal["text_content", "as_files"] = "text_content",
-    ) -> dict[str, object]:
-        """Randomly sample up to 10 PDF pages as extracted text or one model-readable file."""
-
-        return await invoker(
-            ctx,
-            SAMPLE_PDF,
-            {
-                "fileId": file_id,
-                "startPage": start_page,
-                "endPage": end_page,
-                "count": count,
-                "outputMode": output_mode,
-            },
-        )
-
-    @function_tool(name_override=VIEW_PDF_PAGE)
-    async def view_pdf_page_tool(
-        ctx: ChatKitToolContext,
-        file_id: str,
-        page: int,
-        scale: float = 1.75,
-    ) -> dict[str, object]:
-        """Render one staged PDF page locally and register it as a transient preview artifact."""
-
-        return await invoker(
-            ctx,
-            VIEW_PDF_PAGE,
-            {"fileId": file_id, "page": page, "scale": scale},
-        )
-
-    @function_tool(name_override=EXTRACT_PDF_PAGES)
-    async def extract_pdf_pages_tool(
-        ctx: ChatKitToolContext,
-        file_id: str,
-        start_page: int,
-        end_page: int,
-    ) -> dict[str, object]:
-        """Extract a bounded PDF page range locally as a transient derivative."""
-
-        return await invoker(
-            ctx,
-            EXTRACT_PDF_PAGES,
-            {
-                "fileId": file_id,
-                "startPage": start_page,
-                "endPage": end_page,
-            },
-        )
-
-    @function_tool(name_override=VIEW_IMAGE)
-    async def view_image_tool(
-        ctx: ChatKitToolContext,
-        file_id: str,
-    ) -> dict[str, object]:
-        """Save one workspace image when needed and attach it as high-detail vision input."""
-
-        return await invoker(
-            ctx,
-            VIEW_IMAGE,
-            {"fileId": file_id},
-        )
-
-    tools: list[Tool] = [
-        list_files_tool,
-        read_text_tool,
-        sample_pdf_tool,
-        view_pdf_page_tool,
-        extract_pdf_pages_tool,
-        query_data_tool,
-        view_image_tool,
-    ]
+    tools: list[Tool] = [list_workspace_files, view_file, query_data]
     if names is None:
         return tools
     unknown = set(names).difference(CLIENT_TOOL_NAMES)

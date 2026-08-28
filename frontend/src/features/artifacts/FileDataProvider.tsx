@@ -19,6 +19,7 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
   const [files, setFiles] = useState<IncludedLocalFile[]>([]);
   const [artifacts, setArtifacts] = useState<TransientArtifact[]>([]);
   const [collections, setCollections] = useState<FileCollection[]>([]);
+  const [focusedCollectionId, setFocusedCollectionId] = useState<string | null>(null);
   const [collectionFiles, setCollectionFiles] = useState<CollectionFileSummary[]>([]);
   const [collectionFilesLoading, setCollectionFilesLoading] = useState(false);
   const [collectionFilesError, setCollectionFilesError] = useState<string | null>(null);
@@ -32,7 +33,6 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
   const activeThreadRef = useRef<string | null>(rememberedThreadId());
   const loadGeneration = useRef(0);
   const artifactsRef = useRef(artifacts);
-  const selectedCollectionId = collections.find((collection) => collection.selected)?.id ?? null;
 
   const updateFiles = useCallback(
     (update: (current: IncludedLocalFile[]) => IncludedLocalFile[]) => {
@@ -67,7 +67,13 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
   const loadCollections = useCallback(async () => {
     const response = await authenticatedFetch("/api/collections");
     if (!response.ok) throw new Error(await apiError(response, "Could not load collections"));
-    setCollections((await response.json()) as FileCollection[]);
+    const loaded = (await response.json()) as FileCollection[];
+    setCollections(loaded);
+    setFocusedCollectionId((current) =>
+      current && loaded.some((collection) => collection.id === current)
+        ? current
+        : (loaded[0]?.id ?? null),
+    );
   }, []);
 
   useEffect(() => {
@@ -75,12 +81,12 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
   }, [loadCollections]);
 
   useEffect(() => {
-    if (!selectedCollectionId) {
+    if (!focusedCollectionId) {
       setCollectionFiles([]);
       return;
     }
-    void loadCollectionFiles(selectedCollectionId).catch(console.error);
-  }, [selectedCollectionId, loadCollectionFiles]);
+    void loadCollectionFiles(focusedCollectionId).catch(console.error);
+  }, [focusedCollectionId, loadCollectionFiles]);
 
   useEffect(() => {
     artifactsRef.current = artifacts;
@@ -178,6 +184,7 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
             durableAssetId: entry.asset_id,
             includeId: entry.include_id ?? undefined,
             collectionId: entry.collection_id ?? undefined,
+            sourceFileId: entry.source_asset_id ?? undefined,
           };
         },
       );
@@ -283,6 +290,7 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
           durableAssetId: loaded.asset_id,
           includeId: loaded.include_id ?? undefined,
           collectionId: loaded.collection_id ?? undefined,
+          sourceFileId: loaded.source_asset_id ?? undefined,
         };
         const loadedEntry = entry;
         updateFiles((current) =>
@@ -414,46 +422,14 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
     });
   }, [files, attachSavedFile, saveFile]);
 
-  const selectCollection = useCallback(
-    async (collectionId: string) => {
-      const response = await authenticatedFetch("/api/collections/selection", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ collection_id: collectionId }),
-      });
-      if (!response.ok) throw new Error(await apiError(response, "Could not select collection"));
-      setCollections((current) =>
-        current.map((collection) => ({
-          ...collection,
-          selected: collection.id === collectionId,
-        })),
-      );
-    },
-    [],
-  );
-
-  const setCollectionPublic = useCallback(async (collectionId: string, isPublic: boolean) => {
-    const response = await authenticatedFetch(
-      `/api/collections/${encodeURIComponent(collectionId)}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ is_public: isPublic }),
-      },
-    );
-    if (!response.ok) {
-      throw new Error(await apiError(response, "Could not update collection visibility"));
-    }
-    const updated = (await response.json()) as FileCollection;
-    setCollections((current) =>
-      current.map((collection) => (collection.id === updated.id ? updated : collection)),
-    );
+  const selectCollection = useCallback((collectionId: string) => {
+    setFocusedCollectionId(collectionId);
   }, []);
 
   const refreshCollectionFiles = useCallback(async () => {
-    if (!selectedCollectionId) return;
-    await loadCollectionFiles(selectedCollectionId);
-  }, [selectedCollectionId, loadCollectionFiles]);
+    if (!focusedCollectionId) return;
+    await loadCollectionFiles(focusedCollectionId);
+  }, [focusedCollectionId, loadCollectionFiles]);
 
   const setFileIncluded = useCallback(
     async (assetId: string, included: boolean) => {
@@ -483,30 +459,30 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
 
   const setCollectionFileIncluded = useCallback(
     async (assetId: string, included: boolean) => {
-      if (!selectedCollectionId) throw new Error("Select a collection first");
+      if (!focusedCollectionId) throw new Error("Select a collection first");
       await setFileIncluded(assetId, included);
     },
-    [selectedCollectionId, setFileIncluded],
+    [focusedCollectionId, setFileIncluded],
   );
 
   const reconcileCollection = useCallback(async (): Promise<ReconciliationSummary> => {
-    if (!selectedCollectionId) throw new Error("Select a collection first");
+    if (!focusedCollectionId) throw new Error("Select a collection first");
     const response = await authenticatedFetch(
-      `/api/collections/${encodeURIComponent(selectedCollectionId)}/reconcile`,
+      `/api/collections/${encodeURIComponent(focusedCollectionId)}/reconcile`,
       { method: "POST" },
     );
     if (!response.ok) throw new Error(await apiError(response, "Could not refresh index status"));
     const result = (await response.json()) as ReconciliationSummary;
-    await loadCollectionFiles(selectedCollectionId);
+    await loadCollectionFiles(focusedCollectionId);
     return result;
-  }, [selectedCollectionId, loadCollectionFiles]);
+  }, [focusedCollectionId, loadCollectionFiles]);
 
   const createCollection = useCallback(
     async (name: string, description?: string) => {
       const response = await authenticatedFetch("/api/collections", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, description: description || null, select: true }),
+        body: JSON.stringify({ name, description: description || null }),
       });
       if (!response.ok) throw new Error(await apiError(response, "Could not create collection"));
       await loadCollections();
@@ -577,10 +553,9 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
       collectionFiles,
       collectionFilesLoading,
       collectionFilesError,
-      selectedCollectionId,
+      focusedCollectionId,
       createCollection,
       selectCollection,
-      setCollectionPublic,
       refreshCollectionFiles,
       setCollectionFileIncluded,
       reconcileCollection,
@@ -590,10 +565,9 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
       collectionFiles,
       collectionFilesLoading,
       collectionFilesError,
-      selectedCollectionId,
+      focusedCollectionId,
       createCollection,
       selectCollection,
-      setCollectionPublic,
       refreshCollectionFiles,
       setCollectionFileIncluded,
       reconcileCollection,
@@ -619,6 +593,7 @@ interface SavedAssetResponse extends SaveResponse {
   filename: string;
   media_type: string;
   size_bytes: number;
+  source_asset_id: string | null;
 }
 
 interface WorkspaceHydration {

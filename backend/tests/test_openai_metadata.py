@@ -60,7 +60,7 @@ def test_agent_graph_applies_safety_identifier_and_metadata_to_every_agent() -> 
         metadata={"operation": "agent_turn", "schema_version": "1"},
     )
 
-    for agent in (graph.root, *graph.specialists):
+    for agent in (graph.root, graph.ingestion):
         assert agent.model_settings.extra_args == {"safety_identifier": "a" * 64}
         assert agent.model_settings.metadata == {
             "operation": "agent_turn",

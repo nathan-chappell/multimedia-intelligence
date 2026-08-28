@@ -6,26 +6,30 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Literal, Protocol, TypedDict, cast
+from typing import Any, Literal, Protocol, TypedDict, cast
 from uuid import uuid4
 
 from openai import AsyncOpenAI
 from openai.types.audio import TranscriptionDiarized
 from openai.types.file_chunking_strategy_param import FileChunkingStrategyParam
-from sqlalchemy import func, select, update
+from openai.types.shared_params.comparison_filter import ComparisonFilter
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from multimedia_intelligence.billing.pricing import transcription_cost_microusd
 from multimedia_intelligence.billing.service import BillingService
 from multimedia_intelligence.config import Settings
-from multimedia_intelligence.context import IndexCollectionFileResult, TranscriptPageResult
+from multimedia_intelligence.context import (
+    AgentIndexingPlan,
+    IndexCollectionFileResult,
+    TranscriptPageResult,
+)
 from multimedia_intelligence.openai_metadata import (
     safety_identifier,
     vector_file_attributes,
     vector_store_metadata,
 )
 
-from .collections import selected_collection
 from .domain import AssetState, ObjectLocation
 from .policy import FileRoute, classify_file, normalize_file_route
 from .ports import BlobStore
@@ -104,6 +108,10 @@ class MediaTranscriptionGateway(Protocol):
     async def transcribe(
         self, filename: str, content: bytes, media_type: str
     ) -> DiarizedTranscript: ...
+
+
+class TranscriptPayloadProvider(Protocol):
+    async def ensure_payload(self, asset: AssetRow) -> Mapping[str, object]: ...
 
 
 class OpenAIMediaTranscriptionGateway:
@@ -187,6 +195,20 @@ class ProviderFileState:
 
 
 @dataclass(frozen=True, slots=True)
+class VectorBatchFile:
+    file_id: str
+    attributes: Mapping[str, str | float | bool]
+    chunking_strategy: Mapping[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderBatchState:
+    id: str
+    status: str
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ReconciliationSummary:
     ready: int
     pending: int
@@ -201,8 +223,16 @@ class VectorStoreReader(Protocol):
     async def list_files(self, vector_store_id: str) -> tuple[ProviderFileState, ...]: ...
 
     async def search(
-        self, vector_store_id: str, query: str, max_results: int, collection_id: str
+        self,
+        vector_store_id: str,
+        query: str,
+        max_results: int,
+        collection_ids: Sequence[str] | None,
     ) -> tuple[VectorSearchHit, ...]: ...
+
+    async def retrieve_batch(self, vector_store_id: str, batch_id: str) -> ProviderBatchState: ...
+
+    async def delete_file(self, file_id: str) -> None: ...
 
 
 class VectorStoreWriter(Protocol):
@@ -220,6 +250,12 @@ class VectorStoreWriter(Protocol):
     ) -> str: ...
 
     async def delete_file(self, file_id: str) -> None: ...
+
+    async def upload_file(self, *, filename: str, content: bytes, media_type: str) -> str: ...
+
+    async def start_batch(
+        self, vector_store_id: str, files: Sequence[VectorBatchFile]
+    ) -> ProviderBatchState: ...
 
 
 class OpenAIVectorStoreGateway:
@@ -285,6 +321,53 @@ class OpenAIVectorStoreGateway:
             raise
         return indexed.id
 
+    async def upload_file(self, *, filename: str, content: bytes, media_type: str) -> str:
+        uploaded = await self.client.files.create(
+            file=(filename, content, media_type),
+            purpose="user_data",
+        )
+        return uploaded.id
+
+    async def start_batch(
+        self, vector_store_id: str, files: Sequence[VectorBatchFile]
+    ) -> ProviderBatchState:
+        if not files:
+            raise ValueError("A vector-store batch requires at least one file")
+        batch = await self.client.vector_stores.file_batches.create(
+            vector_store_id,
+            files=cast(
+                Any,
+                [
+                    {
+                        "file_id": item.file_id,
+                        "attributes": dict(item.attributes),
+                        **(
+                            {
+                                "chunking_strategy": cast(
+                                    FileChunkingStrategyParam, item.chunking_strategy
+                                )
+                            }
+                            if item.chunking_strategy is not None
+                            else {}
+                        ),
+                    }
+                    for item in files
+                ],
+            ),
+        )
+        return ProviderBatchState(
+            id=batch.id,
+            status=batch.status,
+            error=None,
+        )
+
+    async def retrieve_batch(self, vector_store_id: str, batch_id: str) -> ProviderBatchState:
+        batch = await self.client.vector_stores.file_batches.retrieve(
+            batch_id,
+            vector_store_id=vector_store_id,
+        )
+        return ProviderBatchState(id=batch.id, status=batch.status)
+
     async def delete_file(self, file_id: str) -> None:
         await self.client.files.delete(file_id)
 
@@ -307,15 +390,42 @@ class OpenAIVectorStoreGateway:
         return tuple(output)
 
     async def search(
-        self, vector_store_id: str, query: str, max_results: int, collection_id: str
+        self,
+        vector_store_id: str,
+        query: str,
+        max_results: int,
+        collection_ids: Sequence[str] | None,
     ) -> tuple[VectorSearchHit, ...]:
-        page = await self.client.vector_stores.search(
-            vector_store_id,
-            query=query,
-            filters={"type": "eq", "key": "collection_id", "value": collection_id},
-            max_num_results=max_results,
-            rewrite_query=True,
-        )
+        filters: ComparisonFilter | None = None
+        if collection_ids:
+            filters = (
+                {
+                    "type": "eq",
+                    "key": "collection_id",
+                    "value": collection_ids[0],
+                }
+                if len(collection_ids) == 1
+                else {
+                    "type": "in",
+                    "key": "collection_id",
+                    "value": list(collection_ids),
+                }
+            )
+        if filters is None:
+            page = await self.client.vector_stores.search(
+                vector_store_id,
+                query=query,
+                max_num_results=max_results,
+                rewrite_query=True,
+            )
+        else:
+            page = await self.client.vector_stores.search(
+                vector_store_id,
+                query=query,
+                filters=filters,
+                max_num_results=max_results,
+                rewrite_query=True,
+            )
         return tuple(
             VectorSearchHit(
                 file_id=result.file_id,
@@ -338,6 +448,7 @@ class FileIndexWriter:
         *,
         settings: Settings | None = None,
         transcription: MediaTranscriptionGateway | None = None,
+        transcript_cache: TranscriptPayloadProvider | None = None,
         billing: BillingService | None = None,
     ) -> None:
         self.sessions = sessions
@@ -345,6 +456,7 @@ class FileIndexWriter:
         self.vectors = vectors
         self.settings = settings
         self.transcription = transcription
+        self.transcript_cache = transcript_cache
         self.billing = billing
         self.max_provider_file_bytes = (
             settings.max_provider_file_bytes if settings is not None else 512 * 1024 * 1024
@@ -428,6 +540,206 @@ class FileIndexWriter:
         ready = await self._get_attempt(ingestion.id)
         return await self._result(ready, asset, reused=False)
 
+    async def index_agent_plan(
+        self,
+        owner_id: str,
+        plan: AgentIndexingPlan,
+    ) -> IndexCollectionFileResult:
+        """Start one agent-authored vector-store batch without waiting for indexing.
+
+        The browser creates any PDF page ranges and the agent creates the reverse index. This
+        method only validates durable lineage, uploads already-created bytes, and starts the
+        provider batch.
+        """
+
+        summary = plan["summary"].strip()
+        if not summary or len(summary) > 4_000:
+            raise ValueError("summary must contain 1–4,000 characters")
+        source = await self._owned_asset(owner_id, plan["sourceFileId"])
+        route = classify_file(source.filename).route
+        normalized = _agent_plan_payload(plan)
+        async with self.sessions() as session:
+            existing = await session.scalar(
+                select(AssetIngestionRow)
+                .where(
+                    AssetIngestionRow.owner_id == owner_id,
+                    AssetIngestionRow.asset_id == source.id,
+                    AssetIngestionRow.collection_id == _required_collection_id(source),
+                    AssetIngestionRow.status.in_((IngestionStatus.INDEXING, IngestionStatus.READY)),
+                    AssetIngestionRow.prepared_json
+                    == json.dumps(normalized, ensure_ascii=False, sort_keys=True),
+                )
+                .order_by(AssetIngestionRow.version.desc())
+            )
+        if existing is not None:
+            return await self._result(existing, source, reused=True)
+
+        now = datetime.now(UTC)
+        async with self.sessions.begin() as session:
+            version = (
+                await session.scalar(
+                    select(func.max(AssetIngestionRow.version)).where(
+                        AssetIngestionRow.asset_id == source.id
+                    )
+                )
+                or 0
+            ) + 1
+            ingestion = AssetIngestionRow(
+                id=f"ing_{uuid4().hex}",
+                asset_id=source.id,
+                owner_id=owner_id,
+                collection_id=_required_collection_id(source),
+                version=version,
+                strategy_version=INDEXING_STRATEGY_VERSION,
+                status=IngestionStatus.INDEXING,
+                route=route,
+                prepared_json=json.dumps(normalized, ensure_ascii=False, sort_keys=True),
+                description=summary,
+                error=None,
+                provider_batch_id=None,
+                is_active=False,
+                created_at=now,
+                updated_at=now,
+                activated_at=None,
+            )
+            session.add(ingestion)
+
+        uploaded_ids: list[str] = []
+        try:
+            artifacts = await self._agent_artifacts(ingestion, source, plan)
+            if not artifacts:
+                raise ValueError("The indexing plan must include at least one representation")
+            store_id = await self._ensure_store(owner_id)
+            batch_files: list[VectorBatchFile] = []
+            for artifact in artifacts:
+                provider_id = await self.vectors.upload_file(
+                    filename=_index_provider_filename(source, artifact),
+                    content=await self._artifact_content(artifact, source),
+                    media_type=artifact.media_type,
+                )
+                uploaded_ids.append(provider_id)
+                await self._mark_artifact_pending(artifact.id, provider_id)
+                artifact.provider_file_id = provider_id
+                batch_files.append(
+                    VectorBatchFile(
+                        file_id=provider_id,
+                        attributes=_index_provider_attributes(source, artifact),
+                        chunking_strategy=_index_chunking_strategy(artifact),
+                    )
+                )
+            batch = await self.vectors.start_batch(store_id, batch_files)
+            async with self.sessions.begin() as session:
+                await session.execute(
+                    update(AssetIngestionRow)
+                    .where(AssetIngestionRow.id == ingestion.id)
+                    .values(
+                        provider_batch_id=batch.id,
+                        error=batch.error,
+                        updated_at=datetime.now(UTC),
+                    )
+                )
+            if batch.status == "completed":
+                for artifact in artifacts:
+                    assert artifact.provider_file_id is not None
+                    await self._mark_artifact_ready(artifact.id, artifact.provider_file_id)
+                old_provider_ids = await self._activate(ingestion.id, source.id)
+                for provider_id in old_provider_ids:
+                    try:
+                        await self.vectors.delete_file(provider_id)
+                    except Exception:
+                        continue
+            elif batch.status in {"failed", "cancelled"}:
+                raise RuntimeError(batch.error or f"Provider batch ended with {batch.status}")
+        except Exception as error:
+            await self._mark_failed(ingestion.id, error)
+            for provider_id in uploaded_ids:
+                try:
+                    await self.vectors.delete_file(provider_id)
+                except Exception:
+                    continue
+            raise
+        current = await self._get_attempt(ingestion.id)
+        return await self._result(current, source, reused=False)
+
+    async def _agent_artifacts(
+        self,
+        ingestion: AssetIngestionRow,
+        source: AssetRow,
+        plan: AgentIndexingPlan,
+    ) -> list[AssetIndexArtifactRow]:
+        artifacts: list[AssetIndexArtifactRow] = []
+        if plan["includeOriginal"]:
+            if classify_file(source.filename).route not in _PROVIDER_NATIVE_ROUTES:
+                raise ValueError(
+                    "This file type requires a source-linked Markdown reverse index instead "
+                    "of provider-native source indexing"
+                )
+            artifacts.append(await self._create_source_artifact(ingestion, source))
+        reverse_id = plan["reverseIndexFileId"]
+        if reverse_id is not None:
+            reverse = await self._owned_derived_asset(source, reverse_id, "reverse index")
+            artifacts.append(
+                await self._create_artifact(
+                    ingestion,
+                    source,
+                    ArtifactKind.TEXT_REVERSE_INDEX,
+                    reverse.media_type,
+                    _asset_location(reverse),
+                    {
+                        "derivedAssetId": reverse.id,
+                        "sourceFileId": source.id,
+                        "format": "reverse-index-markdown",
+                    },
+                )
+            )
+        for selected in plan["ranges"]:
+            derived = await self._owned_derived_asset(source, selected["fileId"], "PDF range")
+            if classify_file(derived.filename).route is not FileRoute.PDF:
+                raise ValueError("PDF range artifacts must be PDF files")
+            start_page = selected["startPage"]
+            end_page = selected["endPage"]
+            if start_page < 1 or end_page < start_page:
+                raise ValueError("PDF page ranges must be positive and ordered")
+            artifacts.append(
+                await self._create_artifact(
+                    ingestion,
+                    source,
+                    ArtifactKind.PDF_RANGE,
+                    derived.media_type,
+                    _asset_location(derived),
+                    {
+                        "derivedAssetId": derived.id,
+                        "sourceFileId": source.id,
+                        "startPage": start_page,
+                        "endPage": end_page,
+                        "title": selected["title"],
+                        **(
+                            {"chapter": selected["chapter"]}
+                            if selected["chapter"] is not None
+                            else {}
+                        ),
+                        **(
+                            {"section": selected["section"]}
+                            if selected["section"] is not None
+                            else {}
+                        ),
+                    },
+                )
+            )
+        return artifacts
+
+    async def _owned_derived_asset(self, source: AssetRow, derived_id: str, label: str) -> AssetRow:
+        async with self.sessions() as session:
+            derived = await session.get(AssetRow, derived_id)
+        if (
+            derived is None
+            or derived.owner_id != source.owner_id
+            or derived.source_asset_id != source.id
+            or derived.state != AssetState.STORED
+        ):
+            raise ValueError(f"The {label} is not a durable derivative of the source file")
+        return derived
+
     def _plan(
         self,
         asset: AssetRow,
@@ -447,8 +759,8 @@ class FileIndexWriter:
             RepresentationMode.SOURCE,
         }
         if mode is RepresentationMode.AUTO:
-            include_description = True
-            include_source = source_supported and route is not FileRoute.JSON
+            include_description = route in {FileRoute.IMAGE, FileRoute.TABULAR}
+            include_source = source_supported
         else:
             include_description = mode in {RepresentationMode.DESCRIPTION, RepresentationMode.BOTH}
             include_source = mode in {RepresentationMode.SOURCE, RepresentationMode.BOTH}
@@ -471,7 +783,7 @@ class FileIndexWriter:
                 "Media exceeds the configured transcription limit; provide a smaller "
                 "browser-derived audio/video asset"
             )
-        if include_transcript and self.transcription is None:
+        if include_transcript and self.transcription is None and self.transcript_cache is None:
             raise RuntimeError("OpenAI media transcription is unavailable")
         if route is FileRoute.VIDEO and include_transcript:
             warnings.append("Video indexing analyzes the audio track only.")
@@ -485,9 +797,7 @@ class FileIndexWriter:
         )
 
     @staticmethod
-    def _matches(
-        active: AssetIngestionRow, description: str, plan: IndexingPlan
-    ) -> bool:
+    def _matches(active: AssetIngestionRow, description: str, plan: IndexingPlan) -> bool:
         try:
             prepared = json.loads(active.prepared_json)
         except (TypeError, json.JSONDecodeError):
@@ -596,17 +906,38 @@ class FileIndexWriter:
         asset: AssetRow,
         route: FileRoute,
     ) -> list[AssetIndexArtifactRow]:
-        assert self.transcription is not None
-        content = await self.blob_store.read_range(_asset_location(asset), 0, asset.size_bytes)
-        transcript = await self.transcription.transcribe(
-            asset.filename,
-            content,
-            asset.media_type,
-        )
-        if self.billing is not None and self.settings is not None:
+        uncached_transcript: DiarizedTranscript | None = None
+        if self.transcript_cache is not None:
+            cached = await self.transcript_cache.ensure_payload(asset)
+            duration_value = cached["duration"]
+            if not isinstance(duration_value, (int, float)):
+                raise ValueError("Cached transcript duration is invalid")
+            duration = float(duration_value)
+            transcript_text = str(cached["text"])
+            segments = list(cast(Sequence[Mapping[str, object]], cached["segments"]))
+            warning_value = cached.get("warning")
+            warning = str(warning_value) if warning_value is not None else None
+        else:
+            assert self.transcription is not None
+            content = await self.blob_store.read_range(_asset_location(asset), 0, asset.size_bytes)
+            uncached_transcript = await self.transcription.transcribe(
+                asset.filename,
+                content,
+                asset.media_type,
+            )
+            duration = uncached_transcript.duration
+            transcript_text = uncached_transcript.text
+            segments = [dict(segment) for segment in uncached_transcript.segments]
+            warning = (
+                "Video indexing analyzes the audio track only."
+                if route is FileRoute.VIDEO
+                else None
+            )
+        if self.transcript_cache is None and self.billing is not None and self.settings is not None:
+            assert uncached_transcript is not None
             amount = transcription_cost_microusd(
-                transcript.model,
-                seconds=transcript.duration,
+                uncached_transcript.model,
+                seconds=duration,
                 markup=self.settings.billing_markup_multiplier,
             )
             await self.billing.append_event(
@@ -614,30 +945,25 @@ class FileIndexWriter:
                 amount_microusd=-amount,
                 event_type="media_diarization",
                 description=f"Media transcription: {asset.filename}",
-                provider_request_id=transcript.request_id,
+                provider_request_id=uncached_transcript.request_id,
                 idempotency_key=(
-                    f"openai:{transcript.request_id}"
-                    if transcript.request_id
+                    f"openai:{uncached_transcript.request_id}"
+                    if uncached_transcript.request_id
                     else f"diarization:{ingestion.id}"
                 ),
                 event_metadata={
-                    "model": transcript.model,
-                    "duration_seconds": transcript.duration,
+                    "model": uncached_transcript.model,
+                    "duration_seconds": duration,
                     "asset_id": asset.id,
                     "markup_multiplier": self.settings.billing_markup_multiplier,
                     "pricing_version": self.settings.billing_pricing_version,
                 },
             )
-        warning = (
-            "Video indexing analyzes the audio track only."
-            if route is FileRoute.VIDEO
-            else None
-        )
         payload = {
-            "duration": transcript.duration,
-            "text": transcript.text,
+            "duration": duration,
+            "text": transcript_text,
             "warning": warning,
-            "segments": list(transcript.segments),
+            "segments": segments,
         }
         transcript_artifact = await self._create_bytes_artifact(
             ingestion,
@@ -645,10 +971,25 @@ class FileIndexWriter:
             ArtifactKind.TRANSCRIPT,
             json.dumps(payload, ensure_ascii=False).encode(),
             "application/json",
-            {"durationSeconds": transcript.duration, "warning": warning},
+            {"durationSeconds": duration, "warning": warning},
         )
         artifacts = [transcript_artifact]
-        for chunk in _transcript_chunks(transcript.segments):
+        segment_payloads: list[TranscriptSegmentPayload] = []
+        for index, segment in enumerate(segments):
+            start_value = segment["start"]
+            end_value = segment["end"]
+            if not isinstance(start_value, (int, float)) or not isinstance(end_value, (int, float)):
+                raise ValueError("Transcript segment timestamps are invalid")
+            segment_payloads.append(
+                TranscriptSegmentPayload(
+                    id=str(segment.get("id", index)),
+                    start=float(start_value),
+                    end=float(end_value),
+                    speaker=str(segment.get("speaker", "speaker")),
+                    text=str(segment["text"]),
+                )
+            )
+        for chunk in _transcript_chunks(segment_payloads):
             artifacts.append(
                 await self._create_bytes_artifact(
                     ingestion,
@@ -670,10 +1011,7 @@ class FileIndexWriter:
         media_type: str,
         metadata: Mapping[str, object],
     ) -> AssetIndexArtifactRow:
-        key = (
-            f"ingestion/{asset.owner_id}/{asset.id}/{ingestion.id}/"
-            f"{uuid4().hex}-{kind.value}"
-        )
+        key = f"ingestion/{asset.owner_id}/{asset.id}/{ingestion.id}/{uuid4().hex}-{kind.value}"
         location = await self.blob_store.put(
             key,
             _bytes_chunks(content),
@@ -769,6 +1107,19 @@ class FileIndexWriter:
                     provider_file_id=provider_id,
                     provider_status="ready",
                     provider_checked_at=now,
+                    provider_error=None,
+                )
+            )
+
+    async def _mark_artifact_pending(self, artifact_id: str, provider_id: str) -> None:
+        async with self.sessions.begin() as session:
+            await session.execute(
+                update(AssetIndexArtifactRow)
+                .where(AssetIndexArtifactRow.id == artifact_id)
+                .values(
+                    provider_file_id=provider_id,
+                    provider_status="pending",
+                    provider_checked_at=datetime.now(UTC),
                     provider_error=None,
                 )
             )
@@ -917,7 +1268,7 @@ class FileIndexReader:
         query: str,
         max_results: int = 8,
         routes: Sequence[str] | None = None,
-        collection_id: str | None = None,
+        collection_ids: Sequence[str] | None = None,
     ) -> tuple[IndexedArtifactSearchResult, ...]:
         query = query.strip()
         if not query:
@@ -925,8 +1276,24 @@ class FileIndexReader:
         if not 1 <= max_results <= 20:
             raise ValueError("max_results must be between 1 and 20")
         allowed = {normalize_file_route(route) for route in routes} if routes else None
-        if collection_id is None:
-            collection_id = (await selected_collection(self.sessions, owner_id)).id
+        async with self.sessions() as session:
+            pending_collection_ids = tuple(
+                dict.fromkeys(
+                    await session.scalars(
+                        select(AssetIngestionRow.collection_id).where(
+                            AssetIngestionRow.owner_id == owner_id,
+                            AssetIngestionRow.status == IngestionStatus.INDEXING,
+                            *(
+                                (AssetIngestionRow.collection_id.in_(collection_ids),)
+                                if collection_ids
+                                else ()
+                            ),
+                        )
+                    )
+                )
+            )
+        for collection_id in pending_collection_ids:
+            await self.reconcile_collection(owner_id, collection_id)
         async with self.sessions() as session:
             store = await session.get(UserVectorStoreRow, owner_id)
         if store is None:
@@ -935,7 +1302,7 @@ class FileIndexReader:
             store.vector_store_id,
             query,
             min(50, max_results * 3),
-            collection_id,
+            collection_ids,
         )
         results: list[IndexedArtifactSearchResult] = []
         for hit in hits:
@@ -943,7 +1310,7 @@ class FileIndexReader:
             if not isinstance(artifact_id, str):
                 continue
             async with self.sessions() as session:
-                artifact = await session.scalar(
+                statement = (
                     select(AssetIndexArtifactRow)
                     .join(
                         AssetIngestionRow,
@@ -956,9 +1323,11 @@ class FileIndexReader:
                         AssetIndexArtifactRow.state == ArtifactState.READY,
                         AssetIngestionRow.is_active.is_(True),
                         AssetIngestionRow.status == IngestionStatus.READY,
-                        AssetIngestionRow.collection_id == collection_id,
                     )
                 )
+                if collection_ids:
+                    statement = statement.where(AssetIngestionRow.collection_id.in_(collection_ids))
+                artifact = await session.scalar(statement)
             if artifact is None:
                 continue
             asset = await self._owned_asset(owner_id, artifact.asset_id)
@@ -990,6 +1359,18 @@ class FileIndexReader:
         checked_at = datetime.now(UTC)
         async with self.sessions() as session:
             store = await session.get(UserVectorStoreRow, owner_id)
+            ingestions = list(
+                await session.scalars(
+                    select(AssetIngestionRow).where(
+                        AssetIngestionRow.owner_id == owner_id,
+                        AssetIngestionRow.collection_id == collection_id,
+                        or_(
+                            AssetIngestionRow.status == IngestionStatus.INDEXING,
+                            AssetIngestionRow.is_active.is_(True),
+                        ),
+                    )
+                )
+            )
             artifacts = list(
                 await session.scalars(
                     select(AssetIndexArtifactRow)
@@ -1001,7 +1382,13 @@ class FileIndexReader:
                         AssetIndexArtifactRow.owner_id == owner_id,
                         AssetIndexArtifactRow.provider_file_id.is_not(None),
                         AssetIngestionRow.collection_id == collection_id,
-                        AssetIngestionRow.is_active.is_(True),
+                        AssetIngestionRow.status.in_(
+                            (IngestionStatus.INDEXING, IngestionStatus.READY)
+                        ),
+                        or_(
+                            AssetIngestionRow.status == IngestionStatus.INDEXING,
+                            AssetIngestionRow.is_active.is_(True),
+                        ),
                     )
                 )
             )
@@ -1029,17 +1416,46 @@ class FileIndexReader:
                 provider_error=message,
             )
 
+        batch_failures: dict[str, str] = {}
+        for ingestion in ingestions:
+            if ingestion.status != IngestionStatus.INDEXING or ingestion.provider_batch_id is None:
+                continue
+            try:
+                batch = await self.vectors.retrieve_batch(
+                    store.vector_store_id, ingestion.provider_batch_id
+                )
+            except Exception:
+                continue
+            if batch.status in {"failed", "cancelled"}:
+                batch_failures[ingestion.id] = (
+                    batch.error or f"Provider batch ended with {batch.status}"
+                )
+
         by_id = {item.id: item for item in provider_files}
+        ingestion_by_id = {item.id: item for item in ingestions}
         known_ids = {artifact.provider_file_id for artifact in artifacts}
         counts = {"ready": 0, "pending": 0, "missing": 0, "failed": 0}
+        ingestion_states: dict[str, list[str]] = {}
+        superseded_provider_ids: list[str] = []
         async with self.sessions.begin() as session:
             for artifact in artifacts:
                 assert artifact.provider_file_id is not None
                 provider = by_id.get(artifact.provider_file_id)
-                if provider is None:
-                    provider_status = "missing"
-                    provider_error = "Provider file was not found"
-                    counts["missing"] += 1
+                batch_error = batch_failures.get(artifact.ingestion_id)
+                if batch_error is not None:
+                    provider_status = "error"
+                    provider_error = batch_error
+                    counts["failed"] += 1
+                elif provider is None:
+                    candidate = ingestion_by_id.get(artifact.ingestion_id)
+                    if candidate is not None and candidate.status == IngestionStatus.INDEXING:
+                        provider_status = "pending"
+                        provider_error = None
+                        counts["pending"] += 1
+                    else:
+                        provider_status = "missing"
+                        provider_error = "Provider file was not found"
+                        counts["missing"] += 1
                 elif provider.status == "completed":
                     provider_status = "ready"
                     provider_error = None
@@ -1057,6 +1473,63 @@ class FileIndexReader:
                     row.provider_status = provider_status
                     row.provider_checked_at = checked_at
                     row.provider_error = provider_error
+                    if provider_status == "ready":
+                        row.state = ArtifactState.READY
+                ingestion_states.setdefault(artifact.ingestion_id, []).append(provider_status)
+
+            for ingestion_id, states in ingestion_states.items():
+                pending_ingestion = await session.get(AssetIngestionRow, ingestion_id)
+                if (
+                    pending_ingestion is None
+                    or pending_ingestion.status != IngestionStatus.INDEXING
+                ):
+                    continue
+                if states and all(state == "ready" for state in states):
+                    previous_ids = tuple(
+                        await session.scalars(
+                            select(AssetIngestionRow.id).where(
+                                AssetIngestionRow.asset_id == pending_ingestion.asset_id,
+                                AssetIngestionRow.is_active.is_(True),
+                                AssetIngestionRow.id != pending_ingestion.id,
+                            )
+                        )
+                    )
+                    if previous_ids:
+                        superseded_provider_ids.extend(
+                            provider_id
+                            for provider_id in await session.scalars(
+                                select(AssetIndexArtifactRow.provider_file_id).where(
+                                    AssetIndexArtifactRow.ingestion_id.in_(previous_ids),
+                                    AssetIndexArtifactRow.provider_file_id.is_not(None),
+                                )
+                            )
+                            if provider_id is not None
+                        )
+                        await session.execute(
+                            update(AssetIngestionRow)
+                            .where(AssetIngestionRow.id.in_(previous_ids))
+                            .values(is_active=False)
+                        )
+                        await session.execute(
+                            update(AssetIndexArtifactRow)
+                            .where(AssetIndexArtifactRow.ingestion_id.in_(previous_ids))
+                            .values(state=ArtifactState.SUPERSEDED)
+                        )
+                    pending_ingestion.status = IngestionStatus.READY
+                    pending_ingestion.is_active = True
+                    pending_ingestion.error = None
+                    pending_ingestion.updated_at = checked_at
+                    pending_ingestion.activated_at = checked_at
+                elif any(state in {"error", "missing"} for state in states):
+                    pending_ingestion.status = IngestionStatus.FAILED
+                    pending_ingestion.error = "Provider batch did not complete successfully"
+                    pending_ingestion.updated_at = checked_at
+
+        for provider_id in superseded_provider_ids:
+            try:
+                await self.vectors.delete_file(provider_id)
+            except Exception:
+                continue
 
         orphaned = sum(
             1
@@ -1484,12 +1957,22 @@ def _index_provider_filename(asset: AssetRow, artifact: AssetIndexArtifactRow) -
             f"{stem}-transcript-{int(_required_number(metadata, 'startSeconds'))}-"
             f"{int(_required_number(metadata, 'endSeconds'))}.md"
         )
+    if artifact.kind == ArtifactKind.TEXT_REVERSE_INDEX:
+        return f"{stem}-reverse-index.md"
+    if artifact.kind == ArtifactKind.PDF_RANGE:
+        metadata = _metadata(artifact)
+        return f"{stem}-pages-{metadata['startPage']}-{metadata['endPage']}.pdf"
     return f"{stem}-retrieval-description-{artifact.id[-8:]}.md"
 
 
 def _index_chunking_strategy(
     artifact: AssetIndexArtifactRow,
 ) -> Mapping[str, object] | None:
+    if artifact.kind == ArtifactKind.TEXT_REVERSE_INDEX:
+        return {
+            "type": "static",
+            "static": {"max_chunk_size_tokens": 4096, "chunk_overlap_tokens": 0},
+        }
     if artifact.kind in {ArtifactKind.DESCRIPTION, ArtifactKind.SOURCE_FILE} and (
         artifact.media_type.startswith("text/")
         or artifact.media_type in {"application/json", "text/csv"}
@@ -1499,6 +1982,26 @@ def _index_chunking_strategy(
             "static": {"max_chunk_size_tokens": 800, "chunk_overlap_tokens": 160},
         }
     return None
+
+
+def _agent_plan_payload(plan: AgentIndexingPlan) -> dict[str, object]:
+    return {
+        "agentAuthored": True,
+        "sourceFileId": plan["sourceFileId"],
+        "collectionSlug": plan["collectionSlug"],
+        "summary": plan["summary"].strip(),
+        "includeOriginal": plan["includeOriginal"],
+        "reverseIndexFileId": plan["reverseIndexFileId"],
+        "ranges": [dict(item) for item in plan["ranges"]],
+        "plan": {
+            "requestedMode": "agent",
+            "includeDescription": plan["reverseIndexFileId"] is not None,
+            "includeSource": plan["includeOriginal"],
+            "includeTranscript": False,
+            "evidenceRefs": [item["fileId"] for item in plan["ranges"]],
+            "warnings": [],
+        },
+    }
 
 
 async def _bytes_chunks(content: bytes) -> AsyncIterator[bytes]:

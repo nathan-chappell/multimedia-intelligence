@@ -29,13 +29,9 @@ test("hydrates the app with a Clerk bearer token", async ({ page }) => {
       contentType: "application/json",
       body: JSON.stringify([{
         id: "collection_general",
+        slug: "general",
         name: "General",
         description: null,
-        selected: true,
-        is_public: false,
-        owned: true,
-        can_manage: true,
-        read_only: false,
       }]),
     }),
   );
@@ -71,13 +67,9 @@ test("navigates between authenticated pages without reloading or rechecking auth
       contentType: "application/json",
       body: JSON.stringify([{
         id: "collection_general",
+        slug: "general",
         name: "General",
         description: null,
-        selected: true,
-        is_public: false,
-        owned: true,
-        can_manage: true,
-        read_only: false,
       }]),
     }),
   );

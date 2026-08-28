@@ -8,75 +8,58 @@ from typing import Any
 from chatkit.types import ClientToolCallItem, WidgetItem
 from chatkit.widgets import WidgetTemplate
 
-_TOOL_RESULT_TEMPLATE = WidgetTemplate.from_file("widgets/tool_result.widget")
+_TEMPLATE = WidgetTemplate.from_file("widgets/tool_result.widget")
+_MAX_TEXT = 2_000
+_MAX_VALUE = 4_000
+_MAX_SERIALIZED = 8_000
 
-_MAX_TEXT_PREVIEW_CHARS = 2_000
-_MAX_PAGE_TEXT_CHARS = 500
-_MAX_STRUCTURED_VALUE_CHARS = 4_000
-_MAX_SERIALIZED_PREVIEW_CHARS = 8_000
-_MAX_FALLBACK_PREVIEW_CHARS = 1_000
-
-_TOOL_LABELS = {
-    "index_file": "Index file",
+_LABELS = {
+    "list_collections": "List collections",
+    "create_markdown_file": "Create Markdown file",
+    "include_file_in_collection": "Include file in collection",
+    "start_collection_indexing": "Start collection indexing",
     "find_files": "Find files",
-    "search_files": "Search files",
-    "read_transcript": "Read transcript",
-    "list_files": "List files",
-    "read_text": "Read text",
+    "semantic_search": "Semantic search",
+    "list_workspace_files": "List workspace files",
+    "view_file": "View file",
     "query_data": "Query data",
-    "sample_pdf": "Sample PDF",
-    "view_pdf_page": "View PDF page",
-    "extract_pdf_pages": "Extract PDF pages",
-    "view_image": "View image",
 }
 
 
 def tool_result_widget_id(tool_call: ClientToolCallItem) -> str:
-    """Return a stable ID so retried continuations cannot duplicate the card."""
+    digest = hashlib.sha256(tool_call.id.encode()).hexdigest()[:24]
+    return f"tool_result_{digest}"
 
-    digest = hashlib.sha256(tool_call.id.encode("utf-8")).hexdigest()[:24]
+
+def server_tool_result_widget_id(tool_call_id: str) -> str:
+    digest = hashlib.sha256(tool_call_id.encode()).hexdigest()[:24]
     return f"tool_result_{digest}"
 
 
 def build_tool_result_widget(tool_call: ClientToolCallItem) -> WidgetItem:
-    """Build a persisted, collapsed ChatKit card for a validated browser result."""
-
     output = tool_call.output if isinstance(tool_call.output, dict) else {}
-    return _build_result_widget(
-        item_id=tool_result_widget_id(tool_call),
-        thread_id=tool_call.thread_id,
-        tool_name=tool_call.name,
-        output=output,
-        source="Workspace tool",
+    return _build(
+        tool_result_widget_id(tool_call),
+        tool_call.thread_id,
+        tool_call.name,
+        output,
+        "Workspace tool",
     )
 
 
-def server_tool_result_widget_id(tool_call_id: str) -> str:
-    digest = hashlib.sha256(tool_call_id.encode("utf-8")).hexdigest()[:24]
-    return f"tool_result_{digest}"
-
-
 def build_server_tool_result_widget(
-    *,
-    thread_id: str,
-    tool_call_id: str,
-    tool_name: str,
-    result: object,
+    *, thread_id: str, tool_call_id: str, tool_name: str, result: object
 ) -> WidgetItem:
-    """Build a sanitized result card for a server-executed file tool."""
-
-    return _build_result_widget(
-        item_id=server_tool_result_widget_id(tool_call_id),
-        thread_id=thread_id,
-        tool_name=tool_name,
-        output=normalize_tool_output(result),
-        source="Collection tool",
+    return _build(
+        server_tool_result_widget_id(tool_call_id),
+        thread_id,
+        tool_name,
+        normalize_tool_output(result),
+        "Collection tool",
     )
 
 
 def normalize_tool_output(result: object) -> dict[str, Any]:
-    """Normalize SDK tool output without exposing attachment URLs or binary data."""
-
     if isinstance(result, dict):
         return result
     if isinstance(result, str):
@@ -97,29 +80,59 @@ def normalize_tool_output(result: object) -> dict[str, Any]:
     return {}
 
 
-def _json_object(value: str) -> dict[str, Any] | None:
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
+def tool_result_summary(tool_name: str, output: dict[str, Any]) -> str:
+    if output.get("ok") is False:
+        return f"{_LABELS.get(tool_name, 'Tool')} failed"
+    if tool_name == "list_workspace_files":
+        total = output.get("total")
+        if isinstance(total, int):
+            return f"Found {total} workspace {'file' if total == 1 else 'files'}"
+    if tool_name == "list_collections":
+        rows = output.get("collections")
+        if isinstance(rows, list):
+            return f"Found {len(rows)} {'collection' if len(rows) == 1 else 'collections'}"
+    if tool_name == "create_markdown_file":
+        return f"Created {output.get('filename', 'Markdown file')}"
+    if tool_name == "include_file_in_collection":
+        filename = output.get("filename")
+        if isinstance(filename, str):
+            return f"{'Already indexed' if output.get('reused') else 'Indexed'} {filename}"
+        return "Collection file indexed"
+    if tool_name == "start_collection_indexing":
+        filename = output.get("filename")
+        status = output.get("status")
+        if isinstance(filename, str):
+            return f"{status or 'indexing'}: {filename}"
+        return "Collection indexing started"
+    if tool_name == "find_files":
+        items = output.get("items")
+        if isinstance(items, list):
+            suffix = "; more available" if output.get("hasMore") is True else ""
+            return f"Found {len(items)} collection {'file' if len(items) == 1 else 'files'}{suffix}"
+    if tool_name == "semantic_search":
+        results = output.get("results")
+        if isinstance(results, list):
+            return f"Found {len(results)} semantic {'match' if len(results) == 1 else 'matches'}"
+    if tool_name == "view_file":
+        return f"Viewed {output.get('route', 'workspace')} file"
+    if tool_name == "query_data":
+        return "Queried and saved data" if output.get("savedFileId") else "Queried structured data"
+    return "Tool completed"
 
 
-def _build_result_widget(
-    *,
+def _build(
     item_id: str,
     thread_id: str,
     tool_name: str,
     output: dict[str, Any],
     source: str,
 ) -> WidgetItem:
-    tool_name = _canonical_tool_name(tool_name)
     preview = _display_preview(tool_name, output)
     serialized = _serialized_preview(preview)
-    widget = _TOOL_RESULT_TEMPLATE.build(
+    widget = _TEMPLATE.build(
         {
             "summary": tool_result_summary(tool_name, output),
-            "detail": f"{source} result · {_TOOL_LABELS.get(tool_name, tool_name)}",
+            "detail": f"{source} result · {_LABELS.get(tool_name, tool_name)}",
             "markdown": f"```json\n{serialized}\n```",
         }
     )
@@ -132,309 +145,165 @@ def _build_result_widget(
     )
 
 
-def tool_result_summary(tool_name: str, output: dict[str, Any]) -> str:
-    tool_name = _canonical_tool_name(tool_name)
-    if output.get("ok") is False:
-        return f"{_TOOL_LABELS.get(tool_name, 'Tool')} failed"
-    if tool_name == "index_file":
-        filename = output.get("filename")
-        reused = output.get("reused") is True
-        if isinstance(filename, str):
-            return f"{'Already indexed' if reused else 'Indexed'} {filename}"
-        return "Collection file indexed"
-    if tool_name == "find_files":
-        items = output.get("items")
-        if isinstance(items, list):
-            noun = "file" if len(items) == 1 else "files"
-            suffix = "; more available" if output.get("hasMore") is True else ""
-            return f"Found {len(items)} collection {noun}{suffix}"
-    if tool_name == "search_files":
-        results = output.get("results")
-        if isinstance(results, list):
-            noun = "match" if len(results) == 1 else "matches"
-            return f"Found {len(results)} collection {noun}"
-    if tool_name == "read_transcript":
-        text = output.get("text")
-        if isinstance(text, str):
-            return f"Read {len(text):,} transcript characters"
-        return "Read transcript"
-    if tool_name == "list_files":
-        total = output.get("total")
-        if isinstance(total, int):
-            noun = "file" if total == 1 else "files"
-            return f"Found {total} workspace {noun}"
-    if tool_name == "read_text":
-        text = output.get("text")
-        if isinstance(text, str):
-            return f"Read {len(text):,} characters"
-    if tool_name == "query_data":
-        return "Queried structured data"
-    if tool_name == "sample_pdf":
-        pages = output.get("pages") or output.get("sampledPages")
-        if isinstance(pages, list):
-            noun = "page" if len(pages) == 1 else "pages"
-            return f"Sampled {len(pages)} PDF {noun}"
-    if tool_name == "view_pdf_page":
-        return "Viewed a PDF page"
-    if tool_name == "extract_pdf_pages":
-        return "Extracted PDF pages"
-    return "Tool completed"
-
-
 def _display_preview(tool_name: str, output: dict[str, Any]) -> dict[str, object]:
-    tool_name = _canonical_tool_name(tool_name)
     if output.get("ok") is False:
         return {
             "ok": False,
             "tool": output.get("tool", tool_name),
             "error": output.get("error", "Tool failed"),
         }
-
-    if tool_name == "index_file":
-        return _selected_fields(
+    if tool_name == "list_workspace_files":
+        files = output.get("files")
+        return {
+            **_fields(output, ("ok", "page", "pageSize", "total", "hasMore")),
+            "files": [
+                _fields(item, ("name", "mediaType", "sizeBytes", "route", "durability"))
+                for item in files or []
+                if isinstance(item, dict)
+            ],
+        }
+    if tool_name == "view_file":
+        transcript = output.get("transcript")
+        text = output.get("text")
+        raw_text = text if isinstance(text, str) else ""
+        if isinstance(transcript, dict) and isinstance(transcript.get("text"), str):
+            raw_text = transcript["text"]
+        excerpt, truncated = _excerpt(raw_text, _MAX_TEXT)
+        return {
+            **_fields(
+                output,
+                (
+                    "ok",
+                    "fileId",
+                    "route",
+                    "mode",
+                    "start",
+                    "count",
+                    "startPage",
+                    "endPage",
+                    "file",
+                ),
+            ),
+            **({"text": excerpt} if raw_text else {}),
+            "displayTruncated": truncated,
+        }
+    if tool_name == "query_data":
+        value = json.dumps(output.get("value"), ensure_ascii=False, default=str)
+        excerpt, truncated = _excerpt(value, _MAX_VALUE)
+        return {
+            **_fields(
+                output,
+                ("ok", "fileId", "jmespathExpression", "truncated", "savedFileId"),
+            ),
+            "valuePreview": excerpt,
+            "valuePreviewFormat": "JSON",
+            "displayTruncated": truncated,
+        }
+    if tool_name == "find_files":
+        items = output.get("items")
+        return {
+            "metadataQuery": output.get("metadataQuery", {}),
+            "items": [
+                _fields(
+                    item,
+                    (
+                        "fileId",
+                        "matchFileId",
+                        "sourceFileId",
+                        "collectionSlug",
+                        "filename",
+                        "mediaType",
+                        "modality",
+                        "sizeBytes",
+                        "createdAt",
+                        "indexed",
+                        "availableActions",
+                    ),
+                )
+                for item in (items or [])[:20]
+                if isinstance(item, dict)
+            ],
+            "hasMore": output.get("hasMore", False),
+            "nextCursor": output.get("nextCursor"),
+        }
+    if tool_name == "semantic_search":
+        results = output.get("results")
+        visible = []
+        for result in (results or [])[:8]:
+            if not isinstance(result, dict):
+                continue
+            snippets = result.get("snippets")
+            visible.append(
+                {
+                    **_fields(
+                        result,
+                        (
+                            "fileId",
+                            "matchFileId",
+                            "sourceFileId",
+                            "filename",
+                            "collectionSlug",
+                            "mediaType",
+                            "modality",
+                            "artifactKind",
+                            "score",
+                        ),
+                    ),
+                    "snippets": [
+                        _excerpt(item, 500)[0]
+                        for item in (snippets or [])[:3]
+                        if isinstance(item, str)
+                    ],
+                }
+            )
+        return {
+            "textQuery": _excerpt(str(output.get("textQuery", "")), 500)[0],
+            "collectionSlugs": output.get("collectionSlugs"),
+            "results": visible,
+        }
+    if tool_name == "list_collections":
+        return _fields(output, ("page", "collections"))
+    if tool_name in {"create_markdown_file", "include_file_in_collection"}:
+        return _fields(
             output,
             (
+                "fileId",
+                "sourceFileId",
                 "filename",
                 "route",
                 "status",
                 "reused",
                 "indexedRepresentations",
                 "providerFileCount",
-                "serverMediaProcessing",
-                "representationMode",
                 "warnings",
             ),
         )
-
-    if tool_name == "find_files":
-        items = output.get("items")
-        public_items: list[dict[str, object]] = []
-        if isinstance(items, list):
-            for candidate in items[:20]:
-                if isinstance(candidate, dict):
-                    public_items.append(
-                        _selected_fields(
-                            candidate,
-                            (
-                                "fileId",
-                                "filename",
-                                "mediaType",
-                                "modality",
-                                "sizeBytes",
-                                "createdAt",
-                                "indexed",
-                                "availableActions",
-                            ),
-                        )
-                    )
-        return {
-            "collectionName": output.get("collectionName"),
-            "filters": output.get("filters", {}),
-            "items": public_items,
-            "hasMore": output.get("hasMore", False),
-            "nextCursor": output.get("nextCursor"),
-        }
-
-    if tool_name == "search_files":
-        collection = output.get("collection")
-        public_collection = (
-            _selected_fields(collection, ("collectionId", "name"))
-            if isinstance(collection, dict)
-            else {}
-        )
-        results = output.get("results")
-        public_results: list[dict[str, object]] = []
-        if isinstance(results, list):
-            for candidate in results[:8]:
-                if not isinstance(candidate, dict):
-                    continue
-                snippets = candidate.get("snippets")
-                public_results.append(
-                    {
-                        **_selected_fields(
-                            candidate,
-                            ("filename", "mediaType", "modality", "artifactKind", "score"),
-                        ),
-                        "snippets": [
-                            _excerpt(snippet, _MAX_PAGE_TEXT_CHARS)[0]
-                            for snippet in snippets[:3]
-                            if isinstance(snippet, str)
-                        ]
-                        if isinstance(snippets, list)
-                        else [],
-                    }
-                )
-        return {
-            "query": _excerpt(str(output.get("query", "")), 500)[0],
-            "collection": public_collection,
-            "results": public_results,
-            "displayTruncated": isinstance(results, list) and len(results) > len(public_results),
-        }
-
-    if tool_name == "read_transcript":
-        text = output.get("text")
-        excerpt, display_truncated = _excerpt(
-            text if isinstance(text, str) else "", _MAX_TEXT_PREVIEW_CHARS
-        )
-        return {
-            **_selected_fields(
-                output,
-                (
-                    "fileId",
-                    "start",
-                    "end",
-                    "hasMore",
-                    "startSeconds",
-                    "endSeconds",
-                    "nextCursor",
-                    "complete",
-                ),
-            ),
-            "text": excerpt,
-            "displayTruncated": display_truncated,
-        }
-
-    if tool_name == "list_files":
-        files = output.get("files")
-        public_files: list[dict[str, object]] = []
-        if isinstance(files, list):
-            for candidate in files:
-                if not isinstance(candidate, dict):
-                    continue
-                public_files.append(
-                    _selected_fields(
-                        candidate,
-                        (
-                            "name",
-                            "mediaType",
-                            "sizeBytes",
-                            "route",
-                            "durability",
-                        ),
-                    )
-                )
-        return {
-            **_selected_fields(output, ("ok", "page", "pageSize", "total", "hasMore")),
-            "files": public_files,
-        }
-
-    if tool_name == "read_text":
-        text = output.get("text")
-        raw_text = text if isinstance(text, str) else ""
-        excerpt, display_truncated = _excerpt(raw_text, _MAX_TEXT_PREVIEW_CHARS)
-        return {
-            **_selected_fields(output, ("ok", "fileId", "start")),
-            "text": excerpt,
-            "displayTruncated": display_truncated,
-        }
-
-    if tool_name == "query_data":
-        value = output.get("value")
-        value_json = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
-        value_excerpt, display_truncated = _excerpt(value_json, _MAX_STRUCTURED_VALUE_CHARS)
-        return {
-            **_selected_fields(output, ("ok", "fileId", "expression", "truncated")),
-            "valuePreview": value_excerpt,
-            "valuePreviewFormat": "JSON",
-            "displayTruncated": display_truncated,
-        }
-
-    if tool_name == "sample_pdf":
-        preview = _selected_fields(
-            output,
-            ("ok", "fileId", "mode", "pageCount", "range", "sampledPages"),
-        )
-        pages = output.get("pages")
-        if isinstance(pages, list):
-            public_pages: list[dict[str, object]] = []
-            for candidate in pages:
-                if not isinstance(candidate, dict):
-                    continue
-                text = candidate.get("text")
-                raw_text = text if isinstance(text, str) else ""
-                excerpt, display_truncated = _excerpt(raw_text, _MAX_PAGE_TEXT_CHARS)
-                public_pages.append(
-                    {
-                        **_selected_fields(candidate, ("page", "truncated")),
-                        "text": excerpt,
-                        "displayTruncated": display_truncated,
-                    }
-                )
-            preview["pages"] = public_pages
-        files = output.get("files")
-        if isinstance(files, list):
-            preview["files"] = [
-                _selected_fields(
-                    candidate,
-                    ("filename", "mediaType", "sizeBytes", "durability", "originalPages"),
-                )
-                for candidate in files
-                if isinstance(candidate, dict)
-            ]
-        return preview
-
-    if tool_name in {"view_pdf_page", "extract_pdf_pages"}:
-        return _selected_fields(
-            output,
-            (
-                "ok",
-                "artifactId",
-                "sourceFileId",
-                "kind",
-                "mediaType",
-                "sizeBytes",
-                "durability",
-                "nextStep",
-                "file",
-            ),
-        )
-
-    if tool_name == "view_image":
-        return _selected_fields(output, ("ok", "fileId", "file"))
-
     return {"ok": output.get("ok", True), "tool": tool_name}
 
 
-def _selected_fields(source: dict[str, Any], fields: tuple[str, ...]) -> dict[str, object]:
+def _fields(source: dict[str, Any], fields: tuple[str, ...]) -> dict[str, object]:
     return {field: source[field] for field in fields if field in source}
 
 
-def _canonical_tool_name(tool_name: str) -> str:
-    return {
-        "index_collection_file": "index_file",
-        "add_to_collection": "index_file",
-        "find_collection_files": "find_files",
-        "file_search": "search_files",
-        "get_transcript": "read_transcript",
-        "read_durable_text_range": "read_text",
-        "read_text_chars": "read_text",
-        "json_chars": "read_text",
-        "query_structured_data": "query_data",
-        "pdf_random_sample": "sample_pdf",
-        "pdf_render_page": "view_pdf_page",
-        "pdf_extract_range": "extract_pdf_pages",
-        "view_workspace_image": "view_image",
-    }.get(tool_name, tool_name)
+def _json_object(value: str) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _excerpt(value: str, limit: int) -> tuple[str, bool]:
-    if len(value) <= limit:
-        return value, False
-    return f"{value[:limit]}…", True
+    return (value, False) if len(value) <= limit else (f"{value[:limit]}…", True)
 
 
 def _serialized_preview(preview: dict[str, object]) -> str:
     serialized = json.dumps(preview, ensure_ascii=False, indent=2, default=str)
-    if len(serialized) <= _MAX_SERIALIZED_PREVIEW_CHARS:
+    if len(serialized) <= _MAX_SERIALIZED:
         return serialized
-
     compact = json.dumps(preview, ensure_ascii=False, separators=(",", ":"), default=str)
-    excerpt, _ = _excerpt(compact, _MAX_FALLBACK_PREVIEW_CHARS)
     return json.dumps(
-        {
-            "resultPreview": excerpt,
-            "displayTruncated": True,
-        },
+        {"resultPreview": _excerpt(compact, 1_000)[0], "displayTruncated": True},
         ensure_ascii=False,
         indent=2,
     )

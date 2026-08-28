@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from uuid import uuid4
-
-from sqlalchemy import event, inspect, select, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -33,52 +30,19 @@ def _ensure_compatibility_columns(connection: Connection) -> None:
                     "ADD COLUMN conversation_checkpoint_id VARCHAR(128) NULL"
                 )
             )
-    if "file_collections" in tables:
-        columns = {column["name"] for column in inspector.get_columns("file_collections")}
-        if "is_public" not in columns:
+    if "asset_ingestions" in tables:
+        columns = {column["name"] for column in inspector.get_columns("asset_ingestions")}
+        if "provider_batch_id" not in columns:
+            connection.execute(
+                text("ALTER TABLE asset_ingestions ADD COLUMN provider_batch_id VARCHAR(255) NULL")
+            )
+        indexes = {index["name"] for index in inspector.get_indexes("asset_ingestions")}
+        if "ix_ingestions_provider_batch" not in indexes:
             connection.execute(
                 text(
-                    "ALTER TABLE file_collections "
-                    "ADD COLUMN is_public BOOLEAN NOT NULL DEFAULT 0"
+                    "CREATE INDEX ix_ingestions_provider_batch "
+                    "ON asset_ingestions (provider_batch_id)"
                 )
-            )
-        connection.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_file_collections_public_cursor "
-                "ON file_collections (is_public, created_at, id)"
-            )
-        )
-    if "assets" in tables:
-        connection.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_assets_owner_collection_state_filename "
-                "ON assets (owner_id, collection_id, state, filename, id)"
-            )
-        )
-    if {"user_workspace_files", "thread_asset_includes"} <= tables:
-        workspace = Base.metadata.tables["user_workspace_files"]
-        includes = Base.metadata.tables["thread_asset_includes"]
-        existing = set(connection.execute(select(workspace.c.owner_id, workspace.c.asset_id)))
-        legacy = set(
-            connection.execute(
-                select(includes.c.owner_id, includes.c.asset_id).where(
-                    includes.c.state == "ready"
-                )
-            )
-        )
-        missing = legacy - existing
-        if missing:
-            connection.execute(
-                workspace.insert(),
-                [
-                    {
-                        "id": f"workspace_{uuid4().hex}",
-                        "owner_id": owner_id,
-                        "asset_id": asset_id,
-                        "created_at": datetime.now(UTC),
-                    }
-                    for owner_id, asset_id in missing
-                ],
             )
 
 

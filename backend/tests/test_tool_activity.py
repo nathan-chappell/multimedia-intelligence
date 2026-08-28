@@ -23,23 +23,23 @@ async def test_server_tool_activity_starts_completes_and_streams_a_card() -> Non
     )
     hook_context = SimpleNamespace(
         context=agent_context,
-        tool_arguments='{"query":"roadmap"}',
+        tool_arguments='{"text_query":"roadmap"}',
     )
     reporter = ToolActivityReporter("thread_1")
 
-    await reporter.start(hook_context, "search_files", "call_1")
+    await reporter.start(hook_context, "semantic_search", "call_1")
     await reporter.end(
         hook_context,
-        "search_files",
+        "semantic_search",
         "call_1",
-        {"query": "roadmap", "collection": {"name": "Docs"}, "results": []},
+        {"textQuery": "roadmap", "collectionSlugs": None, "results": []},
     )
 
     assert agent_context.workflow_item is not None
     task = agent_context.workflow_item.workflow.tasks[0]
     assert isinstance(task, CustomTask)
     assert task.status_indicator == "complete"
-    assert task.content == "Found 0 collection matches"
+    assert task.content == "Found 0 semantic matches"
     events: list[Any] = []
     while not agent_context._events.empty():
         events.append(agent_context._events.get_nowait())
@@ -59,12 +59,12 @@ async def test_browser_tool_activity_remains_loading_until_continuation() -> Non
     hook_context = SimpleNamespace(context=agent_context, tool_arguments='{"page":1}')
     reporter = ToolActivityReporter("thread_1")
 
-    await reporter.start(hook_context, "list_files", "call_1")
+    await reporter.start(hook_context, "list_workspace_files", "call_1")
     await reporter.end(
         hook_context,
-        "list_files",
+        "list_workspace_files",
         "call_1",
-        {"client_tool": "list_files", "status": "waiting_for_browser"},
+        {"client_tool": "list_workspace_files", "status": "waiting_for_browser"},
     )
 
     assert agent_context.workflow_item is not None

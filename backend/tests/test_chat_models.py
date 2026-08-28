@@ -49,34 +49,25 @@ def test_unapproved_or_missing_models_are_rejected() -> None:
         resolve_chat_model(user_message(None), [])
 
 
-def test_selected_model_is_applied_to_manager_and_every_specialist() -> None:
+def test_selected_model_is_applied_to_single_assistant() -> None:
     graph = AssistantGraph(model="gpt-5.6")
     assert graph.root.model == "gpt-5.6"
-    assert {agent.model for agent in graph.specialists} == {"gpt-5.6"}
-    assert graph.specialists == (
-        graph.document,
-        graph.structured_data,
-        graph.media,
-        graph.image,
-    )
 
 
-def test_root_discovers_and_indexes_files_then_delegates_specialist_work() -> None:
+def test_assistant_exposes_compact_tools_and_ingestion_handoff() -> None:
     graph = AssistantGraph(model="gpt-5.6")
     assistant = graph.root
     tool_names = {tool.name for tool in assistant.tools}
     assert tool_names == {
-        "list_files",
+        "list_workspace_files",
+        "list_collections",
+        "create_markdown_file",
         "find_files",
-        "search_files",
-        "index_file",
+        "semantic_search",
+        "view_file",
+        "query_data",
     }
-    assert {handoff.tool_name for handoff in assistant.handoffs} == {
-        "consult_document_specialist",
-        "consult_structured_data_specialist",
-        "consult_media_specialist",
-        "consult_image_specialist",
-    }
+    assert [item.tool_name for item in assistant.handoffs] == ["include_file_in_collection"]
 
 
 def test_runtime_instructions_forbid_server_side_file_processing() -> None:
@@ -84,56 +75,40 @@ def test_runtime_instructions_forbid_server_side_file_processing() -> None:
     assert isinstance(assistant.instructions, str)
     instructions = assistant.instructions
 
-    assert "one durable file set per user" in instructions
-    assert "using its file_id" in instructions
-    assert "adds it and loads it on demand" in instructions
-    assert "Use index_file only when the user explicitly asks" in instructions
-    assert "search index, not the workspace" in instructions
+    assert "workspace is durable" in instructions
+    assert "loads it into the workspace automatically" in instructions
+    assert "include_file_in_collection" in instructions
+    assert "Collections are separate semantic-search indexes" in instructions
 
 
 def test_agent_instructions_are_loaded_from_packaged_markdown() -> None:
     graph = AssistantGraph(model="gpt-5.6")
     instruction_dir = files("multimedia_intelligence.agents").joinpath("instructions")
 
-    for agent, filename in (
-        (graph.root, "root.md"),
-        (graph.document, "document.md"),
-        (graph.structured_data, "structured_data.md"),
-        (graph.media, "media.md"),
-        (graph.image, "image.md"),
-    ):
-        expected = instruction_dir.joinpath(filename).read_text(encoding="utf-8").strip()
-        assert agent.instructions == expected
+    expected = instruction_dir.joinpath("assistant.md").read_text(encoding="utf-8").strip()
+    assert graph.root.instructions == expected
 
 
-def test_specialists_receive_modality_specific_tools() -> None:
+def test_only_specialized_agent_is_collection_ingestion() -> None:
     graph = AssistantGraph(model="gpt-5.6")
-    tool_names = {
-        specialist.name: {tool.name for tool in specialist.tools}
-        for specialist in graph.specialists
+    assert {tool.name for tool in graph.ingestion.tools} == {
+        "view_file",
+        "query_data",
+        "create_markdown_file",
+        "start_collection_indexing",
     }
-    assert tool_names == {
-        "Document specialist": {
-            "read_text",
-            "sample_pdf",
-            "view_pdf_page",
-            "extract_pdf_pages",
-        },
-        "Structured data specialist": {"query_data"},
-        "Media specialist": {"read_transcript"},
-        "Image specialist": {"view_image"},
-    }
+    assert [item.tool_name for item in graph.ingestion.handoffs] == ["return_to_assistant"]
 
 
 def test_client_tool_continuations_resume_with_the_owning_agent() -> None:
     graph = AssistantGraph(model="gpt-5.6")
 
-    assert graph.agent_for_client_tool("list_files") is graph.root
-    assert graph.agent_for_client_tool("sample_pdf").name == "Document specialist"
-    assert graph.agent_for_client_tool("query_data").name == (
-        "Structured data specialist"
+    assert graph.agent_for_client_tool("list_workspace_files") is graph.root
+    assert graph.agent_for_client_tool("view_file") is graph.root
+    assert graph.agent_for_client_tool("query_data") is graph.root
+    assert (
+        graph.agent_for_client_tool("view_file", {"_agentOrigin": "ingestion"}) is graph.ingestion
     )
-    assert graph.agent_for_client_tool("view_image").name == "Image specialist"
 
 
 def test_client_tool_continuation_keeps_the_originating_turn_correlation() -> None:
@@ -144,12 +119,12 @@ def test_client_tool_continuation_keeps_the_originating_turn_correlation() -> No
         created_at=datetime.now(UTC),
         status="completed",
         call_id="call_1",
-        name="list_files",
+        name="list_workspace_files",
         arguments={"page": 1},
         output={
             "ok": True,
             "page": 1,
-            "pageSize": 10,
+            "pageSize": 20,
             "total": 0,
             "hasMore": False,
             "files": [],
@@ -165,34 +140,16 @@ def test_client_tool_continuation_keeps_the_originating_turn_correlation() -> No
 
 def test_client_tool_schemas_are_strict_and_pause_the_turn() -> None:
     graph = AssistantGraph(model="gpt-5.6")
-    all_agents = (graph.root, *graph.specialists)
-    client_tool_names = set(graph.client_tool_agents)
-    client_tools = [
-        tool for agent in all_agents for tool in agent.tools if tool.name in client_tool_names
-    ]
+    client_tool_names = {"list_workspace_files", "view_file", "query_data"}
+    client_tools = [tool for tool in graph.root.tools if tool.name in client_tool_names]
     assert all(
         tool.params_json_schema.get("additionalProperties") is False for tool in client_tools
     )
-    read_tool = next(tool for tool in client_tools if tool.name == "read_text")
-    assert "file_id" in read_tool.params_json_schema["properties"]
-    assert "workspace_file_id" not in read_tool.params_json_schema["properties"]
-    assert "asset_id" not in read_tool.params_json_schema["properties"]
-    assert graph.root.tool_use_behavior == {"stop_at_tool_names": ["list_files"]}
-    document = graph.agent_for_client_tool("sample_pdf")
-    assert document.tool_use_behavior == {
-        "stop_at_tool_names": [
-            "read_text",
-            "sample_pdf",
-            "view_pdf_page",
-            "extract_pdf_pages",
-        ]
+    view_tool = next(tool for tool in client_tools if tool.name == "view_file")
+    assert "file_id" in view_tool.params_json_schema["properties"]
+    assert graph.root.tool_use_behavior == {
+        "stop_at_tool_names": ["list_workspace_files", "view_file", "query_data"]
     }
-    structured = graph.agent_for_client_tool("query_data")
-    assert structured.tool_use_behavior == {
-        "stop_at_tool_names": ["query_data"]
-    }
-    image = graph.agent_for_client_tool("view_image")
-    assert image.tool_use_behavior == {"stop_at_tool_names": ["view_image"]}
 
 
 async def test_conversation_turn_sends_only_the_current_user_message() -> None:
@@ -293,11 +250,11 @@ async def test_conversation_continuation_sends_only_latest_client_tool_output() 
     ]
 
 
-async def test_pdf_file_sample_is_attached_to_function_output_by_signed_url() -> None:
+async def test_viewed_pdf_is_attached_to_function_output_by_signed_url() -> None:
     class FileAccess:
         async def workspace_file_download_url(self, file_id: str) -> str:
-            assert file_id == "asset_sample"
-            return "https://objects.example.test/signed-sample.pdf"
+            assert file_id == "asset_pages"
+            return "https://objects.example.test/signed-pages.pdf"
 
     tool_call = ClientToolCallItem(
         id="tool_pdf",
@@ -305,31 +262,22 @@ async def test_pdf_file_sample_is_attached_to_function_output_by_signed_url() ->
         created_at=datetime.now(UTC),
         status="completed",
         call_id="call_pdf",
-        name="sample_pdf",
-        arguments={
-            "fileId": "local_pdf",
-            "startPage": 1,
-            "endPage": 20,
-            "count": 3,
-            "outputMode": "as_files",
-        },
+        name="view_file",
+        arguments={"fileId": "local_pdf", "start": 2, "count": 3},
         output={
             "ok": True,
             "fileId": "local_pdf",
-            "mode": "as_files",
-            "pageCount": 20,
-            "range": {"startPage": 1, "endPage": 20},
-            "sampledPages": [2, 9, 17],
-            "files": [
-                {
-                    "fileId": "asset_sample",
-                    "filename": "report-sample-2-9-17.pdf",
-                    "mediaType": "application/pdf",
-                    "sizeBytes": 1234,
-                    "durability": "included",
-                    "originalPages": [2, 9, 17],
-                }
-            ],
+            "route": "pdf",
+            "mode": "pdf",
+            "startPage": 2,
+            "endPage": 4,
+            "file": {
+                "fileId": "asset_pages",
+                "filename": "report-pages-2-4.pdf",
+                "mediaType": "application/pdf",
+                "sizeBytes": 1234,
+                "durability": "included",
+            },
         },
     )
     context = RequestContext(
@@ -348,13 +296,13 @@ async def test_pdf_file_sample_is_attached_to_function_output_by_signed_url() ->
     assert output[0]["type"] == "input_text"
     assert output[1] == {
         "type": "input_file",
-        "file_url": "https://objects.example.test/signed-sample.pdf",
-        "filename": "report-sample-2-9-17.pdf",
+        "file_url": "https://objects.example.test/signed-pages.pdf",
+        "filename": "report-pages-2-4.pdf",
         "detail": "high",
     }
 
 
-async def test_rendered_pdf_page_is_attached_as_high_detail_image() -> None:
+async def test_viewed_image_is_attached_as_high_detail_image() -> None:
     class FileAccess:
         async def workspace_file_download_url(self, file_id: str) -> str:
             assert file_id == "asset_page"
@@ -366,16 +314,13 @@ async def test_rendered_pdf_page_is_attached_as_high_detail_image() -> None:
         created_at=datetime.now(UTC),
         status="completed",
         call_id="call_page",
-        name="view_pdf_page",
-        arguments={"fileId": "local_pdf", "page": 4, "scale": 1.75},
+        name="view_file",
+        arguments={"fileId": "local_image"},
         output={
             "ok": True,
-            "artifactId": "artifact_page",
-            "sourceFileId": "local_pdf",
-            "kind": "pdf_page_image",
-            "mediaType": "image/png",
-            "sizeBytes": 1234,
-            "durability": "included",
+            "fileId": "local_image",
+            "route": "image",
+            "mode": "image",
             "file": {
                 "fileId": "asset_page",
                 "filename": "report-page-4.png",
@@ -401,18 +346,20 @@ async def test_rendered_pdf_page_is_attached_as_high_detail_image() -> None:
     }
 
 
-async def test_attachment_client_tool_contract_rejects_missing_file_id() -> None:
+async def test_view_file_attachment_contract_rejects_missing_file_id() -> None:
     tool_call = ClientToolCallItem(
         id="tool_image",
         thread_id="thread_1",
         created_at=datetime.now(UTC),
         status="completed",
         call_id="call_image",
-        name="view_image",
+        name="view_file",
         arguments={"fileId": "local_image"},
         output={
             "ok": True,
             "fileId": "local_image",
+            "route": "image",
+            "mode": "image",
             "file": {
                 "filename": "diagram.png",
                 "mediaType": "image/png",
@@ -422,7 +369,7 @@ async def test_attachment_client_tool_contract_rejects_missing_file_id() -> None
         },
     )
 
-    with pytest.raises(ValueError, match="Invalid view_image client-tool result"):
+    with pytest.raises(ValueError, match="Invalid view_file client-tool result"):
         await MultimediaChatServer._conversation_input(None, [tool_call])
 
 
@@ -455,14 +402,14 @@ def test_missing_chatkit_client_tool_event_is_recovered_from_run_items() -> None
         new_items=[
             SimpleNamespace(
                 type="tool_call_item",
-                tool_name="list_files",
+                tool_name="list_workspace_files",
                 call_id="call_provider",
                 raw_item=SimpleNamespace(id="fc_provider"),
             ),
             SimpleNamespace(
                 type="tool_call_output_item",
                 output=(
-                    "{'client_tool': 'list_files', 'status': 'waiting_for_browser', "
+                    "{'client_tool': 'list_workspace_files', 'status': 'waiting_for_browser', "
                     "'arguments': {'page': 1, 'durableFiles': []}}"
                 ),
             ),
@@ -480,7 +427,7 @@ def test_missing_chatkit_client_tool_event_is_recovered_from_run_items() -> None
     assert event is not None
     assert event.item.id == "fc_provider"
     assert event.item.call_id == "call_provider"
-    assert event.item.name == "list_files"
+    assert event.item.name == "list_workspace_files"
     assert event.item.arguments == {"page": 1, "durableFiles": []}
 
 
@@ -497,7 +444,7 @@ def test_malformed_pending_client_tool_envelope_is_not_recovered() -> None:
             SimpleNamespace(
                 type="tool_call_output_item",
                 output=(
-                    '{"client_tool":"list_files","status":"waiting_for_browser",'
+                    '{"client_tool":"list_workspace_files","status":"waiting_for_browser",'
                     '"arguments":["not","an","object"]}'
                 ),
             )
@@ -521,7 +468,7 @@ def test_missing_chatkit_client_tool_event_is_recovered_from_tool_bridge() -> No
         client=ClientInfo(user_id="user_1", username="reader"),
         client_tool_requests=[
             ClientToolRequest(
-                name="list_files",
+                name="list_workspace_files",
                 arguments={"page": 1, "durableFiles": []},
                 item_id="fc_provider",
                 call_id="call_provider",

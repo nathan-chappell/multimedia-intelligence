@@ -26,13 +26,9 @@ test("adds a local file to the durable user workspace", async ({ page }) => {
       body: JSON.stringify([
         {
           id: "collection_general",
+          slug: "general",
           name: "General",
           description: null,
-          selected: true,
-          is_public: false,
-          owned: true,
-          can_manage: true,
-          read_only: false,
         },
       ]),
     }),
@@ -82,7 +78,7 @@ test("adds a local file to the durable user workspace", async ({ page }) => {
   await expect(page.getByText("Available to tools")).toBeVisible();
 });
 
-test("keeps user workspace files when the selected collection changes", async ({ page }) => {
+test("keeps user workspace files when the focused collection changes", async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem("e2e_clerk_token", "test-token");
     window.sessionStorage.setItem("mi_active_thread_id", "thread_workspace");
@@ -105,32 +101,17 @@ test("keeps user workspace files when the selected collection changes", async ({
   const collections = [
     {
       id: "collection_one",
+      slug: "collection-one",
       name: "Collection one",
       description: null,
-      selected: true,
-      is_public: false,
-      owned: true,
-      can_manage: true,
-      read_only: false,
     },
     {
       id: "collection_two",
+      slug: "collection-two",
       name: "Collection two",
       description: null,
-      selected: false,
-      is_public: false,
-      owned: true,
-      can_manage: true,
-      read_only: false,
     },
   ];
-  await page.route("**/api/collections/selection", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ ...collections[1], selected: true }),
-    }),
-  );
   await page.route("**/api/collections", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(collections) }),
   );
@@ -166,7 +147,7 @@ test("keeps user workspace files when the selected collection changes", async ({
 
   await page.goto("/files");
   await expect(page.getByText("workspace-notes.md")).toBeVisible();
-  await page.getByLabel("Active collection").selectOption("collection_two");
-  await expect(page.getByLabel("Active collection")).toHaveValue("collection_two");
+  await page.getByLabel("Browse collection").selectOption("collection_two");
+  await expect(page.getByLabel("Browse collection")).toHaveValue("collection_two");
   await expect(page.getByText("workspace-notes.md")).toBeVisible();
 });

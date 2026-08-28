@@ -115,8 +115,7 @@ export function ChatPanel() {
         },
       ],
       dictation: { enabled: true },
-      // ChatKit attachments stay disabled. All files use our conversation-scoped
-      // asset and ingestion pipeline instead.
+      // ChatKit attachments stay disabled. Files use the durable workspace instead.
       attachments: { enabled: false },
     },
   });

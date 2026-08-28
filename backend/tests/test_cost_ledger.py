@@ -33,9 +33,9 @@ async def test_cost_dump_recovers_only_the_event_stream_and_is_idempotent(
             FileCollectionRow(
                 id="collection_1",
                 owner_id="user_1",
+                slug="not-part-of-cost-recovery",
                 name="Not part of cost recovery",
                 description=None,
-                is_public=False,
                 created_at=now,
             )
         )
@@ -102,10 +102,7 @@ async def test_cost_dump_recovers_only_the_event_stream_and_is_idempotent(
         assert await session.get(UserRow, "user_1") is None
         assert await session.get(CouponRow, "coupon_1") is None
         assert await session.get(FileCollectionRow, "collection_1") is None
-        assert (
-            await session.scalar(select(func.count()).select_from(LedgerEventRow))
-            == 2
-        )
+        assert await session.scalar(select(func.count()).select_from(LedgerEventRow)) == 2
 
     await source_engine.dispose()
     await target_engine.dispose()

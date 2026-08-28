@@ -32,6 +32,7 @@ class SqlAlchemyAssetRepository:
                     id=asset.id,
                     owner_id=asset.owner_id,
                     collection_id=asset.collection_id,
+                    source_asset_id=asset.source_asset_id,
                     filename=asset.filename,
                     media_type=asset.media_type,
                     size_bytes=asset.size_bytes,

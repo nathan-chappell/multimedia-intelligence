@@ -67,6 +67,7 @@ class Asset:
     state: AssetState
     created_at: datetime
     collection_id: str | None = None
+    source_asset_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

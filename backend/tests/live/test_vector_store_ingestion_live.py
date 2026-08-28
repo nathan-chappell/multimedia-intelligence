@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import os
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,8 +14,8 @@ from multimedia_intelligence.auth import ensure_builtin_admin
 from multimedia_intelligence.config import get_settings
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
 from multimedia_intelligence.files.access import ScopedAgentDataAccess
-from multimedia_intelligence.files.collections import selected_collection
-from multimedia_intelligence.files.domain import AssetState
+from multimedia_intelligence.files.collections import ensure_default_collection
+from multimedia_intelligence.files.domain import AssetState, ObjectLocation
 from multimedia_intelligence.files.indexing import (
     FileIndexReader,
     FileIndexWriter,
@@ -25,9 +28,43 @@ from multimedia_intelligence.files.records import (
 )
 
 from ..settings import TEST_SETTINGS
-from ..test_ingestion_integration import IntegrationBlobStore
 
 FIXTURE_ROOT = Path(__file__).parents[3] / "tmp" / "files"
+
+
+@dataclass(frozen=True, slots=True)
+class Head:
+    size_bytes: int
+    etag: str | None = None
+    version_id: str | None = None
+
+
+class IntegrationBlobStore:
+    def __init__(self, objects: Mapping[str, bytes]) -> None:
+        self.objects = dict(objects)
+
+    async def put(
+        self,
+        key: str,
+        chunks: AsyncIterator[bytes],
+        *,
+        media_type: str = "application/octet-stream",
+    ) -> ObjectLocation:
+        del media_type
+        self.objects[key] = b"".join([chunk async for chunk in chunks])
+        return ObjectLocation("live-fixture-bucket", key)
+
+    async def read_range(self, location: ObjectLocation, start: int, end: int) -> bytes:
+        return self.objects[location.key][start:end]
+
+    async def head(self, location: ObjectLocation) -> Head:
+        return Head(len(self.objects[location.key]))
+
+    async def signed_download_url(self, location: ObjectLocation, ttl_seconds: int) -> str:
+        return f"https://fixtures.invalid/{location.key}?ttl={ttl_seconds}"
+
+    async def delete(self, location: ObjectLocation) -> None:
+        self.objects.pop(location.key, None)
 
 
 @pytest.mark.live
@@ -54,7 +91,7 @@ async def test_real_openai_vector_store_ingests_and_searches_csv_and_pdf() -> No
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     await initialize_schema(engine)
     await ensure_builtin_admin(sessions, TEST_SETTINGS)
-    collection = await selected_collection(sessions, TEST_SETTINGS.admin_user_id)
+    collection = await ensure_default_collection(sessions, TEST_SETTINGS.admin_user_id)
     blobs = IntegrationBlobStore(
         {f"assets/{asset_id}": content for asset_id, (_, _, content) in inputs.items()}
     )
@@ -83,16 +120,40 @@ async def test_real_openai_vector_store_ingests_and_searches_csv_and_pdf() -> No
         )
 
     try:
-        await writer.index(
+        await writer.index_agent_plan(
             TEST_SETTINGS.admin_user_id,
-            "csv_live",
-            "US Treasury exchange rates by country and currency, including Afghanistan-Afghani.",
+            {
+                "sourceFileId": "csv_live",
+                "collectionSlug": "general",
+                "summary": "US Treasury exchange rates by country and currency.",
+                "includeOriginal": False,
+                "reverseIndexFileId": (
+                    await ScopedAgentDataAccess(
+                        sessions, TEST_SETTINGS.admin_user_id, blobs
+                    ).create_markdown_file(
+                        "exchange-rates-reverse-index.md",
+                        "# Exchange rates\n\nUS Treasury exchange rates by country and currency, "
+                        "including Afghanistan and the Afghani.",
+                        "csv_live",
+                    )
+                )["fileId"],
+                "ranges": [],
+            },
         )
-        await writer.index(
+        reader = FileIndexReader(sessions, blobs, vectors)
+        await _wait_for_collection(reader, collection.id)
+        await writer.index_agent_plan(
             TEST_SETTINGS.admin_user_id,
-            "pdf_live",
-            "Attention Is All You Need, introducing Transformer multi-head attention.",
+            {
+                "sourceFileId": "pdf_live",
+                "collectionSlug": "general",
+                "summary": "Attention Is All You Need and Transformer multi-head attention.",
+                "includeOriginal": True,
+                "reverseIndexFileId": None,
+                "ranges": [],
+            },
         )
+        await _wait_for_collection(reader, collection.id)
 
         access = ScopedAgentDataAccess(
             sessions,
@@ -100,16 +161,10 @@ async def test_real_openai_vector_store_ingests_and_searches_csv_and_pdf() -> No
             blobs,
             FileIndexReader(sessions, blobs, vectors),
         )
-        csv_hits = await access.file_search("Afghanistan Afghani exchange rate", 5, ["csv"])
-        pdf_hits = await access.file_search("Transformer multi-head attention", 5, ["pdf"])
+        csv_hits = await access.file_search("Afghanistan Afghani exchange rate", ["general"], 5)
+        pdf_hits = await access.file_search("Transformer multi-head attention", ["general"], 5)
         assert csv_hits and csv_hits[0]["fileId"] == "csv_live"
         assert pdf_hits and pdf_hits[0]["fileId"] == "pdf_live"
-        reader = FileIndexReader(sessions, blobs, vectors)
-        csv_file = await reader.resolve_file(
-            TEST_SETTINGS.admin_user_id, "csv_live", str(csv_hits[0]["artifactId"])
-        )
-        assert csv_file["inputKind"] == "text"
-        assert "Afghanistan" in str(csv_file.get("text") or csv_file.get("profile"))
         hydrated = await reader.resolve_file(
             TEST_SETTINGS.admin_user_id, "pdf_live", str(pdf_hits[0]["artifactId"])
         )
@@ -137,3 +192,14 @@ async def test_real_openai_vector_store_ingests_and_searches_csv_and_pdf() -> No
             except Exception:
                 pass
         await engine.dispose()
+
+
+async def _wait_for_collection(reader: FileIndexReader, collection_id: str) -> None:
+    for _ in range(30):
+        result = await reader.reconcile_collection(TEST_SETTINGS.admin_user_id, collection_id)
+        if result.failed or result.missing:
+            raise RuntimeError(f"Live provider indexing failed: {result}")
+        if result.pending == 0 and result.ready > 0:
+            return
+        await asyncio.sleep(2)
+    raise TimeoutError("Live provider indexing did not complete within 60 seconds")

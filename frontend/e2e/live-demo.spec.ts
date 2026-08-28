@@ -71,6 +71,6 @@ async function login(page: Page): Promise<void> {
 }
 
 async function chooseCollection(page: Page, name: string): Promise<void> {
-  await page.getByLabel("Active collection").selectOption({ label: name });
+  await page.getByLabel("Browse collection").selectOption({ label: name });
   await expect(page.getByRole("status")).toContainText("Collection selected");
 }

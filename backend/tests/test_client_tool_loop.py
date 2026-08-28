@@ -33,16 +33,16 @@ async def test_fixture_client_lists_and_reads_staged_text(tmp_path: Path) -> Non
         [StagedFile(asset_id="asset_text", path=path, media_type="text/markdown")]
     )
 
-    list_call = ClientToolCall(name="list_files", arguments={"page": 1})
+    list_call = ClientToolCall(name="list_workspace_files", arguments={"page": 1})
     listed = _validate(list_call, await client.execute(list_call))
     read_call = ClientToolCall(
-        name="read_text",
+        name="view_file",
         arguments={"fileId": "asset_text", "start": 6, "count": 4},
     )
     read = _validate(read_call, await client.execute(read_call))
 
     assert listed["files"][0]["route"] == FileRoute.MARKUP.value  # type: ignore[index]
-    assert listed["pageSize"] == 10
+    assert listed["pageSize"] == 20
     assert listed["hasMore"] is False
     assert read["text"] == "beta"
 
@@ -71,18 +71,18 @@ async def test_fixture_client_returns_valid_bounded_json_and_csv_results(
 
     json_call = ClientToolCall(
         name="query_data",
-        arguments={"fileId": "asset_json", "expression": "events[*].type"},
+        arguments={"fileId": "asset_json", "jmespathExpression": "events[*].type"},
     )
     csv_rows_call = ClientToolCall(
         name="query_data",
         arguments={
             "fileId": "asset_csv",
-            "expression": "[].{region: region, revenue: revenue}",
+            "jmespathExpression": "[].{region: region, revenue: revenue}",
         },
     )
     csv_mean_call = ClientToolCall(
         name="query_data",
-        arguments={"fileId": "asset_csv", "expression": "avg([].revenue)"},
+        arguments={"fileId": "asset_csv", "jmespathExpression": "avg([].revenue)"},
     )
 
     json_result = _validate(json_call, await client.execute(json_call))
@@ -105,40 +105,39 @@ async def test_fixture_client_samples_text_and_extracts_pdf_range(tmp_path: Path
     with path.open("wb") as handle:
         writer.write(handle)
     client = FixtureFileClient([StagedFile("asset_pdf", path, "application/pdf")])
-    sample_call = ClientToolCall(
-        name="sample_pdf",
-        arguments={
-            "fileId": "asset_pdf",
-            "startPage": 1,
-            "endPage": 3,
-            "count": 2,
-            "outputMode": "text_content",
-        },
+    view_call = ClientToolCall(
+        name="view_file", arguments={"fileId": "asset_pdf", "start": 2, "count": 2}
     )
-    extract_call = ClientToolCall(
-        name="extract_pdf_pages",
-        arguments={"fileId": "asset_pdf", "startPage": 2, "endPage": 3},
-    )
-    render_call = ClientToolCall(
-        name="view_pdf_page",
-        arguments={"fileId": "asset_pdf", "page": 1, "scale": 1.25},
-    )
+    viewed = _validate(view_call, await client.execute(view_call))
 
-    sampled = _validate(sample_call, await client.execute(sample_call))
-    extracted = _validate(extract_call, await client.execute(extract_call))
-    rendered = _validate(render_call, await client.execute(render_call))
+    assert viewed["startPage"] == 2
+    assert viewed["endPage"] == 3
+    assert viewed["file"]["filename"] == "handbook-pages-2-3.pdf"  # type: ignore[index]
 
-    assert sampled["pageCount"] == 3
-    assert [page["page"] for page in sampled["pages"]] == [1, 2]  # type: ignore[union-attr]
-    assert extracted["sourceFileId"] == "asset_pdf"
-    assert extracted["durability"] == "transient_browser_only"
-    assert rendered["kind"] == "pdf_page_image"
-    assert (tmp_path / "handbook-page-1.png").read_bytes().startswith(b"\x89PNG")
+
+async def test_fixture_client_replays_viewed_pdf_as_an_openai_file_input(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "handbook.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    with path.open("wb") as handle:
+        writer.write(handle)
+    client = FixtureFileClient([StagedFile("asset_pdf", path, "application/pdf")])
+    view_call = ClientToolCall(name="view_file", arguments={"fileId": "asset_pdf"})
+    viewed = _validate(view_call, await client.execute(view_call))
+
+    output = await client.function_output_content(view_call, viewed)
+
+    assert output is not None
+    assert json.loads(str(output[0]["text"]))["file"]["fileId"] == "asset_pdf"
+    assert output[1]["type"] == "input_file"
+    assert str(output[1]["file_data"]).startswith("data:application/pdf;base64,")
 
 
 def test_replay_replaces_only_the_matching_client_function_output() -> None:
     history = [
-        {"type": "function_call", "call_id": "call_1", "name": "read_text"},
+        {"type": "function_call", "call_id": "call_1", "name": "view_file"},
         {"type": "function_call_output", "call_id": "call_1", "output": "waiting"},
         {"type": "function_call_output", "call_id": "call_2", "output": "untouched"},
     ]

@@ -16,7 +16,7 @@ from multimedia_intelligence.auth import (
 )
 from multimedia_intelligence.chat.store import ThreadRow
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
-from multimedia_intelligence.files.collections import create_collection, selected_collection
+from multimedia_intelligence.files.collections import create_collection, ensure_default_collection
 from multimedia_intelligence.files.domain import AssetState, IncludeState, ObjectLocation
 from multimedia_intelligence.files.records import (
     AssetRow,
@@ -243,7 +243,6 @@ async def test_user_workspace_survives_collection_selection_changes() -> None:
             TEST_SETTINGS.admin_user_id,
             "Second collection",
             None,
-            select_created=True,
         )
 
         history = await client.get("/api/assets", params={"thread_id": thread.id})
@@ -274,7 +273,7 @@ async def test_derived_chart_list_and_content_are_owner_and_thread_scoped() -> N
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     await initialize_schema(engine)
     await ensure_builtin_admin(sessions, TEST_SETTINGS)
-    collection = await selected_collection(sessions, TEST_SETTINGS.admin_user_id)
+    collection = await ensure_default_collection(sessions, TEST_SETTINGS.admin_user_id)
     now = datetime.now(UTC)
     thread = ThreadMetadata(id="thread_chart", created_at=now)
     png = b"\x89PNG\r\n\x1a\nchart"
@@ -353,7 +352,6 @@ async def test_derived_chart_list_and_content_are_owner_and_thread_scoped() -> N
         TEST_SETTINGS.admin_user_id,
         "Different chart collection",
         None,
-        select_created=True,
     )
     app = FastAPI()
     app.include_router(

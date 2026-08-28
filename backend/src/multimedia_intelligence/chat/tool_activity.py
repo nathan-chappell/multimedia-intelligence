@@ -16,19 +16,17 @@ from .tool_results import (
 )
 
 _CLIENT_TOOLS = {
-    "list_files",
-    "read_text",
+    "list_workspace_files",
+    "view_file",
     "query_data",
-    "sample_pdf",
-    "view_pdf_page",
-    "extract_pdf_pages",
-    "view_image",
 }
 _SERVER_FILE_TOOLS = {
-    "index_file",
+    "list_collections",
+    "create_markdown_file",
+    "include_file_in_collection",
+    "start_collection_indexing",
     "find_files",
-    "search_files",
-    "read_transcript",
+    "semantic_search",
 }
 
 
@@ -132,41 +130,37 @@ def _tool_arguments(context: Any) -> dict[str, Any]:
 
 
 def _started_copy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str | None]:
-    if tool_name == "index_file":
+    if tool_name == "include_file_in_collection":
         return "Adding a file to collection search", "Uploading verified representations"
+    if tool_name == "start_collection_indexing":
+        return "Starting collection indexing", "Uploading verified representations as one batch"
+    if tool_name == "create_markdown_file":
+        return "Creating a Markdown workspace file", None
+    if tool_name == "list_collections":
+        return "Checking collections", f"Listing collection page {arguments.get('page', 1)}"
     if tool_name == "find_files":
-        filename = arguments.get("filename")
+        metadata_query = arguments.get("metadata_query")
+        filename = metadata_query.get("filename") if isinstance(metadata_query, dict) else None
         excerpt = str(filename).strip()[:160] if filename is not None else ""
         return "Checking collection file metadata", (
             f"Filename matching “{excerpt}”" if excerpt else "Filtering by file metadata"
         )
-    if tool_name == "search_files":
-        query = arguments.get("query")
+    if tool_name == "semantic_search":
+        query = arguments.get("text_query")
         excerpt = str(query).strip()[:160] if query is not None else ""
         return "Searching indexed collection contents", (
             f"Looking semantically for “{excerpt}”" if excerpt else None
         )
-    if tool_name == "list_files":
+    if tool_name == "list_workspace_files":
         page = arguments.get("page", 1)
         return "Checking workspace files", f"Listing workspace page {page}"
-    if tool_name == "read_transcript":
-        return "Reading an indexed transcript", None
-    if tool_name == "read_text":
-        return "Reading workspace text in the browser", None
+    if tool_name == "view_file":
+        return "Viewing a workspace file", None
     if tool_name == "query_data":
-        expression = arguments.get("expression")
+        expression = arguments.get("jmespath_expression")
         excerpt = str(expression).strip()[:160] if expression is not None else ""
         return "Querying workspace data in the browser", excerpt or None
-    if tool_name == "sample_pdf":
-        return "Sampling workspace PDF pages in the browser", None
-    if tool_name == "view_pdf_page":
-        page = arguments.get("page")
-        return "Rendering a workspace PDF page in the browser", (
-            f"Page {page}" if isinstance(page, int) else None
-        )
-    if tool_name == "view_image":
-        return "Opening a workspace image for vision", None
-    return "Extracting workspace PDF pages in the browser", None
+    return "Using a workspace file", None
 
 
 def _tool_failed(output: dict[str, Any]) -> bool:

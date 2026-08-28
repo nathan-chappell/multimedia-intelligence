@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from multimedia_intelligence.auth import ensure_builtin_admin
 from multimedia_intelligence.context import ClientInfo, RequestContext
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
-from multimedia_intelligence.files.collections import selected_collection
+from multimedia_intelligence.files.collections import ensure_default_collection
 from multimedia_intelligence.files.domain import AssetState
 from multimedia_intelligence.files.metadata_search import CollectionFileFinder
 from multimedia_intelligence.files.records import AssetIngestionRow, AssetRow, FileCollectionRow
@@ -32,7 +32,7 @@ async def _finder_fixture() -> tuple[
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     await initialize_schema(engine)
     await ensure_builtin_admin(sessions, TEST_SETTINGS)
-    collection = await selected_collection(sessions, TEST_SETTINGS.admin_user_id)
+    collection = await ensure_default_collection(sessions, TEST_SETTINGS.admin_user_id)
     started = datetime(2026, 8, 20, 10, tzinfo=UTC)
     files = (
         ("asset_1", "Quarterly Report.pdf", "application/pdf"),
@@ -89,7 +89,8 @@ async def test_filename_modes_use_indexable_exact_prefix_and_safe_contains() -> 
     engine, _sessions, finder, collection = await _finder_fixture()
 
     exact = await finder.find(
-        collection,
+        TEST_SETTINGS.admin_user_id,
+        [collection],
         filename="Quarterly Report.pdf",
         filename_match="exact",
         created_after=None,
@@ -97,10 +98,10 @@ async def test_filename_modes_use_indexable_exact_prefix_and_safe_contains() -> 
         sort="newest",
         limit=10,
         cursor=None,
-        can_index=True,
     )
     prefix = await finder.find(
-        collection,
+        TEST_SETTINGS.admin_user_id,
+        [collection],
         filename="quarterly",
         filename_match="prefix",
         created_after=None,
@@ -108,10 +109,10 @@ async def test_filename_modes_use_indexable_exact_prefix_and_safe_contains() -> 
         sort="newest",
         limit=10,
         cursor=None,
-        can_index=True,
     )
     contains = await finder.find(
-        collection,
+        TEST_SETTINGS.admin_user_id,
+        [collection],
         filename="report",
         filename_match="contains",
         created_after=None,
@@ -119,10 +120,10 @@ async def test_filename_modes_use_indexable_exact_prefix_and_safe_contains() -> 
         sort="newest",
         limit=10,
         cursor=None,
-        can_index=True,
     )
     percent = await finder.find(
-        collection,
+        TEST_SETTINGS.admin_user_id,
+        [collection],
         filename="100%",
         filename_match="prefix",
         created_after=None,
@@ -130,7 +131,6 @@ async def test_filename_modes_use_indexable_exact_prefix_and_safe_contains() -> 
         sort="newest",
         limit=10,
         cursor=None,
-        can_index=True,
     )
 
     assert [item["fileId"] for item in exact["items"]] == ["asset_1"]
@@ -146,7 +146,8 @@ async def test_date_bounds_and_cursor_pagination_are_stable() -> None:
     before = datetime(2026, 8, 25, 10, tzinfo=UTC)
 
     first = await finder.find(
-        collection,
+        TEST_SETTINGS.admin_user_id,
+        [collection],
         filename=None,
         filename_match="contains",
         created_after=after,
@@ -154,10 +155,10 @@ async def test_date_bounds_and_cursor_pagination_are_stable() -> None:
         sort="oldest",
         limit=2,
         cursor=None,
-        can_index=True,
     )
     second = await finder.find(
-        collection,
+        TEST_SETTINGS.admin_user_id,
+        [collection],
         filename=None,
         filename_match="contains",
         created_after=after,
@@ -165,7 +166,6 @@ async def test_date_bounds_and_cursor_pagination_are_stable() -> None:
         sort="oldest",
         limit=2,
         cursor=first["nextCursor"],
-        can_index=True,
     )
 
     assert [item["fileId"] for item in first["items"]] == ["asset_2", "asset_3"]
@@ -174,7 +174,8 @@ async def test_date_bounds_and_cursor_pagination_are_stable() -> None:
     assert second["hasMore"] is False and second["nextCursor"] is None
     with pytest.raises(ValueError, match="cursor"):
         await finder.find(
-            collection,
+            TEST_SETTINGS.admin_user_id,
+            [collection],
             filename=None,
             filename_match="contains",
             created_after=after,
@@ -182,11 +183,11 @@ async def test_date_bounds_and_cursor_pagination_are_stable() -> None:
             sort="newest",
             limit=2,
             cursor=first["nextCursor"],
-            can_index=True,
         )
     with pytest.raises(ValueError, match="cursor"):
         await finder.find(
-            collection,
+            TEST_SETTINGS.admin_user_id,
+            [collection],
             filename="report",
             filename_match="contains",
             created_after=after,
@@ -194,7 +195,6 @@ async def test_date_bounds_and_cursor_pagination_are_stable() -> None:
             sort="oldest",
             limit=2,
             cursor=first["nextCursor"],
-            can_index=True,
         )
     await engine.dispose()
 
@@ -203,7 +203,8 @@ async def test_results_expose_index_appropriate_agent_actions() -> None:
     engine, _sessions, finder, collection = await _finder_fixture()
 
     owned = await finder.find(
-        collection,
+        TEST_SETTINGS.admin_user_id,
+        [collection],
         filename="quarterly",
         filename_match="contains",
         created_after=None,
@@ -211,10 +212,10 @@ async def test_results_expose_index_appropriate_agent_actions() -> None:
         sort="oldest",
         limit=10,
         cursor=None,
-        can_index=True,
     )
-    public = await finder.find(
-        collection,
+    exact = await finder.find(
+        TEST_SETTINGS.admin_user_id,
+        [collection],
         filename="quarterly-notes.md",
         filename_match="exact",
         created_after=None,
@@ -222,18 +223,13 @@ async def test_results_expose_index_appropriate_agent_actions() -> None:
         sort="oldest",
         limit=10,
         cursor=None,
-        can_index=False,
     )
 
     assert owned["items"][0]["indexed"] is True
-    assert owned["items"][0]["availableActions"] == [
-        "sample_pdf",
-        "view_pdf_page",
-        "extract_pdf_pages",
-    ]
+    assert owned["items"][0]["availableActions"] == ["view_file"]
     assert owned["items"][1]["indexed"] is False
-    assert owned["items"][1]["availableActions"] == ["read_text", "index_file"]
-    assert public["items"][0]["availableActions"] == ["read_text"]
+    assert owned["items"][1]["availableActions"] == ["view_file"]
+    assert exact["items"][0]["availableActions"] == ["view_file"]
     await engine.dispose()
 
 
@@ -245,8 +241,6 @@ async def test_metadata_tool_parses_dates_and_returns_a_json_page() -> None:
             assert filters["created_after"] == datetime(2026, 8, 1, tzinfo=UTC)
             assert filters["limit"] == 5
             return {
-                "collectionId": "col_1",
-                "collectionName": "Research",
                 "items": [],
                 "hasMore": False,
                 "nextCursor": None,
@@ -275,15 +269,16 @@ async def test_metadata_tool_parses_dates_and_returns_a_json_page() -> None:
         context,
         json.dumps(
             {
-                "filename": "report",
-                "filename_match": "prefix",
-                "created_after": "2026-08-01T00:00:00Z",
-                "limit": 5,
+                "metadata_query": {
+                    "filename": "report",
+                    "filename_match": "prefix",
+                    "created_after": "2026-08-01T00:00:00Z",
+                    "limit": 5,
+                },
             }
         ),
     )
 
     assert isinstance(output, ToolOutputText)
     payload = json.loads(output.text)
-    assert payload["collectionName"] == "Research"
-    assert payload["filters"]["createdAfter"] == "2026-08-01T00:00:00+00:00"
+    assert payload["metadataQuery"]["created_after"] == "2026-08-01T00:00:00Z"

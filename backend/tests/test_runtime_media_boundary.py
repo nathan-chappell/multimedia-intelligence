@@ -27,8 +27,6 @@ LOCAL_MEDIA_LIBRARIES = {
 def test_runtime_does_not_import_local_media_processing_libraries() -> None:
     violations: list[str] = []
     for path in PACKAGE_ROOT.rglob("*.py"):
-        if "demo" in path.relative_to(PACKAGE_ROOT).parts:
-            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             imported: tuple[str, ...] = ()
@@ -47,9 +45,7 @@ def test_production_dependencies_exclude_local_media_processors() -> None:
         "project"
     ]
     production = {_dependency_name(item) for item in project["dependencies"]}
-    development = {
-        _dependency_name(item) for item in project["optional-dependencies"]["dev"]
-    }
+    development = {_dependency_name(item) for item in project["optional-dependencies"]["dev"]}
 
     assert production.isdisjoint({"pillow", "pypdf", "pypdfium2"})
     assert {"pillow", "pypdf", "pypdfium2"} <= development

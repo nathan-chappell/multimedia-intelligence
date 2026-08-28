@@ -420,7 +420,6 @@ h1 {
   font-size: 0.58rem;
   text-transform: uppercase;
 }
-.visibility-badge.public { color: #89d9b5; background: rgba(79, 165, 124, 0.14); }
 .empty-state { padding: 56px 32px 34px; text-align: center; }
 .empty-state h3 { margin-bottom: 8px; font-size: 1rem; font-weight: 500; }
 .empty-state p { color: #8fa09a; font-size: 0.82rem; line-height: 1.55; }

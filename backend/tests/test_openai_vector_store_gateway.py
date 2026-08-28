@@ -6,7 +6,10 @@ from typing import cast
 import pytest
 from openai import AsyncOpenAI
 
-from multimedia_intelligence.files.indexing import OpenAIVectorStoreGateway
+from multimedia_intelligence.files.indexing import (
+    OpenAIVectorStoreGateway,
+    VectorBatchFile,
+)
 
 
 class RecordingFiles:
@@ -29,6 +32,15 @@ class RecordingVectorFiles:
             status="completed",
             last_error=None,
         )
+
+
+class RecordingFileBatches:
+    def __init__(self) -> None:
+        self.created: list[tuple[str, dict[str, object]]] = []
+
+    async def create(self, vector_store_id: str, **kwargs: object) -> SimpleNamespace:
+        self.created.append((vector_store_id, kwargs))
+        return SimpleNamespace(id="batch_test", status="in_progress")
 
 
 @pytest.mark.parametrize(
@@ -73,3 +85,51 @@ async def test_vector_store_upload_uses_user_data_purpose(
     if chunking_strategy is not None:
         expected_attachment["chunking_strategy"] = chunking_strategy
     assert vector_files.attached == [expected_attachment]
+
+
+async def test_vector_batch_preserves_per_file_attributes_and_chunking() -> None:
+    batches = RecordingFileBatches()
+    gateway = OpenAIVectorStoreGateway("test-api-key")
+    gateway.client = cast(
+        AsyncOpenAI,
+        SimpleNamespace(vector_stores=SimpleNamespace(file_batches=batches)),
+    )
+    strategy = {
+        "type": "static",
+        "static": {"max_chunk_size_tokens": 4096, "chunk_overlap_tokens": 0},
+    }
+
+    result = await gateway.start_batch(
+        "vs_test",
+        [
+            VectorBatchFile(
+                file_id="file_reverse",
+                attributes={"artifact_kind": "text_reverse_index"},
+                chunking_strategy=strategy,
+            ),
+            VectorBatchFile(
+                file_id="file_pdf",
+                attributes={"artifact_kind": "source_file"},
+            ),
+        ],
+    )
+
+    assert result.id == "batch_test" and result.status == "in_progress"
+    assert batches.created == [
+        (
+            "vs_test",
+            {
+                "files": [
+                    {
+                        "file_id": "file_reverse",
+                        "attributes": {"artifact_kind": "text_reverse_index"},
+                        "chunking_strategy": strategy,
+                    },
+                    {
+                        "file_id": "file_pdf",
+                        "attributes": {"artifact_kind": "source_file"},
+                    },
+                ]
+            },
+        )
+    ]

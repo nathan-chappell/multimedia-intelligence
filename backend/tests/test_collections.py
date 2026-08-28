@@ -2,12 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from chatkit.types import ThreadMetadata
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
 
-from multimedia_intelligence.api.assets import build_asset_router
 from multimedia_intelligence.api.collections import build_collection_router
 from multimedia_intelligence.auth import (
     AuthenticatedUser,
@@ -15,273 +12,178 @@ from multimedia_intelligence.auth import (
     ensure_identity_row,
     mint_access_token,
 )
-from multimedia_intelligence.chat.store import ThreadRow
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
-from multimedia_intelligence.files.access import ScopedAgentDataAccess
-from multimedia_intelligence.files.collections import (
-    create_collection,
-    select_collection,
-    selected_collection,
+from multimedia_intelligence.files.collections import collection_by_slug, ensure_default_collection
+from multimedia_intelligence.files.domain import AssetState
+from multimedia_intelligence.files.records import (
+    AssetIndexArtifactRow,
+    AssetIngestionRow,
+    AssetRow,
 )
-from multimedia_intelligence.files.indexing import FileIndexReader, VectorSearchHit
-from multimedia_intelligence.files.records import AssetIngestionRow
 
 from .settings import TEST_SETTINGS
-from .test_file_indexing import setup_service
 
 
-async def test_collection_api_creates_and_persists_global_selection() -> None:
+def _token(user: AuthenticatedUser) -> str:
+    return mint_access_token(user, TEST_SETTINGS)[0]
+
+
+async def _setup_asset(*, ready: bool) -> tuple[object, object, str]:
+    engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
+    await initialize_schema(engine)
+    await ensure_builtin_admin(sessions, TEST_SETTINGS)
+    collection = await ensure_default_collection(sessions, TEST_SETTINGS.admin_user_id)
+    now = datetime.now(UTC)
+    async with sessions.begin() as session:
+        session.add(
+            AssetRow(
+                id="notes",
+                owner_id=TEST_SETTINGS.admin_user_id,
+                collection_id=collection.id,
+                source_asset_id=None,
+                filename="demo.md",
+                media_type="text/markdown",
+                size_bytes=20,
+                sha256="0" * 64,
+                bucket="bucket",
+                object_key="notes",
+                state=AssetState.STORED,
+                created_at=now,
+            )
+        )
+    if ready:
+        async with sessions.begin() as session:
+            session.add(
+                AssetIngestionRow(
+                    id="ingestion",
+                    asset_id="notes",
+                    owner_id=TEST_SETTINGS.admin_user_id,
+                    collection_id=collection.id,
+                    version=1,
+                    strategy_version="test",
+                    status="ready",
+                    route="markup",
+                    prepared_json="{}",
+                    description="Interview demo notes.",
+                    is_active=True,
+                    created_at=now,
+                    updated_at=now,
+                    activated_at=now,
+                )
+            )
+        async with sessions.begin() as session:
+            session.add(
+                AssetIndexArtifactRow(
+                    id="artifact",
+                    ingestion_id="ingestion",
+                    asset_id="notes",
+                    owner_id=TEST_SETTINGS.admin_user_id,
+                    kind="source_file",
+                    state="ready",
+                    bucket="bucket",
+                    object_key="notes",
+                    media_type="text/markdown",
+                    provider_file_id="file_test",
+                    provider_status="ready",
+                    metadata_json="{}",
+                    created_at=now,
+                )
+            )
+    return engine, sessions, collection.id
+
+
+async def test_collection_api_uses_owner_scoped_stable_slugs_without_selection() -> None:
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     await initialize_schema(engine)
     await ensure_builtin_admin(sessions, TEST_SETTINGS)
     app = FastAPI()
     app.include_router(build_collection_router(sessions, TEST_SETTINGS), prefix="/api")
-    token, _ = mint_access_token(
-        AuthenticatedUser(
-            id=TEST_SETTINGS.admin_user_id,
-            username=TEST_SETTINGS.admin_username,
-            is_admin=True,
-        ),
-        TEST_SETTINGS,
+    admin = AuthenticatedUser(
+        id=TEST_SETTINGS.admin_user_id,
+        username=TEST_SETTINGS.admin_username,
+        is_admin=True,
     )
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {_token(admin)}"},
     ) as client:
         initial = await client.get("/api/collections")
         created = await client.post(
             "/api/collections",
-            json={"name": "ML Papers", "description": "Important ML research", "select": True},
+            json={"name": "ML Papers", "description": "Important ML research"},
         )
-        listed = await client.get("/api/collections")
         duplicate = await client.post("/api/collections", json={"name": "ML Papers"})
-        restored = await client.put(
-            "/api/collections/selection",
-            json={"collection_id": initial.json()[0]["id"]},
-        )
+        listed = await client.get("/api/collections")
 
-    assert initial.status_code == 200
-    assert initial.json()[0]["name"] == "General"
-    assert initial.json()[0]["selected"] is True
-    assert initial.json()[0]["is_public"] is False
-    assert initial.json()[0]["owned"] is True
-    assert created.status_code == 201
-    assert created.json()["selected"] is True
-    assert {item["name"] for item in listed.json()} == {"General", "ML Papers"}
-    assert next(item for item in listed.json() if item["name"] == "ML Papers")["selected"]
-    assert duplicate.status_code == 409
-    assert restored.json()["name"] == "General"
-    assert (await selected_collection(sessions, TEST_SETTINGS.admin_user_id)).id == restored.json()[
-        "id"
+    assert initial.json() == [
+        {
+            "id": initial.json()[0]["id"],
+            "slug": "general",
+            "name": "General",
+            "description": "Default file collection",
+        }
     ]
+    assert created.status_code == 201
+    assert created.json()["slug"] == "ml-papers"
+    assert duplicate.status_code == 409
+    assert {item["slug"] for item in listed.json()} == {"general", "ml-papers"}
+    assert (await collection_by_slug(sessions, admin.id, "ml-papers")).id == created.json()["id"]
     await engine.dispose()
 
 
-async def test_public_collection_is_selectable_and_read_only_for_another_user() -> None:
-    engine, sessions, blobs, vectors, _, service = await setup_service(
-        [("shared-notes", "shared.md", "text/markdown", b"# Shared\nDemo evidence")]
-    )
-    prepared = await service.prepare(TEST_SETTINGS.admin_user_id, "shared-notes")
-    await service.commit(
-        TEST_SETTINGS.admin_user_id,
-        str(prepared["ingestionId"]),
-        "Shared interview evidence.",
-    )
-    collection_id = str(prepared["collectionId"])
+async def test_collections_and_files_are_private_to_the_owner() -> None:
+    engine, sessions, collection_id = await _setup_asset(ready=False)
     viewer = AuthenticatedUser(id="user_viewer", username="Viewer", is_admin=False)
     await ensure_identity_row(sessions, viewer)
-    viewer_token, _ = mint_access_token(viewer, TEST_SETTINGS)
-    admin_token, _ = mint_access_token(
-        AuthenticatedUser(
-            id=TEST_SETTINGS.admin_user_id,
-            username=TEST_SETTINGS.admin_username,
-            is_admin=True,
-        ),
-        TEST_SETTINGS,
-    )
     app = FastAPI()
-    app.include_router(build_collection_router(sessions, TEST_SETTINGS, service), prefix="/api")
-    app.include_router(build_asset_router(sessions, TEST_SETTINGS, blobs), prefix="/api")
+    app.include_router(build_collection_router(sessions, TEST_SETTINGS), prefix="/api")
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        private_listing = await client.get(
-            "/api/collections",
-            headers={"Authorization": f"Bearer {viewer_token}"},
-        )
-        published = await client.patch(
-            f"/api/collections/{collection_id}",
-            json={"is_public": True},
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
-        public_listing = await client.get(
-            "/api/collections",
-            headers={"Authorization": f"Bearer {viewer_token}"},
-        )
-        selected = await client.put(
-            "/api/collections/selection",
-            json={"collection_id": collection_id},
-            headers={"Authorization": f"Bearer {viewer_token}"},
-        )
-        files = await client.get(
-            f"/api/collections/{collection_id}/files",
-            headers={"Authorization": f"Bearer {viewer_token}"},
-        )
-        preview = await client.get(
-            "/api/assets/shared-notes/preview",
-            headers={"Authorization": f"Bearer {viewer_token}"},
-            follow_redirects=False,
-        )
-        inclusion = await client.put(
-            f"/api/collections/{collection_id}/files/shared-notes/inclusion",
-            json={"thread_id": "thread_missing", "included": True},
-            headers={"Authorization": f"Bearer {viewer_token}"},
-        )
-        visibility = await client.patch(
-            f"/api/collections/{collection_id}",
-            json={"is_public": False},
-            headers={"Authorization": f"Bearer {viewer_token}"},
-        )
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {_token(viewer)}"},
+    ) as client:
+        listing = await client.get("/api/collections")
+        files = await client.get(f"/api/collections/{collection_id}/files")
+        reconcile = await client.post(f"/api/collections/{collection_id}/reconcile")
 
-    assert all(item["id"] != collection_id for item in private_listing.json())
-    assert published.status_code == 200
-    assert published.json()["is_public"] is True
-    shared = next(item for item in public_listing.json() if item["id"] == collection_id)
-    assert shared["read_only"] is True
-    assert shared["can_manage"] is False
-    assert selected.status_code == 200
-    assert selected.json()["selected"] is True
-    assert files.status_code == 200
-    assert files.json()["items"][0]["filename"] == "shared.md"
-    assert preview.status_code == 307
-    assert inclusion.status_code == 200
-    assert inclusion.json()["included"] is True
-    assert visibility.status_code == 403
-
-    upload = vectors.uploads[0]
-    attributes = upload["attributes"]
-    assert isinstance(attributes, dict)
-    vectors.search_hits = (
-        VectorSearchHit(str(upload["id"]), 0.9, "Shared demo evidence", attributes),
-    )
-    reader = FileIndexReader(sessions, blobs, vectors)
-    access = ScopedAgentDataAccess(sessions, viewer.id, blobs, reader)
-    search_results = await access.file_search("Shared", 5)
-    assert search_results[0]["fileId"] == "shared-notes"
-    workspace = await access.list_workspace_files()
-    assert workspace[0]["fileId"] == "shared-notes"
+    assert {item["slug"] for item in listing.json()} == {"general"}
+    assert files.status_code == 404
+    assert reconcile.status_code == 404
     await engine.dispose()
 
 
-async def test_collection_filter_is_sent_to_provider_and_rechecked_in_database() -> None:
-    content = b"# Transformers\nAttention and encoder-decoder architectures."
-    engine, sessions, blobs, vectors, _, service = await setup_service(
-        [("paper", "paper.md", "text/markdown", content)]
-    )
-    general = await selected_collection(sessions, TEST_SETTINGS.admin_user_id)
-    prepared = await service.prepare(TEST_SETTINGS.admin_user_id, "paper")
-    await service.commit(
-        TEST_SETTINGS.admin_user_id,
-        str(prepared["ingestionId"]),
-        "A transformer paper about attention.",
-    )
-    upload = vectors.uploads[0]
-    attributes = upload["attributes"]
-    assert isinstance(attributes, dict)
-    assert attributes["collection_id"] == general.id
-    vectors.search_hits = (VectorSearchHit(str(upload["id"]), 0.9, "attention", attributes),)
-    assert len(await service.search(TEST_SETTINGS.admin_user_id, "attention")) == 1
-
-    papers = await create_collection(
-        sessions,
-        TEST_SETTINGS.admin_user_id,
-        "Other papers",
-        None,
-        select_created=True,
-    )
-    assert (
-        await service.search(TEST_SETTINGS.admin_user_id, "attention", collection_id=papers.id)
-        == ()
-    )
-    assert vectors.search_collections[-1] == papers.id
-
-    async with sessions.begin() as session:
-        foreign_attempt = await session.scalar(
-            select(AssetIngestionRow).where(AssetIngestionRow.asset_id == "paper")
-        )
-        assert foreign_attempt is not None
-        foreign_attempt.collection_id = papers.id
-    await select_collection(sessions, TEST_SETTINGS.admin_user_id, general.id)
-    assert await service.search(TEST_SETTINGS.admin_user_id, "attention") == ()
-    await engine.dispose()
-
-
-async def test_collection_files_list_and_toggle_conversation_inclusion() -> None:
-    engine, sessions, _, _, _, service = await setup_service(
-        [("notes", "demo.md", "text/markdown", b"# Demo\nInterview notes")]
-    )
-    prepared = await service.prepare(TEST_SETTINGS.admin_user_id, "notes")
-    await service.commit(
-        TEST_SETTINGS.admin_user_id,
-        str(prepared["ingestionId"]),
-        "Interview demo notes.",
-    )
-    collection_id = str(prepared["collectionId"])
-    thread = ThreadMetadata(id="thread_collection_files", created_at=datetime.now(UTC))
-    async with sessions.begin() as session:
-        session.add(
-            ThreadRow(
-                id=thread.id,
-                conversation_id="conv_collection_files",
-                owner_id=TEST_SETTINGS.admin_user_id,
-                created_at=thread.created_at,
-                payload=thread.model_dump_json(),
-            )
-        )
-
+async def test_collection_files_list_and_toggle_workspace_inclusion() -> None:
+    engine, sessions, collection_id = await _setup_asset(ready=True)
     app = FastAPI()
-    app.include_router(
-        build_collection_router(sessions, TEST_SETTINGS, service),
-        prefix="/api",
-    )
-    token, _ = mint_access_token(
-        AuthenticatedUser(
-            id=TEST_SETTINGS.admin_user_id,
-            username=TEST_SETTINGS.admin_username,
-            is_admin=True,
-        ),
-        TEST_SETTINGS,
+    app.include_router(build_collection_router(sessions, TEST_SETTINGS), prefix="/api")
+    admin = AuthenticatedUser(
+        id=TEST_SETTINGS.admin_user_id,
+        username=TEST_SETTINGS.admin_username,
+        is_admin=True,
     )
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {_token(admin)}"},
     ) as client:
-        listing = await client.get(
-            f"/api/collections/{collection_id}/files",
-            params={"thread_id": thread.id, "limit": 1, "offset": 0},
-        )
+        listing = await client.get(f"/api/collections/{collection_id}/files")
         included = await client.put(
             f"/api/collections/{collection_id}/files/notes/inclusion",
-            json={"thread_id": thread.id, "included": True},
+            json={"included": True},
         )
         included_again = await client.put(
             f"/api/collections/{collection_id}/files/notes/inclusion",
-            json={"thread_id": thread.id, "included": True},
+            json={"included": True},
         )
         excluded = await client.put(
             f"/api/collections/{collection_id}/files/notes/inclusion",
-            json={"thread_id": thread.id, "included": False},
+            json={"included": False},
         )
-        reconciled = await client.post(f"/api/collections/{collection_id}/reconcile")
 
-    assert listing.status_code == 200, listing.text
-    assert listing.json()["total"] == 1
+    assert listing.status_code == 200
     assert listing.json()["items"][0]["provider_status"] == "ready"
-    assert listing.json()["items"][0]["included"] is False
-    assert included.status_code == 200
     assert included.json()["include_id"] == included_again.json()["include_id"]
     assert excluded.json()["included"] is False
-    assert reconciled.status_code == 200
-    assert reconciled.json()["missing"] == 0
     await engine.dispose()

@@ -9,13 +9,12 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from multimedia_intelligence.auth import authenticate_request
 from multimedia_intelligence.chat.store import ThreadRow
 from multimedia_intelligence.config import Settings
-from multimedia_intelligence.files.collections import selected_collection
 from multimedia_intelligence.files.domain import (
     Asset,
     AssetState,
@@ -27,7 +26,6 @@ from multimedia_intelligence.files.ports import BlobStore
 from multimedia_intelligence.files.records import (
     AssetRow,
     DerivedArtifactRow,
-    FileCollectionRow,
     ThreadAssetIncludeRow,
     UserWorkspaceFileRow,
 )
@@ -43,6 +41,7 @@ class SavedAsset(BaseModel):
     media_type: str
     size_bytes: int
     collection_id: str | None
+    source_asset_id: str | None
 
 
 class IncludeAssetRequest(BaseModel):
@@ -123,6 +122,7 @@ def build_asset_router(
                 media_type=asset.media_type,
                 size_bytes=asset.size_bytes,
                 collection_id=asset.collection_id,
+                source_asset_id=asset.source_asset_id,
             )
             for workspace_file, asset in rows
         ]
@@ -132,8 +132,11 @@ def build_asset_router(
         request: Request,
         filename: str = Query(min_length=1, max_length=1024),
         thread_id: str | None = Query(default=None, min_length=1, max_length=128),
+        source_file_id: str | None = Query(default=None, min_length=1, max_length=128),
     ) -> SavedAsset:
         user = await authenticate_request(request, sessions, settings)
+        if source_file_id is not None:
+            await _accessible_asset(sessions, user.id, source_file_id)
         safe_filename = Path(filename).name
         if safe_filename != filename:
             raise HTTPException(
@@ -189,6 +192,7 @@ def build_asset_router(
             state=AssetState.STORED,
             created_at=now,
             collection_id=None,
+            source_asset_id=source_file_id,
         )
         try:
             await assets.save_asset(asset)
@@ -204,6 +208,7 @@ def build_asset_router(
             media_type=asset.media_type,
             size_bytes=asset.size_bytes,
             collection_id=asset.collection_id,
+            source_asset_id=asset.source_asset_id,
         )
 
     @router.post("/{asset_id}/includes", response_model=SavedAsset, include_in_schema=False)
@@ -214,7 +219,7 @@ def build_asset_router(
         request: Request,
     ) -> SavedAsset:
         user = await authenticate_request(request, sessions, settings)
-        row = await _accessible_asset(sessions, user.id, user.is_admin, asset_id)
+        row = await _accessible_asset(sessions, user.id, asset_id)
         asset = _asset_from_row(row)
         include_id = await _ensure_workspace_member(sessions, user.id, asset.id)
         return SavedAsset(
@@ -224,6 +229,7 @@ def build_asset_router(
             media_type=asset.media_type,
             size_bytes=asset.size_bytes,
             collection_id=asset.collection_id,
+            source_asset_id=row.source_asset_id,
         )
 
     @router.put("/{asset_id}/inclusion", response_model=AssetInclusionResponse)
@@ -235,7 +241,7 @@ def build_asset_router(
         """Add or remove an accessible file from the caller's workspace."""
 
         user = await authenticate_request(request, sessions, settings)
-        await _accessible_asset(sessions, user.id, user.is_admin, asset_id)
+        await _accessible_asset(sessions, user.id, asset_id)
         async with sessions.begin() as session:
             include = await session.scalar(
                 select(UserWorkspaceFileRow).where(
@@ -357,9 +363,7 @@ def build_asset_router(
             media_type=metadata.media_type or "application/octet-stream",
             headers={
                 "Content-Length": str(size_bytes),
-                "Content-Disposition": (
-                    f'inline; filename="{metadata.filename or artifact.id}"'
-                ),
+                "Content-Disposition": (f'inline; filename="{metadata.filename or artifact.id}"'),
             },
         )
 
@@ -410,22 +414,13 @@ def build_asset_router(
     async def preview_asset(asset_id: str, request: Request) -> RedirectResponse:
         user = await authenticate_request(request, sessions, settings)
         async with sessions() as session:
-            statement = (
-                select(AssetRow)
-                .join(FileCollectionRow, FileCollectionRow.id == AssetRow.collection_id)
-                .where(
+            row = await session.scalar(
+                select(AssetRow).where(
                     AssetRow.id == asset_id,
+                    AssetRow.owner_id == user.id,
                     AssetRow.state == AssetState.STORED,
                 )
             )
-            if not user.is_admin:
-                statement = statement.where(
-                    or_(
-                        AssetRow.owner_id == user.id,
-                        FileCollectionRow.is_public.is_(True),
-                    )
-                )
-            row = await session.scalar(statement)
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
 
@@ -484,7 +479,6 @@ async def _ensure_workspace_member(
 async def _accessible_asset(
     sessions: async_sessionmaker[AsyncSession],
     owner_id: str,
-    is_admin: bool,
     asset_id: str,
 ) -> AssetRow:
     async with sessions() as session:
@@ -511,19 +505,7 @@ async def _accessible_asset(
     if owned_asset is not None:
         return owned_asset
 
-    collection = await selected_collection(sessions, owner_id, is_admin=is_admin)
-    async with sessions() as session:
-        asset = await session.scalar(
-            select(AssetRow).where(
-                AssetRow.id == asset_id,
-                AssetRow.owner_id == collection.owner_id,
-                AssetRow.collection_id == collection.id,
-                AssetRow.state == AssetState.STORED,
-            )
-        )
-    if asset is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return asset
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
 
 def _asset_from_row(row: AssetRow) -> Asset:
@@ -543,6 +525,7 @@ def _asset_from_row(row: AssetRow) -> Asset:
         state=AssetState(row.state),
         created_at=as_utc(row.created_at),
         collection_id=row.collection_id,
+        source_asset_id=row.source_asset_id,
     )
 
 

@@ -3,8 +3,9 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Literal, cast
+from typing import Literal
 
 from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -32,7 +33,8 @@ class CollectionFileFinder:
 
     async def find(
         self,
-        collection: FileCollectionRow,
+        owner_id: str,
+        collections: Sequence[FileCollectionRow],
         *,
         filename: str | None,
         filename_match: FilenameMatch,
@@ -41,7 +43,6 @@ class CollectionFileFinder:
         sort: MetadataSort,
         limit: int,
         cursor: str | None,
-        can_index: bool,
     ) -> CollectionFileMetadataPage:
         filename = filename.strip() if filename is not None else None
         if filename == "":
@@ -55,18 +56,22 @@ class CollectionFileFinder:
 
         filter_key = _filter_key(filename, filename_match, after, before)
         cursor_value = _decode_cursor(cursor, sort, filter_key) if cursor is not None else None
+        collection_ids = tuple(collection.id for collection in collections)
+        if not collection_ids:
+            return {"items": [], "hasMore": False, "nextCursor": None}
+        collection_slugs = {collection.id: collection.slug for collection in collections}
         indexed = exists(
             select(AssetIngestionRow.id).where(
                 AssetIngestionRow.asset_id == AssetRow.id,
-                AssetIngestionRow.owner_id == collection.owner_id,
-                AssetIngestionRow.collection_id == collection.id,
+                AssetIngestionRow.owner_id == owner_id,
+                AssetIngestionRow.collection_id == AssetRow.collection_id,
                 AssetIngestionRow.is_active.is_(True),
                 AssetIngestionRow.status == "ready",
             )
         )
         statement = select(AssetRow, indexed.label("indexed")).where(
-            AssetRow.owner_id == collection.owner_id,
-            AssetRow.collection_id == collection.id,
+            AssetRow.owner_id == owner_id,
+            AssetRow.collection_id.in_(collection_ids),
             AssetRow.state == AssetState.STORED,
         )
         if filename is not None:
@@ -108,7 +113,11 @@ class CollectionFileFinder:
         has_more = len(rows) > limit
         page_rows = rows[:limit]
         items = [
-            _metadata_result(asset, bool(is_indexed), can_index=can_index)
+            _metadata_result(
+                asset,
+                bool(is_indexed),
+                collection_slugs[str(asset.collection_id)],
+            )
             for asset, is_indexed in page_rows
         ]
         next_cursor = (
@@ -122,8 +131,6 @@ class CollectionFileFinder:
             else None
         )
         return {
-            "collectionId": collection.id,
-            "collectionName": collection.name,
             "items": items,
             "hasMore": has_more,
             "nextCursor": next_cursor,
@@ -145,26 +152,19 @@ def _filename_filter(filename: str, match: FilenameMatch) -> ColumnElement[bool]
 def _metadata_result(
     asset: AssetRow,
     indexed: bool,
-    *,
-    can_index: bool,
+    collection_slug: str,
 ) -> CollectionFileMetadata:
     route = classify_file(asset.filename).route
-    actions: list[str] = []
-    if route.value in {"audio", "video"} and indexed:
-        actions.append("read_transcript")
-    elif route.value == "pdf":
-        actions.extend(("sample_pdf", "view_pdf_page", "extract_pdf_pages"))
-    elif route.value == "image":
-        actions.append("view_image")
-    elif route.value in {"json", "csv", "tabular"}:
-        actions.extend(("query_data", "read_text"))
-    else:
-        actions.append("read_text")
-    if not indexed and can_index:
-        actions.append("index_file")
+    actions = ["view_file"]
+    if route.value in {"json", "csv", "tabular"}:
+        actions.append("query_data")
+    actionable_id = asset.source_asset_id or asset.id
     return {
-        "fileId": asset.id,
-        "collectionId": cast(str, asset.collection_id),
+        "fileId": actionable_id,
+        "matchFileId": asset.id,
+        "sourceFileId": asset.source_asset_id,
+        "collectionId": str(asset.collection_id),
+        "collectionSlug": collection_slug,
         "filename": asset.filename,
         "mediaType": asset.media_type,
         "modality": route.value,

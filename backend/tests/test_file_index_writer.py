@@ -12,13 +12,17 @@ from multimedia_intelligence.auth import ensure_builtin_admin
 from multimedia_intelligence.billing.models import LedgerEventRow
 from multimedia_intelligence.billing.service import BillingService
 from multimedia_intelligence.db import create_engine_and_session, initialize_schema
-from multimedia_intelligence.files.collections import selected_collection
+from multimedia_intelligence.files.collections import ensure_default_collection
 from multimedia_intelligence.files.domain import AssetState, ObjectLocation
 from multimedia_intelligence.files.indexing import (
     DiarizedTranscript,
+    FileIndexReader,
     FileIndexWriter,
     MediaTranscriptionGateway,
+    ProviderBatchState,
+    ProviderFileState,
     TranscriptSegmentPayload,
+    VectorBatchFile,
 )
 from multimedia_intelligence.files.records import AssetIndexArtifactRow, AssetIngestionRow, AssetRow
 
@@ -60,6 +64,9 @@ class RecordingVectors:
         self.created: list[str] = []
         self.uploads: list[dict[str, object]] = []
         self.deleted: list[str] = []
+        self.uploaded_files: list[dict[str, object]] = []
+        self.batches: list[tuple[str, tuple[VectorBatchFile, ...]]] = []
+        self.batch_status = "in_progress"
 
     async def create_store(self, owner_id: str) -> str:
         self.created.append(owner_id)
@@ -91,6 +98,35 @@ class RecordingVectors:
 
     async def delete_file(self, file_id: str) -> None:
         self.deleted.append(file_id)
+
+    async def upload_file(self, *, filename: str, content: bytes, media_type: str) -> str:
+        self.uploaded_files.append(
+            {"filename": filename, "content": content, "media_type": media_type}
+        )
+        return f"batch_file_{len(self.uploaded_files)}"
+
+    async def start_batch(
+        self, vector_store_id: str, files: list[VectorBatchFile]
+    ) -> ProviderBatchState:
+        self.batches.append((vector_store_id, tuple(files)))
+        return ProviderBatchState(id="vsfb_test", status="in_progress")
+
+    async def retrieve_batch(self, vector_store_id: str, batch_id: str) -> ProviderBatchState:
+        assert vector_store_id == "vs_test" and batch_id == "vsfb_test"
+        return ProviderBatchState(id=batch_id, status=self.batch_status)
+
+    async def list_files(self, vector_store_id: str) -> tuple[ProviderFileState, ...]:
+        assert vector_store_id == "vs_test"
+        if self.batch_status != "completed" or not self.batches:
+            return ()
+        return tuple(
+            ProviderFileState(
+                id=item.file_id,
+                status="completed",
+                attributes=item.attributes,
+            )
+            for item in self.batches[-1][1]
+        )
 
 
 class RecordingTranscription:
@@ -137,7 +173,7 @@ async def _writer_fixture(
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     await initialize_schema(engine)
     await ensure_builtin_admin(sessions, TEST_SETTINGS)
-    collection = await selected_collection(sessions, TEST_SETTINGS.admin_user_id)
+    collection = await ensure_default_collection(sessions, TEST_SETTINGS.admin_user_id)
     async with sessions.begin() as session:
         session.add(
             AssetRow(
@@ -185,19 +221,19 @@ async def test_writer_indexes_description_and_provider_native_source_once() -> N
     )
 
     assert first["status"] == "ready"
-    assert first["indexedRepresentations"] == ["description", "source_file"]
-    assert first["providerFileCount"] == 2
+    assert first["indexedRepresentations"] == ["source_file"]
+    assert first["providerFileCount"] == 1
     assert first["serverMediaProcessing"] is False
     assert second["reused"] is True
-    assert len(vectors.uploads) == 2
-    assert vectors.uploads[1]["content"] == b"# Evidence\n\nTransformer attention"
-    assert vectors.uploads[1]["attributes"]["collection_id"] == first["collectionId"]  # type: ignore[index]
+    assert len(vectors.uploads) == 1
+    assert vectors.uploads[0]["content"] == b"# Evidence\n\nTransformer attention"
+    assert vectors.uploads[0]["attributes"]["collection_id"] == first["collectionId"]  # type: ignore[index]
 
     async with sessions() as session:
         attempts = tuple(await session.scalars(select(AssetIngestionRow)))
         artifacts = tuple(await session.scalars(select(AssetIndexArtifactRow)))
     assert len(attempts) == 1 and attempts[0].is_active
-    assert {artifact.kind for artifact in artifacts} == {"description", "source_file"}
+    assert {artifact.kind for artifact in artifacts} == {"source_file"}
     await engine.dispose()
 
 
@@ -217,18 +253,11 @@ async def test_writer_indexes_media_description_without_processing_source() -> N
         "Interview recording about retrieval systems.",
     )
 
-    assert result["indexedRepresentations"] == [
-        "description",
-        "transcript",
-        "transcript_index",
-    ]
-    assert result["providerFileCount"] == 2
-    assert len(vectors.uploads) == 2
+    assert result["indexedRepresentations"] == ["transcript", "transcript_index"]
+    assert result["providerFileCount"] == 1
+    assert len(vectors.uploads) == 1
     assert vectors.uploads[0]["media_type"] == "text/markdown"
-    assert vectors.uploads[1]["media_type"] == "text/markdown"
-    assert transcription.calls == [
-        ("recording.mp3", b"sent directly to OpenAI", "audio/mpeg")
-    ]
+    assert transcription.calls == [("recording.mp3", b"sent directly to OpenAI", "audio/mpeg")]
     async with sessions() as session:
         transcript = await session.scalar(
             select(AssetIndexArtifactRow).where(AssetIndexArtifactRow.kind == "transcript")
@@ -261,8 +290,8 @@ async def test_writer_requires_explicit_replacement_for_changed_plan() -> None:
     )
 
     assert replaced["reused"] is False
-    assert len(vectors.uploads) == 4
-    assert vectors.deleted == ["file_1", "file_2"]
+    assert len(vectors.uploads) == 2
+    assert vectors.deleted == ["file_1"]
     async with sessions() as session:
         attempts = tuple(
             await session.scalars(select(AssetIngestionRow).order_by(AssetIngestionRow.version))
@@ -316,7 +345,7 @@ async def test_description_only_media_plan_does_not_transcribe() -> None:
 
 
 async def test_writer_marks_failed_attempt_and_cleans_partial_provider_uploads() -> None:
-    vectors = RecordingVectors(fail_on_upload=2)
+    vectors = RecordingVectors(fail_on_upload=1)
     engine, sessions, writer, _vectors = await _writer_fixture(
         "notes.txt", "text/plain", b"source", vectors=vectors
     )
@@ -329,5 +358,107 @@ async def test_writer_marks_failed_attempt_and_cleans_partial_provider_uploads()
     assert attempt is not None
     assert attempt.status == "failed"
     assert not attempt.is_active
-    assert vectors.deleted == ["file_1"]
+    assert vectors.deleted == []
+    await engine.dispose()
+
+
+async def test_agent_pdf_plan_starts_one_batch_with_validated_derivatives() -> None:
+    engine, sessions, writer, vectors = await _writer_fixture(
+        "guide.pdf", "application/pdf", b"%PDF source"
+    )
+    blob_store = writer.blob_store
+    assert isinstance(blob_store, MemoryBlobStore)
+    blob_store.objects.update(
+        {
+            "assets/reverse": b"# Guide\n\n- Chapter 1 - pages 1-3",
+            "assets/range": b"%PDF pages 1-3",
+        }
+    )
+    now = datetime.now(UTC)
+    async with sessions.begin() as session:
+        session.add_all(
+            [
+                AssetRow(
+                    id="asset_reverse",
+                    owner_id=TEST_SETTINGS.admin_user_id,
+                    collection_id=None,
+                    source_asset_id="asset_test",
+                    filename="guide-index.md",
+                    media_type="text/markdown",
+                    size_bytes=len(blob_store.objects["assets/reverse"]),
+                    sha256="1" * 64,
+                    bucket="bucket",
+                    object_key="assets/reverse",
+                    state=AssetState.STORED,
+                    created_at=now,
+                ),
+                AssetRow(
+                    id="asset_range",
+                    owner_id=TEST_SETTINGS.admin_user_id,
+                    collection_id=None,
+                    source_asset_id="asset_test",
+                    filename="guide-pages-1-3.pdf",
+                    media_type="application/pdf",
+                    size_bytes=len(blob_store.objects["assets/range"]),
+                    sha256="2" * 64,
+                    bucket="bucket",
+                    object_key="assets/range",
+                    state=AssetState.STORED,
+                    created_at=now,
+                ),
+            ]
+        )
+
+    result = await writer.index_agent_plan(
+        TEST_SETTINGS.admin_user_id,
+        {
+            "sourceFileId": "asset_test",
+            "collectionSlug": "general",
+            "summary": "Guide with a page-level reverse index.",
+            "includeOriginal": True,
+            "reverseIndexFileId": "asset_reverse",
+            "ranges": [
+                {
+                    "fileId": "asset_range",
+                    "startPage": 1,
+                    "endPage": 3,
+                    "title": "Introduction",
+                    "chapter": "Chapter 1",
+                    "section": "Overview",
+                }
+            ],
+        },
+    )
+
+    assert result["status"] == "indexing"
+    assert result["providerFileCount"] == 3
+    assert len(vectors.batches) == 1
+    batch_files = vectors.batches[0][1]
+    reverse = next(
+        item for item in batch_files if item.attributes["artifact_kind"] == "text_reverse_index"
+    )
+    assert reverse.chunking_strategy == {
+        "type": "static",
+        "static": {"max_chunk_size_tokens": 4096, "chunk_overlap_tokens": 0},
+    }
+    pdf_range = next(
+        item for item in batch_files if item.attributes["artifact_kind"] == "pdf_range"
+    )
+    assert pdf_range.attributes["source_file_id"] == "asset_test"
+    assert pdf_range.attributes["derived_asset_id"] == "asset_range"
+    async with sessions() as session:
+        ingestion = await session.scalar(
+            select(AssetIngestionRow).where(AssetIngestionRow.id == result["ingestionId"])
+        )
+    assert ingestion is not None
+    assert ingestion.provider_batch_id == "vsfb_test"
+    assert not ingestion.is_active
+
+    vectors.batch_status = "completed"
+    reader = FileIndexReader(sessions, blob_store, vectors)  # type: ignore[arg-type]
+    summary = await reader.reconcile_collection(TEST_SETTINGS.admin_user_id, result["collectionId"])
+    assert summary.ready == 3 and summary.pending == 0
+    async with sessions() as session:
+        ingestion = await session.get(AssetIngestionRow, result["ingestionId"])
+    assert ingestion is not None and ingestion.is_active and ingestion.status == "ready"
     await engine.dispose()

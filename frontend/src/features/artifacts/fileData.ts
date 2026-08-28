@@ -24,6 +24,7 @@ export interface IncludedLocalFile {
   includeId?: string;
   saveError?: string;
   collectionId?: string;
+  sourceFileId?: string;
 }
 
 export interface HydratedLocalFile extends IncludedLocalFile {
@@ -32,13 +33,9 @@ export interface HydratedLocalFile extends IncludedLocalFile {
 
 export interface FileCollection {
   id: string;
+  slug: string;
   name: string;
   description: string | null;
-  selected: boolean;
-  is_public: boolean;
-  owned: boolean;
-  can_manage: boolean;
-  read_only: boolean;
 }
 
 export interface CollectionFileSummary {
@@ -105,10 +102,9 @@ export interface CollectionLibraryValue {
   collectionFiles: CollectionFileSummary[];
   collectionFilesLoading: boolean;
   collectionFilesError: string | null;
-  selectedCollectionId: string | null;
+  focusedCollectionId: string | null;
   createCollection: (name: string, description?: string) => Promise<void>;
-  selectCollection: (collectionId: string) => Promise<void>;
-  setCollectionPublic: (collectionId: string, isPublic: boolean) => Promise<void>;
+  selectCollection: (collectionId: string) => void;
   refreshCollectionFiles: () => Promise<void>;
   setCollectionFileIncluded: (assetId: string, included: boolean) => Promise<void>;
   reconcileCollection: () => Promise<ReconciliationSummary>;

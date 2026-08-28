@@ -79,6 +79,10 @@ def vector_file_attributes(
         "startSeconds": "start_seconds",
         "endSeconds": "end_seconds",
         "section": "section",
+        "chapter": "chapter",
+        "title": "title",
+        "sourceFileId": "source_file_id",
+        "derivedAssetId": "derived_asset_id",
         "format": "format",
         "rowCount": "row_count",
     }
