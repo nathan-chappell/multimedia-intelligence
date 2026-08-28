@@ -18,6 +18,7 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
   const [message, setMessage] = useState<string | null>(null);
   const [busyAssetId, setBusyAssetId] = useState<string | null>(null);
   const [reconciling, setReconciling] = useState(false);
+  const [clearingWorkspace, setClearingWorkspace] = useState(false);
   const [workspacePage, setWorkspacePage] = useState(1);
   const [previewEntry, setPreviewEntry] = useState<IncludedLocalFile | null>(null);
   const library = useCollectionLibrary();
@@ -35,6 +36,11 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
   );
   const focusedCollection = library.collections.find(
     (collection) => collection.id === library.focusedCollectionId,
+  );
+  const workspaceUploadInProgress = workspace.files.some((entry) =>
+    entry.durability === "local" ||
+    entry.durability === "uploading" ||
+    entry.durability === "stored",
   );
 
   async function updateInclusion(file: CollectionFileSummary) {
@@ -84,6 +90,25 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
       Math.ceil(Math.max(0, workspace.files.length - 1) / workspacePageSize),
     );
     setWorkspacePage((current) => Math.min(current, remainingPageCount));
+  }
+
+  async function clearWorkspace() {
+    const confirmed = window.confirm(
+      "Remove every file from your workspace? Stored files and collection indexes will not be deleted.",
+    );
+    if (!confirmed) return;
+    setClearingWorkspace(true);
+    setMessage(null);
+    try {
+      await workspace.clearWorkspace();
+      setWorkspacePage(1);
+      setPreviewEntry(null);
+      setMessage("Workspace cleared. Stored files and collection indexes were not deleted.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not clear the workspace");
+    } finally {
+      setClearingWorkspace(false);
+    }
   }
 
   return (
@@ -229,8 +254,18 @@ export function ArtifactPanel({ fullPage = false }: { fullPage?: boolean }) {
               <small>Your durable files, loaded by tools only when needed</small>
             </div>
             <div className="workspace-heading-actions">
-              <span className="counter">{workspace.files.length}</span>
               <button type="button" onClick={() => inputRef.current?.click()}>Add files</button>
+              <button
+                className="workspace-clear-button"
+                type="button"
+                disabled={
+                  clearingWorkspace || workspace.files.length === 0 || workspaceUploadInProgress
+                }
+                title={workspaceUploadInProgress ? "Wait for uploads to finish" : undefined}
+                onClick={() => void clearWorkspace()}
+              >
+                {clearingWorkspace ? "Clearing…" : "Clear workspace"}
+              </button>
             </div>
           </div>
           {message && <p className="collection-message" role="status">{message}</p>}

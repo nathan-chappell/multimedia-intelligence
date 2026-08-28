@@ -9,7 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from multimedia_intelligence.auth import authenticate_request
@@ -62,6 +62,10 @@ class AssetInclusionResponse(BaseModel):
     thread_id: str | None
     included: bool
     include_id: str | None
+
+
+class ClearWorkspaceResponse(BaseModel):
+    removed_count: int
 
 
 class SavedDerivedArtifact(BaseModel):
@@ -126,6 +130,22 @@ def build_asset_router(
             )
             for workspace_file, asset in rows
         ]
+
+    @router.delete("/workspace", response_model=ClearWorkspaceResponse)
+    async def clear_workspace(request: Request) -> ClearWorkspaceResponse:
+        """Remove every file from the caller's workspace without deleting stored assets."""
+
+        user = await authenticate_request(request, sessions, settings)
+        async with sessions.begin() as session:
+            removed_count = await session.scalar(
+                select(func.count())
+                .select_from(UserWorkspaceFileRow)
+                .where(UserWorkspaceFileRow.owner_id == user.id)
+            )
+            await session.execute(
+                delete(UserWorkspaceFileRow).where(UserWorkspaceFileRow.owner_id == user.id)
+            )
+        return ClearWorkspaceResponse(removed_count=removed_count or 0)
 
     @router.post("", response_model=SavedAsset, status_code=status.HTTP_201_CREATED)
     async def save_asset(

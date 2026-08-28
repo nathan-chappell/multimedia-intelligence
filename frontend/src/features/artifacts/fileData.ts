@@ -89,6 +89,7 @@ export interface ConversationWorkspaceValue {
   restoreThread: (threadId: string) => void;
   refreshThreadFiles: () => Promise<void>;
   setFileIncluded: (assetId: string, included: boolean) => Promise<void>;
+  clearWorkspace: () => Promise<number>;
   registerArtifact: (
     sourceAssetId: string,
     kind: TransientArtifact["kind"],

@@ -500,6 +500,24 @@ export function FileDataProvider({
     [refreshThreadFiles],
   );
 
+  const clearWorkspace = useCallback(async (): Promise<number> => {
+    const response = await authenticatedFetch("/api/assets/workspace", { method: "DELETE" });
+    if (!response.ok) throw new Error(await apiError(response, "Could not clear the workspace"));
+    const result = (await response.json()) as { removed_count: number };
+    updateFiles(() => []);
+    contentLoads.current.clear();
+    setCollectionFiles((current) =>
+      current.map((file) => ({ ...file, included: false, include_id: null })),
+    );
+    setArtifacts((current) => {
+      current.forEach((artifact) => {
+        if (artifact.previewUrl) URL.revokeObjectURL(artifact.previewUrl);
+      });
+      return [];
+    });
+    return result.removed_count;
+  }, [updateFiles]);
+
   const setCollectionFileIncluded = useCallback(
     async (assetId: string, included: boolean) => {
       if (!focusedCollectionId) throw new Error("Select a collection first");
@@ -571,6 +589,7 @@ export function FileDataProvider({
       restoreThread,
       refreshThreadFiles,
       setFileIncluded,
+      clearWorkspace,
     }),
     [
       files,
@@ -587,6 +606,7 @@ export function FileDataProvider({
       restoreThread,
       refreshThreadFiles,
       setFileIncluded,
+      clearWorkspace,
     ],
   );
 

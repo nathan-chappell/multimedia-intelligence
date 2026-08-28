@@ -196,6 +196,78 @@ async def test_saved_asset_workspace_is_scoped_to_the_user() -> None:
     await engine.dispose()
 
 
+async def test_clear_workspace_removes_only_caller_membership_and_preserves_assets() -> None:
+    engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
+    await initialize_schema(engine)
+    await ensure_builtin_admin(sessions, TEST_SETTINGS)
+    async with sessions.begin() as session:
+        session.add(
+            UserRow(
+                id="other_clear_user",
+                username="other-clear",
+                password_hash=hash_password("other-clear-password"),
+                is_admin=False,
+            )
+        )
+
+    blobs = RecordingBlobStore()
+    app = FastAPI()
+    app.include_router(
+        build_asset_router(sessions, TEST_SETTINGS, blobs),  # type: ignore[arg-type]
+        prefix="/api",
+    )
+    admin_token, _ = mint_access_token(
+        AuthenticatedUser(
+            id=TEST_SETTINGS.admin_user_id,
+            username=TEST_SETTINGS.admin_username,
+            is_admin=True,
+        ),
+        TEST_SETTINGS,
+    )
+    other_token, _ = mint_access_token(
+        AuthenticatedUser(id="other_clear_user", username="other-clear", is_admin=False),
+        TEST_SETTINGS,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        admin_saved = await client.post(
+            "/api/assets",
+            params={"filename": "admin-notes.txt"},
+            content=b"admin contents",
+            headers={"Authorization": f"Bearer {admin_token}", "Content-Type": "text/plain"},
+        )
+        other_saved = await client.post(
+            "/api/assets",
+            params={"filename": "other-notes.txt"},
+            content=b"other contents",
+            headers={"Authorization": f"Bearer {other_token}", "Content-Type": "text/plain"},
+        )
+        cleared = await client.delete(
+            "/api/assets/workspace",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        admin_workspace = await client.get(
+            "/api/assets",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        other_workspace = await client.get(
+            "/api/assets",
+            headers={"Authorization": f"Bearer {other_token}"},
+        )
+
+    assert admin_saved.status_code == 201
+    assert other_saved.status_code == 201
+    assert cleared.status_code == 200 and cleared.json() == {"removed_count": 1}
+    assert admin_workspace.json() == []
+    assert [item["asset_id"] for item in other_workspace.json()] == [
+        other_saved.json()["asset_id"]
+    ]
+    async with sessions() as session:
+        assert await session.get(AssetRow, admin_saved.json()["asset_id"]) is not None
+        assert await session.get(AssetRow, other_saved.json()["asset_id"]) is not None
+    await engine.dispose()
+
+
 async def test_user_workspace_survives_collection_selection_changes() -> None:
     engine, sessions = create_engine_and_session("sqlite+aiosqlite:///:memory:")
     await initialize_schema(engine)

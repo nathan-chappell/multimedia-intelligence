@@ -85,6 +85,7 @@ test("adds a local file to the durable user workspace", async ({ page }) => {
 });
 
 test("pages compact workspace files and hydrates a durable text preview", async ({ page }) => {
+  let clearRequests = 0;
   await page.addInitScript(() => window.localStorage.setItem("e2e_clerk_token", "test-token"));
   await page.route("**/api/auth/me", (route) =>
     route.fulfill({
@@ -110,8 +111,22 @@ test("pages compact workspace files and hydrates a durable text preview", async 
     collection_id: null,
     source_asset_id: null,
   }));
+  await page.route("**/api/assets/workspace", (route) => {
+    clearRequests += 1;
+    const removedCount = assets.length;
+    assets = [];
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ removed_count: removedCount }),
+    });
+  });
   await page.route(/\/api\/assets(?:\?.*)?$/, (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(assets) }),
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(assets),
+    }),
   );
   await page.route("**/api/assets/asset_1/inclusion", (route) => {
     assets = assets.filter((asset) => asset.asset_id !== "asset_1");
@@ -149,6 +164,12 @@ test("pages compact workspace files and hydrates a durable text preview", async 
   await expect(page.getByText("workspace-1.txt")).toHaveCount(0);
   await expect(page.getByText("workspace-6.txt")).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Workspace files pagination" })).toHaveCount(0);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Clear workspace" }).click();
+  await expect(page.getByRole("heading", { name: "No workspace files" })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("Stored files and collection indexes were not deleted");
+  expect(clearRequests).toBe(1);
 });
 
 test("keeps user workspace files when the focused collection changes", async ({ page }) => {
