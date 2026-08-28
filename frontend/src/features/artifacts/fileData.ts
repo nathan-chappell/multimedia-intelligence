@@ -100,11 +100,15 @@ export interface ConversationWorkspaceValue {
 export interface CollectionLibraryValue {
   collections: FileCollection[];
   collectionFiles: CollectionFileSummary[];
+  collectionFilesTotal: number;
+  collectionFilesPage: number;
+  collectionFilesPageSize: number;
   collectionFilesLoading: boolean;
   collectionFilesError: string | null;
   focusedCollectionId: string | null;
   createCollection: (name: string, description?: string) => Promise<void>;
   selectCollection: (collectionId: string) => void;
+  selectCollectionFilesPage: (page: number) => void;
   refreshCollectionFiles: () => Promise<void>;
   setCollectionFileIncluded: (assetId: string, included: boolean) => Promise<void>;
   reconcileCollection: () => Promise<ReconciliationSummary>;

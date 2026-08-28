@@ -37,7 +37,7 @@ function AuthenticatedRoute() {
 function Workspace() {
   const { user } = useSessionUser();
   return (
-    <FileDataProvider>
+    <FileDataProvider collectionsEnabled={false}>
       <main className="app-shell">
         <WorkspaceHeader user={user} eyebrow="Workspace" />
         <section className="workspace" aria-label="Workspace">

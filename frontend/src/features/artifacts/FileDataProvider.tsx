@@ -14,13 +14,23 @@ import {
   type TransientArtifact,
 } from "./fileData";
 
+const COLLECTION_FILES_PAGE_SIZE = 10;
+
 /** Coordinate collection search with the user's single durable workspace. */
-export function FileDataProvider({ children }: { children: ReactNode }) {
+export function FileDataProvider({
+  children,
+  collectionsEnabled = true,
+}: {
+  children: ReactNode;
+  collectionsEnabled?: boolean;
+}) {
   const [files, setFiles] = useState<IncludedLocalFile[]>([]);
   const [artifacts, setArtifacts] = useState<TransientArtifact[]>([]);
   const [collections, setCollections] = useState<FileCollection[]>([]);
   const [focusedCollectionId, setFocusedCollectionId] = useState<string | null>(null);
   const [collectionFiles, setCollectionFiles] = useState<CollectionFileSummary[]>([]);
+  const [collectionFilesTotal, setCollectionFilesTotal] = useState(0);
+  const [collectionFilesPage, setCollectionFilesPage] = useState(1);
   const [collectionFilesLoading, setCollectionFilesLoading] = useState(false);
   const [collectionFilesError, setCollectionFilesError] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(() => rememberedThreadId());
@@ -43,20 +53,33 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const loadCollectionFiles = useCallback(async (collectionId: string) => {
+  const loadCollectionFiles = useCallback(async (collectionId: string, pageNumber: number) => {
     setCollectionFilesLoading(true);
     setCollectionFilesError(null);
     try {
-      const query = new URLSearchParams({ limit: "100", offset: "0" });
+      const query = new URLSearchParams({
+        limit: String(COLLECTION_FILES_PAGE_SIZE),
+        offset: String((pageNumber - 1) * COLLECTION_FILES_PAGE_SIZE),
+      });
       const response = await authenticatedFetch(
         `/api/collections/${encodeURIComponent(collectionId)}/files?${query}`,
       );
       if (!response.ok) throw new Error(await apiError(response, "Could not load collection files"));
-      const page = (await response.json()) as { items: CollectionFileSummary[] };
+      const page = (await response.json()) as {
+        items: CollectionFileSummary[];
+        total: number;
+      };
+      const lastPage = Math.max(1, Math.ceil(page.total / COLLECTION_FILES_PAGE_SIZE));
+      if (pageNumber > lastPage) {
+        setCollectionFilesPage(lastPage);
+        return;
+      }
       setCollectionFiles(page.items);
+      setCollectionFilesTotal(page.total);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not load collection files";
       setCollectionFiles([]);
+      setCollectionFilesTotal(0);
       setCollectionFilesError(message);
       throw error;
     } finally {
@@ -77,16 +100,24 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    void loadCollections().catch(console.error);
-  }, [loadCollections]);
-
-  useEffect(() => {
-    if (!focusedCollectionId) {
+    if (!collectionsEnabled) {
+      setCollections([]);
+      setFocusedCollectionId(null);
       setCollectionFiles([]);
+      setCollectionFilesTotal(0);
       return;
     }
-    void loadCollectionFiles(focusedCollectionId).catch(console.error);
-  }, [focusedCollectionId, loadCollectionFiles]);
+    void loadCollections().catch(console.error);
+  }, [collectionsEnabled, loadCollections]);
+
+  useEffect(() => {
+    if (!collectionsEnabled || !focusedCollectionId) {
+      setCollectionFiles([]);
+      setCollectionFilesTotal(0);
+      return;
+    }
+    void loadCollectionFiles(focusedCollectionId, collectionFilesPage).catch(console.error);
+  }, [collectionsEnabled, focusedCollectionId, collectionFilesPage, loadCollectionFiles]);
 
   useEffect(() => {
     artifactsRef.current = artifacts;
@@ -112,7 +143,7 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
       addedAt: Date.now(),
       durability: "local",
     }));
-    updateFiles((current) => [...current, ...additions]);
+    updateFiles((current) => [...additions, ...current]);
   }, [updateFiles]);
 
   const removeFile = useCallback((assetId: string) => {
@@ -187,7 +218,7 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
             sourceFileId: entry.source_asset_id ?? undefined,
           };
         },
-      );
+      ).reverse();
       if (loadGeneration.current !== generation) return;
       updateFiles((current) => {
         const hydratedByAssetId = new Map(
@@ -296,7 +327,7 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
         updateFiles((current) =>
           current.some((candidate) => candidate.durableAssetId === loadedEntry.durableAssetId)
             ? current
-            : [...current, loadedEntry],
+            : [loadedEntry, ...current],
         );
       }
       if (entry.file) return { ...entry, file: entry.file };
@@ -392,8 +423,8 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
               : candidate,
           ),
         );
-        if (result.collection_id) {
-          await loadCollectionFiles(result.collection_id);
+        if (collectionsEnabled && result.collection_id && result.collection_id === focusedCollectionId) {
+          await loadCollectionFiles(result.collection_id, collectionFilesPage);
         }
       } catch (error) {
         updateFiles((current) =>
@@ -409,7 +440,14 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
         );
       }
     },
-    [attachSavedFile, loadCollectionFiles, updateFiles],
+    [
+      attachSavedFile,
+      collectionFilesPage,
+      collectionsEnabled,
+      focusedCollectionId,
+      loadCollectionFiles,
+      updateFiles,
+    ],
   );
 
   useEffect(() => {
@@ -423,13 +461,18 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
   }, [files, attachSavedFile, saveFile]);
 
   const selectCollection = useCallback((collectionId: string) => {
+    setCollectionFilesPage(1);
     setFocusedCollectionId(collectionId);
+  }, []);
+
+  const selectCollectionFilesPage = useCallback((page: number) => {
+    setCollectionFilesPage(Math.max(1, page));
   }, []);
 
   const refreshCollectionFiles = useCallback(async () => {
     if (!focusedCollectionId) return;
-    await loadCollectionFiles(focusedCollectionId);
-  }, [focusedCollectionId, loadCollectionFiles]);
+    await loadCollectionFiles(focusedCollectionId, collectionFilesPage);
+  }, [collectionFilesPage, focusedCollectionId, loadCollectionFiles]);
 
   const setFileIncluded = useCallback(
     async (assetId: string, included: boolean) => {
@@ -473,9 +516,9 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
     );
     if (!response.ok) throw new Error(await apiError(response, "Could not refresh index status"));
     const result = (await response.json()) as ReconciliationSummary;
-    await loadCollectionFiles(focusedCollectionId);
+    await loadCollectionFiles(focusedCollectionId, collectionFilesPage);
     return result;
-  }, [focusedCollectionId, loadCollectionFiles]);
+  }, [collectionFilesPage, focusedCollectionId, loadCollectionFiles]);
 
   const createCollection = useCallback(
     async (name: string, description?: string) => {
@@ -551,11 +594,15 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
     () => ({
       collections,
       collectionFiles,
+      collectionFilesTotal,
+      collectionFilesPage,
+      collectionFilesPageSize: COLLECTION_FILES_PAGE_SIZE,
       collectionFilesLoading,
       collectionFilesError,
       focusedCollectionId,
       createCollection,
       selectCollection,
+      selectCollectionFilesPage,
       refreshCollectionFiles,
       setCollectionFileIncluded,
       reconcileCollection,
@@ -563,11 +610,14 @@ export function FileDataProvider({ children }: { children: ReactNode }) {
     [
       collections,
       collectionFiles,
+      collectionFilesTotal,
+      collectionFilesPage,
       collectionFilesLoading,
       collectionFilesError,
       focusedCollectionId,
       createCollection,
       selectCollection,
+      selectCollectionFilesPage,
       refreshCollectionFiles,
       setCollectionFileIncluded,
       reconcileCollection,
