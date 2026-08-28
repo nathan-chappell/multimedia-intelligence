@@ -153,6 +153,7 @@ app.include_router(build_user_router(sessions, settings), prefix="/api")
 app.include_router(build_billing_router(sessions, settings), prefix="/api")
 
 
+# NOTE: why does this need to exist?
 @app.get("/.well-known/appspecific/com.chrome.devtools.json", include_in_schema=False)
 async def chrome_devtools_discovery() -> JSONResponse:
     """Acknowledge Chrome's optional workspace discovery probe."""
@@ -178,6 +179,7 @@ async def chatkit_endpoint(request: Request) -> Response:
     result = await chatkit_server.process(await request.body(), context=context)
     if isinstance(result, StreamingResult):
         return StreamingResponse(result, media_type="text/event-stream")
+    # NOTE: hasattr seems odd here.
     if hasattr(result, "json"):
         return Response(content=result.json, media_type="application/json")
     return JSONResponse(result)

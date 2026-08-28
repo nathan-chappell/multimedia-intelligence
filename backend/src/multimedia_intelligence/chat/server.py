@@ -688,7 +688,6 @@ class MultimediaChatServer(ChatKitServer[RequestContext]):
                         ResponseInputFileContentParam(
                             type="input_file",
                             file_url=file_url,
-                            filename=file["filename"],
                             detail="high",
                         ),
                     ]

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import unicodedata
+
 from sqlalchemy import event, inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import (
@@ -14,6 +17,14 @@ from sqlalchemy.pool import StaticPool
 
 class Base(DeclarativeBase):
     pass
+
+
+_SLUG_SEPARATOR = re.compile(r"[^a-z0-9]+")
+
+
+def _compatibility_slug(name: str) -> str:
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    return _SLUG_SEPARATOR.sub("-", ascii_name.casefold()).strip("-") or "collection"
 
 
 def _ensure_compatibility_columns(connection: Connection) -> None:
@@ -43,6 +54,48 @@ def _ensure_compatibility_columns(connection: Connection) -> None:
                     "CREATE INDEX ix_ingestions_provider_batch "
                     "ON asset_ingestions (provider_batch_id)"
                 )
+            )
+    if "file_collections" in tables:
+        columns = {column["name"] for column in inspector.get_columns("file_collections")}
+        if "slug" not in columns:
+            connection.execute(
+                text("ALTER TABLE file_collections ADD COLUMN slug VARCHAR(160) NULL")
+            )
+            existing_by_owner: dict[str, set[str]] = {}
+            rows = connection.execute(
+                text(
+                    "SELECT id, owner_id, name FROM file_collections "
+                    "ORDER BY created_at, id"
+                )
+            ).mappings()
+            for row in rows:
+                owner_id = str(row["owner_id"])
+                used = existing_by_owner.setdefault(owner_id, set())
+                base = _compatibility_slug(str(row["name"]))
+                slug = base
+                suffix = 2
+                while slug in used:
+                    slug = f"{base}-{suffix}"
+                    suffix += 1
+                connection.execute(
+                    text("UPDATE file_collections SET slug = :slug WHERE id = :id"),
+                    {"slug": slug, "id": row["id"]},
+                )
+                used.add(slug)
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX ix_file_collections_owner_slug_unique "
+                    "ON file_collections (owner_id, slug)"
+                )
+            )
+    if "assets" in tables:
+        columns = {column["name"] for column in inspector.get_columns("assets")}
+        if "source_asset_id" not in columns:
+            connection.execute(
+                text("ALTER TABLE assets ADD COLUMN source_asset_id VARCHAR(128) NULL")
+            )
+            connection.execute(
+                text("CREATE INDEX ix_assets_source_asset_id ON assets (source_asset_id)")
             )
 
 

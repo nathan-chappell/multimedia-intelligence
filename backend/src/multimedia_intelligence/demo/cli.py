@@ -29,6 +29,7 @@ from multimedia_intelligence.files.records import (
     AssetIngestionRow,
     AssetRow,
     FileCollectionRow,
+    UserWorkspaceFileRow,
 )
 
 from .survey import build_language_trends, methodology_markdown
@@ -338,6 +339,22 @@ async def _ensure_asset(
             )
         )
     if existing is not None:
+        async with sessions.begin() as session:
+            membership = await session.scalar(
+                select(UserWorkspaceFileRow).where(
+                    UserWorkspaceFileRow.owner_id == settings.admin_user_id,
+                    UserWorkspaceFileRow.asset_id == existing.id,
+                )
+            )
+            if membership is None:
+                session.add(
+                    UserWorkspaceFileRow(
+                        id=f"workspace_{uuid4().hex}",
+                        owner_id=settings.admin_user_id,
+                        asset_id=existing.id,
+                        created_at=datetime.now(UTC),
+                    )
+                )
         return existing
     asset_id = f"asset_{uuid4().hex}"
     suffix = path.suffix.casefold()
@@ -364,7 +381,17 @@ async def _ensure_asset(
     )
     try:
         async with sessions.begin() as session:
-            session.add(row)
+            session.add_all(
+                [
+                    row,
+                    UserWorkspaceFileRow(
+                        id=f"workspace_{uuid4().hex}",
+                        owner_id=settings.admin_user_id,
+                        asset_id=asset_id,
+                        created_at=row.created_at,
+                    ),
+                ]
+            )
     except Exception:
         await blobs.delete(location)
         raise

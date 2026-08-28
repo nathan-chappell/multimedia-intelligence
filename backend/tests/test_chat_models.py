@@ -297,7 +297,6 @@ async def test_viewed_pdf_is_attached_to_function_output_by_signed_url() -> None
     assert output[1] == {
         "type": "input_file",
         "file_url": "https://objects.example.test/signed-pages.pdf",
-        "filename": "report-pages-2-4.pdf",
         "detail": "high",
     }
 

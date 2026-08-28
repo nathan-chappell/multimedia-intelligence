@@ -12,6 +12,7 @@ import asyncio
 import csv
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -54,6 +55,9 @@ async def main() -> None:
     settings = get_settings()
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is required for demo agent ingestion")
+    # Pydantic reads the repository .env file, while the Agents SDK reads the
+    # process environment unless given a custom model provider.
+    os.environ.setdefault("OPENAI_API_KEY", settings.openai_api_key)
     manifest = _load_manifest(args.manifest)
     engine, sessions = create_engine_and_session(settings.database_url)
     await initialize_schema(engine)
@@ -236,7 +240,6 @@ async def _execute_client_tool(
         return output, {
             "type": "input_file",
             "file_url": url,
-            "filename": viewed_path.name,
             "detail": "high",
         }
     if call.name == "view_file":
